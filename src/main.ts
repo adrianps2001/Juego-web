@@ -1,77 +1,86 @@
 import { Game } from './game';
-import { hostRoom, joinRoom, type NetworkEvents, type Session } from './net';
-import type { PlayerState } from './protocol';
+import { Hud } from './hud';
+import { hostRoom, joinRoom, type Link } from './net';
+import type { HostMessage } from './protocol';
+import { Sound } from './sound';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const menu = $('menu');
-const hud = $('hud');
 const nameInput = $<HTMLInputElement>('name');
 const codeInput = $<HTMLInputElement>('code');
 const hostBtn = $<HTMLButtonElement>('host');
 const joinBtn = $<HTMLButtonElement>('join');
 const status = $('status');
-const playerList = $('players');
+const hud = new Hud();
 
-let session: Session | null = null;
+let link: Link | null = null;
 let game: Game | null = null;
+let sound: Sound | null = null;
 
-nameInput.value = localStorage.getItem('nombre') ?? '';
+try {
+  nameInput.value = localStorage.getItem('nombre') ?? '';
+} catch {
+  // sin almacenamiento local: no pasa nada
+}
 const roomFromUrl = new URLSearchParams(location.search).get('sala');
 if (roomFromUrl) codeInput.value = roomFromUrl.toUpperCase();
 
-function renderPlayers(players: PlayerState[]) {
-  playerList.replaceChildren(
-    ...players.map((p) => {
-      const li = document.createElement('li');
-      const dot = document.createElement('span');
-      dot.className = 'dot';
-      dot.style.background = '#' + p.color.toString(16).padStart(6, '0');
-      li.append(dot, p.name + (p.id === session?.me.id ? ' (tú)' : ''));
-      return li;
-    }),
-  );
+function onMessage(msg: HostMessage) {
+  switch (msg.t) {
+    case 'welcome':
+      menu.hidden = true;
+      game = new Game($('game'), hud, sound!, msg.id, msg.picked, msg, (m) => link?.send(m));
+      if (import.meta.env.DEV) Object.assign(window, { juego: game }); // para depurar desde la consola
+      break;
+    case 'full':
+      leave('La sala está llena (máximo 4 jugadores).');
+      break;
+    case 'state':
+      game?.onState(msg.players, msg.entities);
+      break;
+    case 'picked':
+      game?.onPicked(msg.key, msg.by);
+      break;
+    case 'notice':
+      if (game) hud.notice(msg.text);
+      break;
+  }
 }
-
-const events: NetworkEvents = {
-  onSnapshot: (players) => {
-    game?.applySnapshot(players);
-    renderPlayers(players);
-  },
-  onDisconnected: (reason) => leave(reason),
-};
 
 async function start(mode: 'host' | 'join') {
   const name = nameInput.value.trim() || 'Jugador';
-  localStorage.setItem('nombre', name);
-  hostBtn.disabled = joinBtn.disabled = true;
-  status.textContent = 'Conectando…';
   try {
-    if (mode === 'host') {
-      session = await hostRoom(name, events);
-    } else {
-      if (codeInput.value.trim().length !== 5) throw new Error('El código tiene 5 caracteres.');
-      session = await joinRoom(codeInput.value, name, events);
-    }
+    localStorage.setItem('nombre', name);
+  } catch {
+    // ignorado
+  }
+  const code = codeInput.value.trim().toUpperCase();
+  if (mode === 'join' && code.length !== 5) {
+    status.textContent = 'El código tiene 5 caracteres.';
+    return;
+  }
+  hostBtn.disabled = joinBtn.disabled = true;
+  status.textContent = 'Haciendo noclip…';
+  sound = new Sound(); // el audio solo puede arrancar tras un clic
+  try {
+    link = mode === 'host' ? await hostRoom(name, onMessage) : await joinRoom(code, name, onMessage, leave);
   } catch (err) {
-    status.textContent = (err as Error).message;
-    hostBtn.disabled = joinBtn.disabled = false;
+    leave((err as Error).message);
     return;
   }
   status.textContent = '';
-  menu.hidden = true;
-  hud.hidden = false;
-  $('room').textContent = session.roomCode;
-  history.replaceState(null, '', `?sala=${session.roomCode}`);
-  game = new Game($('game'), session.me, session.sendPose);
+  $('room').textContent = link.roomCode;
+  history.replaceState(null, '', `?sala=${link.roomCode}`);
 }
 
 function leave(reason = '') {
-  session?.leave();
+  link?.leave();
   game?.dispose();
-  session = null;
+  sound?.close();
+  link = null;
   game = null;
-  hud.hidden = true;
+  sound = null;
   menu.hidden = false;
   hostBtn.disabled = joinBtn.disabled = false;
   status.textContent = reason;
@@ -83,3 +92,4 @@ joinBtn.onclick = () => start('join');
 codeInput.onkeydown = (e) => e.key === 'Enter' && start('join');
 $('leave').onclick = () => leave();
 $('copy').onclick = () => navigator.clipboard.writeText(location.href);
+$('reenter').onclick = () => game?.reenter();

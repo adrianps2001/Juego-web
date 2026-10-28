@@ -3,15 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Juego Web</title>
+    <title>Backrooms</title>
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
     <div id="game"></div>
 
     <div id="menu" class="panel">
-      <h1>Juego Web 3D</h1>
-      <label>Tu nombre <input id="name" maxlength="16" placeholder="Jugador" /></label>
+      <h1>BACKROOMS</h1>
+      <p class="intro">
+        Has atravesado una pared que no debías. Ahora estás en un laberinto infinito de pasillos amarillos,
+        moqueta húmeda y fluorescentes que zumban. Encuentra las salidas antes de perder la cordura… y no te
+        quedes en la oscuridad.
+      </p>
+      <label>Tu nombre <input id="name" maxlength="16" placeholder="Explorador" /></label>
       <button id="host">Crear sala</button>
       <div class="sep">o únete a una</div>
       <div class="row">
@@ -19,15 +24,44 @@
         <button id="join">Unirse</button>
       </div>
       <p id="status"></p>
+      <ul class="controls">
+        <li><b>WASD</b> moverse · <b>Shift</b> correr</li>
+        <li><b>F</b> linterna · <b>E</b> interactuar</li>
+        <li><b>Ratón</b> mirar · <b>Esc</b> soltar el ratón</li>
+      </ul>
     </div>
 
     <div id="hud" hidden>
-      <div class="panel small">
+      <div class="panel small top-left">
+        <div id="level"></div>
         <div>Sala: <b id="room"></b> <button id="copy">Copiar enlace</button></div>
         <ul id="players"></ul>
         <button id="leave">Salir</button>
       </div>
-      <div class="help">Clic para mover la cámara con el ratón · WASD moverse · Espacio saltar · Esc soltar el ratón</div>
+      <div id="notices"></div>
+      <div class="bars">
+        <div class="bar"><span>Cordura</span><div><i id="bar-sanity"></i></div></div>
+        <div class="bar"><span>Energía</span><div><i id="bar-stamina"></i></div></div>
+        <div class="bar"><span>Linterna</span><div><i id="bar-battery"></i></div></div>
+      </div>
+      <div id="prompt" hidden></div>
+      <div id="crosshair"></div>
+      <div id="title-card"></div>
+      <div id="lock" class="overlay" hidden><div>Haz clic para jugar</div></div>
+      <div id="death" class="overlay" hidden>
+        <div>
+          <h2>Has muerto</h2>
+          <p id="death-reason"></p>
+          <p class="dim">Despertando de nuevo en el nivel…</p>
+        </div>
+      </div>
+      <div id="escaped" class="overlay" hidden>
+        <div>
+          <h2>Has escapado de los Backrooms</h2>
+          <p>Por ahora.</p>
+          <button id="reenter">Volver a hacer noclip</button>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="./src/main.ts"></script>

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Juego web 3D con multijugador P2P para 4 jugadores",
+  "description": "Juego de terror cooperativo de los Backrooms en 3D para 4 jugadores (P2P)",
   "scripts": {
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",

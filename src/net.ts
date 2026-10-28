@@ -1,26 +1,6 @@
 import Peer, { type DataConnection, type PeerOptions } from 'peerjs';
-import {
-  MAX_PLAYERS,
-  PEER_PREFIX,
-  PLAYER_COLORS,
-  SNAPSHOT_RATE_MS,
-  type Message,
-  type PlayerState,
-  type Pose,
-} from './protocol';
-
-export interface NetworkEvents {
-  onSnapshot: (players: PlayerState[]) => void;
-  onDisconnected: (reason: string) => void;
-}
-
-export interface Session {
-  roomCode: string;
-  me: PlayerState;
-  isHost: boolean;
-  sendPose: (pose: Pose) => void;
-  leave: () => void;
-}
+import { Authority } from './authority';
+import { PEER_PREFIX, type ClientMessage, type HostMessage } from './protocol';
 
 // Por defecto se usa el servidor público gratuito de PeerJS (0.peerjs.com).
 // Con VITE_PEER_HOST (y opcionalmente VITE_PEER_PORT / VITE_PEER_PATH) se
@@ -37,7 +17,14 @@ const PEER_OPTIONS: PeerOptions = env.VITE_PEER_HOST
 
 const ROOM_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
-export function randomRoomCode(): string {
+export interface Link {
+  roomCode: string;
+  isHost: boolean;
+  send: (msg: ClientMessage) => void;
+  leave: () => void;
+}
+
+function randomRoomCode(): string {
   let code = '';
   for (let i = 0; i < 5; i++) code += ROOM_CHARS[Math.floor(Math.random() * ROOM_CHARS.length)];
   return code;
@@ -60,77 +47,64 @@ function errorText(err: { type?: string; message?: string }): string {
   }
 }
 
-/** Crea una sala: este navegador hace de anfitrión. */
-export function hostRoom(name: string, events: NetworkEvents): Promise<Session> {
+/** Crea una sala: este navegador hace de anfitrión y ejecuta la autoridad. */
+export function hostRoom(name: string, onMessage: (msg: HostMessage) => void): Promise<Link> {
   const roomCode = randomRoomCode();
   const peer = new Peer(PEER_PREFIX + roomCode, PEER_OPTIONS);
+  const conns = new Map<string, DataConnection>();
 
   return new Promise((resolve, reject) => {
-    let opened = false;
-    const me: PlayerState = { id: '', name, color: PLAYER_COLORS[0], x: 0, y: 0, z: 0, ry: 0 };
-    const players = new Map<string, { conn: DataConnection | null; state: PlayerState }>();
+    let authority: Authority | null = null;
 
-    const snapshot = () => [...players.values()].map((p) => p.state);
-    const freeColor = () => {
-      const used = new Set(snapshot().map((p) => p.color));
-      return PLAYER_COLORS.find((c) => !used.has(c)) ?? PLAYER_COLORS[0];
-    };
-
-    const timer = window.setInterval(() => {
-      const msg: Message = { t: 'snapshot', players: snapshot() };
-      for (const p of players.values()) if (p.conn?.open) p.conn.send(msg);
-      events.onSnapshot(msg.players);
-    }, SNAPSHOT_RATE_MS);
-
-    peer.on('open', (id) => {
-      opened = true;
-      me.id = id;
-      players.set(id, { conn: null, state: me });
+    peer.on('open', (myId) => {
+      const sendTo = (id: string, msg: HostMessage) => {
+        if (id === myId) onMessage(msg);
+        else if (conns.get(id)?.open) conns.get(id)!.send(msg);
+      };
+      const auth = new Authority({
+        sendTo,
+        broadcast: (msg) => {
+          onMessage(msg);
+          for (const c of conns.values()) if (c.open) c.send(msg);
+        },
+      });
+      authority = auth;
       resolve({
         roomCode,
-        me,
         isHost: true,
-        sendPose: (pose) => Object.assign(me, pose),
+        send: (msg) => auth.handle(myId, msg),
         leave: () => {
-          window.clearInterval(timer);
+          auth.stop();
           peer.destroy();
         },
       });
+      auth.join(myId, name);
     });
 
     peer.on('connection', (conn) => {
       conn.on('data', (raw) => {
-        const msg = raw as Message;
+        const msg = raw as ClientMessage;
+        if (!authority) return;
         if (msg.t === 'join') {
-          if (players.size >= MAX_PLAYERS) {
-            conn.send({ t: 'full' } satisfies Message);
+          conns.set(conn.peer, conn);
+          if (!authority.join(conn.peer, msg.name)) {
+            conns.delete(conn.peer);
+            conn.send({ t: 'full' } satisfies HostMessage);
             setTimeout(() => conn.close(), 500);
-            return;
           }
-          const state: PlayerState = {
-            id: conn.peer,
-            name: msg.name.slice(0, 16) || 'Jugador',
-            color: freeColor(),
-            x: (Math.random() - 0.5) * 6,
-            y: 0,
-            z: (Math.random() - 0.5) * 6,
-            ry: 0,
-          };
-          players.set(conn.peer, { conn, state });
-          const { x, y, z, ry } = state;
-          conn.send({ t: 'welcome', id: state.id, color: state.color, pose: { x, y, z, ry } } satisfies Message);
-        } else if (msg.t === 'move') {
-          const p = players.get(conn.peer);
-          if (p) Object.assign(p.state, msg.pose);
+        } else if (conns.has(conn.peer)) {
+          authority.handle(conn.peer, msg);
         }
       });
-      conn.on('close', () => players.delete(conn.peer));
-      conn.on('error', () => players.delete(conn.peer));
+      const drop = () => {
+        if (conns.delete(conn.peer)) authority?.leave(conn.peer);
+      };
+      conn.on('close', drop);
+      conn.on('error', drop);
     });
 
     peer.on('error', (err) => {
-      if (!opened) {
-        window.clearInterval(timer);
+      if (!authority) {
         peer.destroy();
         reject(new Error(errorText(err)));
       }
@@ -144,51 +118,47 @@ export function hostRoom(name: string, events: NetworkEvents): Promise<Session> 
 }
 
 /** Se une a una sala existente con su código. */
-export function joinRoom(roomCode: string, name: string, events: NetworkEvents): Promise<Session> {
+export function joinRoom(
+  roomCode: string,
+  name: string,
+  onMessage: (msg: HostMessage) => void,
+  onClosed: (reason: string) => void,
+): Promise<Link> {
   const peer = new Peer(PEER_OPTIONS);
   const code = roomCode.trim().toUpperCase();
 
   return new Promise((resolve, reject) => {
-    let joined = false;
-    let failed = false;
-    const fail = (reason: string) => {
-      if (failed) return;
-      failed = true;
+    let open = false;
+    let closed = false;
+    const close = (reason: string) => {
+      if (closed) return;
+      closed = true;
       peer.destroy();
-      if (joined) events.onDisconnected(reason);
+      if (open) onClosed(reason);
       else reject(new Error(reason));
     };
 
     peer.on('open', () => {
       const conn = peer.connect(PEER_PREFIX + code, { reliable: true });
-
-      conn.on('open', () => conn.send({ t: 'join', name } satisfies Message));
-
-      conn.on('data', (raw) => {
-        const msg = raw as Message;
-        if (msg.t === 'welcome') {
-          joined = true;
-          const me: PlayerState = { id: msg.id, name, color: msg.color, ...msg.pose };
-          resolve({
-            roomCode: code,
-            me,
-            isHost: false,
-            sendPose: (pose) => {
-              Object.assign(me, pose);
-              if (conn.open) conn.send({ t: 'move', pose } satisfies Message);
-            },
-            leave: () => peer.destroy(),
-          });
-        } else if (msg.t === 'full') {
-          fail('La sala está llena (máximo 4 jugadores).');
-        } else if (msg.t === 'snapshot') {
-          events.onSnapshot(msg.players);
-        }
+      conn.on('open', () => {
+        open = true;
+        conn.send({ t: 'join', name } satisfies ClientMessage);
+        resolve({
+          roomCode: code,
+          isHost: false,
+          send: (msg) => {
+            if (conn.open) conn.send(msg);
+          },
+          leave: () => {
+            closed = true;
+            peer.destroy();
+          },
+        });
       });
-
-      conn.on('close', () => fail('El anfitrión ha cerrado la sala.'));
+      conn.on('data', (raw) => onMessage(raw as HostMessage));
+      conn.on('close', () => close('El anfitrión ha cerrado la sala.'));
     });
 
-    peer.on('error', (err) => fail(errorText(err)));
+    peer.on('error', (err) => close(errorText(err)));
   });
 }
