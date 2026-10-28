@@ -31,6 +31,7 @@ function onMessage(msg: HostMessage) {
   switch (msg.t) {
     case 'welcome':
       menu.hidden = true;
+      status.textContent = '';
       game = new Game($('game'), hud, sound!, msg.id, msg.picked, msg, (m) => link?.send(m));
       if (import.meta.env.DEV) Object.assign(window, { juego: game }); // para depurar desde la consola
       break;
@@ -73,7 +74,13 @@ async function start(mode: 'host' | 'join') {
     leave((err as Error).message);
     return;
   }
-  status.textContent = '';
+  status.textContent = mode === 'join' ? 'Entrando en la sala…' : '';
+  if (mode === 'join') {
+    const mine = link;
+    setTimeout(() => {
+      if (link === mine && !game) leave('El anfitrión no responde. Comprueba el código y que su pestaña siga abierta.');
+    }, 20000);
+  }
   $('room').textContent = link.roomCode;
   history.replaceState(null, '', `?sala=${link.roomCode}`);
 }
@@ -93,7 +100,10 @@ function leave(reason = '') {
 
 hostBtn.onclick = () => start('host');
 joinBtn.onclick = () => start('join');
-codeInput.onkeydown = (e) => e.key === 'Enter' && start('join');
+// (con addEventListener: un onkeydown que devuelve false cancelaría cada tecla)
+codeInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') void start('join');
+});
 $('leave').onclick = () => leave();
 $('copy').onclick = () => navigator.clipboard.writeText(location.href);
 $('reenter').onclick = () => game?.reenter();
