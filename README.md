@@ -29,7 +29,22 @@ atravesar tres niveles y encontrar la puerta de salida de cada uno:
 ## Controles
 
 `WASD` moverse · `Shift` correr · ratón mirar · `F` linterna · `E` coger
-objetos y abrir puertas · `Esc` soltar el ratón.
+objetos y abrir puertas · `Esc` pausa.
+
+## Configuración
+
+Desde el menú principal o desde la pausa (`Esc`) se puede ajustar:
+
+- **Sonido**: volumen general, ambiente (el zumbido de los fluorescentes) y
+  efectos.
+- **Controles**: sensibilidad del ratón e invertir el eje vertical.
+- **Gráficos**: calidad, campo de visión, brillo y contador de FPS.
+  - *Baja*: resolución al 50 %, sin resplandor. Para ordenadores modestos.
+  - *Media* (por defecto): resolución al 75 %, sin resplandor.
+  - *Alta*: resolución completa (hasta 1,5× en pantallas de alta densidad) y
+    resplandor en las luces.
+
+Los ajustes se guardan en el navegador.
 
 ## Cómo jugar con amigos
 
@@ -63,7 +78,9 @@ Smilers, etc.) están en `LEVELS`, en [`src/world.ts`](src/world.ts).
 
 - **Three.js** para el 3D, con iluminación precalculada (un mapa de luz que
   tiene en cuenta las sombras de las paredes) y postprocesado (resplandor,
-  grano de película y distorsión cuando pierdes la cordura).
+  grano de película y distorsión cuando pierdes la cordura). No se usan luces
+  de Three.js: las linternas (la tuya y las de tus compañeros) se calculan en
+  el mismo shader que el mapa de luz, que es mucho más ligero.
 - **PeerJS (WebRTC)** para el online. El jugador que crea la sala es el
   anfitrión: mueve a los Smilers y reenvía el estado a los demás.
 - **TypeScript + Vite**. Todas las texturas y sonidos se generan por código; no
@@ -109,7 +126,9 @@ src/
 ├── world.ts      # niveles, colisiones, mapa de luz y búsqueda de caminos
 ├── level3d.ts    # construye la escena 3D de un nivel
 ├── models.ts     # jugadores, Smiler, objetos, puerta, linterna
-├── lighting.ts   # materiales con la luz precalculada
+├── lighting.ts   # materiales con la luz precalculada y las linternas
+├── settings.ts   # ajustes guardados
+├── settings-ui.ts # panel de configuración
 ├── textures.ts   # texturas dibujadas por código
 ├── post.ts       # postprocesado
 ├── game.ts       # bucle del juego en primera persona

@@ -13,9 +13,11 @@ export class Hud {
   private players = $('players');
   private death = $('death');
   private titleCard = $('title-card');
-  private lock = $('lock');
+  private lock = $('pause');
   private escaped = $('escaped');
+  private fps = $('fps');
   private lastPlayers = '';
+  private lastPrompt: string | null = null;
 
   show(visible: boolean) {
     $('hud').hidden = !visible;
@@ -28,8 +30,18 @@ export class Hud {
   }
 
   setPrompt(text: string | null) {
+    if (text === this.lastPrompt) return;
+    this.lastPrompt = text;
     this.prompt.hidden = !text;
     if (text) this.prompt.textContent = text;
+  }
+
+  showFps(visible: boolean) {
+    this.fps.hidden = !visible;
+  }
+
+  setFps(fps: number) {
+    if (!this.fps.hidden) this.fps.textContent = `${fps} FPS`;
   }
 
   notice(text: string) {

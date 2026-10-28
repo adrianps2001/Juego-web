@@ -12,6 +12,7 @@ const FilmShader = {
     uTime: { value: 0 },
     uInsanity: { value: 0 },
     uDamage: { value: 0 },
+    uBrightness: { value: 1 },
   },
   vertexShader: `
     varying vec2 vUv;
@@ -21,6 +22,7 @@ const FilmShader = {
     uniform float uTime;
     uniform float uInsanity;
     uniform float uDamage;
+    uniform float uBrightness;
     varying vec2 vUv;
     float rand(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     void main() {
@@ -32,6 +34,7 @@ const FilmShader = {
         texture2D(tDiffuse, uv + dir * ca).r,
         texture2D(tDiffuse, uv).g,
         texture2D(tDiffuse, uv - dir * ca).b);
+      col *= uBrightness;
       float gray = dot(col, vec3(0.299, 0.587, 0.114));
       col = mix(col, vec3(gray), ins * 0.65);
       float vig = smoothstep(0.95, 0.3, length(dir) * (1.0 + ins * 0.7));
@@ -58,6 +61,20 @@ export class Post {
     this.composer.addPass(new OutputPass());
     this.film = new ShaderPass(FilmShader);
     this.composer.addPass(this.film);
+  }
+
+  /** El resplandor es lo más caro del postprocesado. */
+  setBloom(on: boolean) {
+    this.bloom.enabled = on;
+  }
+
+  setBrightness(v: number) {
+    this.film.uniforms.uBrightness.value = v;
+  }
+
+  /** EffectComposer guarda su propia resolución: hay que avisarle aparte. */
+  setPixelRatio(ratio: number) {
+    this.composer.setPixelRatio(ratio);
   }
 
   setSize(w: number, h: number) {

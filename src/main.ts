@@ -3,6 +3,7 @@ import { Hud } from './hud';
 import { hostRoom, joinRoom, type Link } from './net';
 import type { HostMessage } from './protocol';
 import { Sound } from './sound';
+import { initSettingsUi, openSettings } from './settings-ui';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -93,3 +94,8 @@ codeInput.onkeydown = (e) => e.key === 'Enter' && start('join');
 $('leave').onclick = () => leave();
 $('copy').onclick = () => navigator.clipboard.writeText(location.href);
 $('reenter').onclick = () => game?.reenter();
+$('menu-settings').onclick = () => openSettings();
+$('pause-settings').onclick = () => openSettings();
+$('resume').onclick = () => game?.lockPointer();
+$('pause-leave').onclick = () => leave();
+initSettingsUi();

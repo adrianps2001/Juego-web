@@ -24,6 +24,7 @@
         <button id="join">Unirse</button>
       </div>
       <p id="status"></p>
+      <button id="menu-settings" class="secondary">Configuración</button>
       <ul class="controls">
         <li><b>WASD</b> moverse · <b>Shift</b> correr</li>
         <li><b>F</b> linterna · <b>E</b> interactuar</li>
@@ -47,7 +48,16 @@
       <div id="prompt" hidden></div>
       <div id="crosshair"></div>
       <div id="title-card"></div>
-      <div id="lock" class="overlay" hidden><div>Haz clic para jugar</div></div>
+      <div id="fps" hidden></div>
+      <div id="pause" class="overlay" hidden>
+        <div class="panel pause-panel">
+          <h2>Pausa</h2>
+          <p class="dim">La partida sigue para los demás.</p>
+          <button id="resume">Continuar</button>
+          <button id="pause-settings" class="secondary">Configuración</button>
+          <button id="pause-leave" class="secondary">Salir de la sala</button>
+        </div>
+      </div>
       <div id="death" class="overlay" hidden>
         <div>
           <h2>Has muerto</h2>
@@ -60,6 +70,35 @@
           <h2>Has escapado de los Backrooms</h2>
           <p>Por ahora.</p>
           <button id="reenter">Volver a hacer noclip</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="settings" class="overlay" hidden>
+      <div class="panel settings-panel">
+        <h2>Configuración</h2>
+        <h3>Sonido</h3>
+        <label class="setting">Volumen general <input type="range" id="set-master" min="0" max="1" step="0.05" /><output id="set-master-value"></output></label>
+        <label class="setting">Ambiente (zumbido) <input type="range" id="set-ambient" min="0" max="1" step="0.05" /><output id="set-ambient-value"></output></label>
+        <label class="setting">Efectos <input type="range" id="set-sfx" min="0" max="1" step="0.05" /><output id="set-sfx-value"></output></label>
+        <h3>Controles</h3>
+        <label class="setting">Sensibilidad del ratón <input type="range" id="set-sensitivity" min="0.2" max="3" step="0.05" /><output id="set-sensitivity-value"></output></label>
+        <label class="check"><input type="checkbox" id="set-invert" /> Invertir eje vertical</label>
+        <h3>Gráficos</h3>
+        <label class="setting">Calidad
+          <select id="set-quality">
+            <option value="baja">Baja (más fluido)</option>
+            <option value="media">Media (recomendada)</option>
+            <option value="alta">Alta (con resplandor)</option>
+          </select>
+          <output></output>
+        </label>
+        <label class="setting">Campo de visión <input type="range" id="set-fov" min="60" max="100" step="1" /><output id="set-fov-value"></output></label>
+        <label class="setting">Brillo <input type="range" id="set-brightness" min="0.6" max="1.8" step="0.05" /><output id="set-brightness-value"></output></label>
+        <label class="check"><input type="checkbox" id="set-fps" /> Mostrar FPS</label>
+        <div class="row">
+          <button id="settings-reset" class="secondary">Restablecer</button>
+          <button id="settings-close">Listo</button>
         </div>
       </div>
     </div>

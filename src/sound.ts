@@ -1,10 +1,16 @@
+import { onSettings } from './settings';
+
 // Todo el sonido se sintetiza con Web Audio: no hay archivos de audio.
 
-const HUM_GAIN = [0.06, 0.035, 0.025];
+// zumbido de fondo de cada nivel (luego se multiplica por el volumen de ambiente)
+const HUM_GAIN = [0.03, 0.02, 0.014];
 
 export class Sound {
   private ctx = new AudioContext();
   private master = this.ctx.createGain();
+  private ambientBus = this.ctx.createGain(); // zumbido
+  private sfxBus = this.ctx.createGain(); // pasos, Smilers y efectos
+  private stopListening: () => void;
   private hum = this.ctx.createGain();
   private drone = this.ctx.createGain();
   private whine = this.ctx.createGain();
@@ -13,8 +19,15 @@ export class Sound {
   private humLevel = HUM_GAIN[0];
 
   constructor() {
-    this.master.gain.value = 0.8;
     this.master.connect(this.ctx.destination);
+    this.ambientBus.connect(this.master);
+    this.sfxBus.connect(this.master);
+    this.stopListening = onSettings((st) => {
+      const t = this.ctx.currentTime;
+      this.master.gain.setTargetAtTime(st.master, t, 0.05);
+      this.ambientBus.gain.setTargetAtTime(st.ambient, t, 0.05);
+      this.sfxBus.gain.setTargetAtTime(st.sfx, t, 0.05);
+    });
 
     const len = this.ctx.sampleRate * 2;
     this.noiseBuffer = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -28,7 +41,7 @@ export class Sound {
     this.osc('sawtooth', 120, humFilter, 0.5);
     this.osc('sine', 60, humFilter, 1);
     this.osc('square', 240, humFilter, 0.08);
-    humFilter.connect(this.hum).connect(this.master);
+    humFilter.connect(this.hum).connect(this.ambientBus);
 
     // presencia de un Smiler: grave y desafinado, con un pitido agudo
     const droneFilter = this.ctx.createBiquadFilter();
@@ -36,9 +49,9 @@ export class Sound {
     droneFilter.frequency.value = 220;
     this.osc('sawtooth', 43, droneFilter, 1);
     this.osc('sawtooth', 45.7, droneFilter, 1);
-    droneFilter.connect(this.drone).connect(this.master);
+    droneFilter.connect(this.drone).connect(this.sfxBus);
     this.osc('sine', 1760, this.whine, 1);
-    this.whine.connect(this.master);
+    this.whine.connect(this.sfxBus);
     this.drone.gain.value = 0;
     this.whine.gain.value = 0;
 
@@ -50,7 +63,7 @@ export class Sound {
     band.type = 'bandpass';
     band.frequency.value = 1400;
     band.Q.value = 4;
-    src.connect(band).connect(this.whisper).connect(this.master);
+    src.connect(band).connect(this.whisper).connect(this.sfxBus);
     src.start();
     this.whisper.gain.value = 0;
   }
@@ -90,7 +103,7 @@ export class Sound {
     const t = this.ctx.currentTime;
     g.gain.setValueAtTime(gain, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + duration);
-    src.connect(f).connect(g).connect(this.master);
+    src.connect(f).connect(g).connect(this.sfxBus);
     src.start(t, Math.random());
     src.stop(t + duration);
   }
@@ -110,7 +123,7 @@ export class Sound {
     o.frequency.exponentialRampToValueAtTime(freq * 1.5, t + duration);
     g.gain.setValueAtTime(0.15, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + duration);
-    o.connect(g).connect(this.master);
+    o.connect(g).connect(this.sfxBus);
     o.start(t);
     o.stop(t + duration);
   }
@@ -125,6 +138,7 @@ export class Sound {
   }
 
   close() {
+    this.stopListening();
     void this.ctx.close();
   }
 }

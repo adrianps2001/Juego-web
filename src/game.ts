@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import type { Hud } from './hud';
 import { Level3D } from './level3d';
-import { lightUniforms } from './lighting';
+import { MAX_TORCHES, lightUniforms } from './lighting';
 import { makeHumanoid, makeSmiler, makeViewTorch, type Humanoid, type SmilerModel } from './models';
 import { Post } from './post';
+import { getSettings, onSettings, type Settings } from './settings';
 import type { ClientMessage, EntityState, PlayerState, Pose } from './protocol';
 import type { Sound } from './sound';
 import { ESCAPED, LEVELS, collide, getMap, isDarkAt, type Exit, type Item } from './world';
@@ -14,7 +15,11 @@ const WALK = 3.2;
 const SPRINT = 5.6;
 const CATCH_DIST = 0.8;
 const RESPAWN_TIME = 4;
-const TORCH_POWER = 22;
+const TORCH_POWER = 1.6;
+const MOUSE_SPEED = 0.0022;
+
+// resolución de render según la calidad (fracción de los píxeles de la pantalla)
+const PIXEL_RATIO = { baja: 0.5, media: 0.75, alta: 1.5 };
 
 interface Remote {
   model: Humanoid;
@@ -28,11 +33,11 @@ interface Smiler {
 }
 
 export class Game {
-  private renderer = new THREE.WebGLRenderer({ antialias: true });
+  // sin antialias: el postprocesado dibuja en su propio búfer y no lo aprovecharía
+  private renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(75, 1, 0.03, 120);
-  private flashlight = new THREE.SpotLight(0xfff1d6, 0, 26, 0.48, 0.5, 1.2);
-  private ambient = new THREE.HemisphereLight(0xffffff, 0x222222, 0.04);
+  private torchPower = 0; // intensidad de la linterna propia (0 = apagada)
   private post: Post;
   private torch = makeViewTorch();
   private timer = new THREE.Timer();
@@ -58,6 +63,11 @@ export class Game {
   private stepDist = 0;
   private sendAccum = 0;
   private running = true;
+  private settings: Settings = getSettings();
+  private stopSettings: () => void;
+  private hudTimer = 0;
+  private fpsFrames = 0;
+  private fpsTime = 0;
 
   constructor(
     private container: HTMLElement,
@@ -71,17 +81,14 @@ export class Game {
     this.picked = new Set(picked);
     this.pose = { level: 0, x: spawn.x, z: spawn.z, ry: 0, light: false };
 
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     container.appendChild(this.renderer.domElement);
     this.post = new Post(this.renderer, this.scene, this.camera);
     this.camera.rotation.order = 'YXZ';
-    this.flashlight.position.set(0.2, -0.2, -0.3);
-    this.flashlight.target.position.set(0.05, -0.1, -3);
-    this.camera.add(this.flashlight, this.flashlight.target, this.torch.group);
-    this.scene.add(this.camera, this.ambient);
+    this.camera.add(this.torch.group);
+    this.scene.add(this.camera);
 
     this.bindInput();
-    this.resize();
+    this.stopSettings = onSettings((st) => this.applySettings(st));
     window.addEventListener('resize', this.resize);
     hud.show(true);
     this.enterLevel(0, false);
@@ -201,11 +208,11 @@ export class Game {
     document.addEventListener('mousemove', this.onMouseMove);
     document.addEventListener('pointerlockchange', this.onLockChange);
     this.renderer.domElement.addEventListener('click', this.lockPointer);
-    document.getElementById('lock')!.addEventListener('click', this.lockPointer);
     this.hud.showLock(true);
   }
 
-  private lockPointer = () => {
+  /** Captura el ratón para jugar (el botón «Continuar» del menú de pausa). */
+  lockPointer = () => {
     if (this.pose.level !== ESCAPED) void this.renderer.domElement.requestPointerLock();
   };
   private onLockChange = () => {
@@ -218,8 +225,9 @@ export class Game {
   private onKeyUp = (e: KeyboardEvent) => this.keys.delete(e.code);
   private onMouseMove = (e: MouseEvent) => {
     if (document.pointerLockElement !== this.renderer.domElement) return;
-    this.yaw -= e.movementX * 0.0022;
-    this.pitch = THREE.MathUtils.clamp(this.pitch - e.movementY * 0.0022, -1.4, 1.4);
+    const speed = MOUSE_SPEED * this.settings.sensitivity;
+    this.yaw -= e.movementX * speed;
+    this.pitch = THREE.MathUtils.clamp(this.pitch - e.movementY * speed * (this.settings.invertY ? -1 : 1), -1.4, 1.4);
   };
 
   private resize = () => {
@@ -231,9 +239,20 @@ export class Game {
     this.camera.updateProjectionMatrix();
   };
 
+  private applySettings(st: Settings) {
+    this.settings = st;
+    const ratio = Math.min(window.devicePixelRatio, PIXEL_RATIO[st.quality]);
+    this.renderer.setPixelRatio(ratio);
+    this.post.setPixelRatio(ratio);
+    this.resize();
+    this.post.setBloom(st.quality === 'alta');
+    this.post.setBrightness(st.brightness);
+    this.hud.showFps(st.showFps);
+  }
+
   private setLight(on: boolean) {
     this.pose.light = on;
-    this.flashlight.intensity = on ? TORCH_POWER : 0;
+    this.torchPower = on ? TORCH_POWER : 0;
     this.torch.setOn(on);
   }
 
@@ -253,9 +272,47 @@ export class Game {
       this.updateOthers(dt);
     }
     this.pressed.clear();
+    this.updateTorches();
+    this.countFps();
     const insanity = this.level ? Math.max(0, 1 - this.sanity / 45) : 0;
     this.post.render(this.time, insanity, this.damage);
   };
+
+  private torchDir = new THREE.Vector3();
+
+  /** Pasa al shader las linternas encendidas: la propia y las de los compañeros. */
+  private updateTorches() {
+    const { uTorchPos, uTorchDir, uTorchPower } = lightUniforms;
+    let n = 0;
+    if (this.level && this.dead <= 0 && this.torchPower > 0) {
+      this.camera.getWorldDirection(this.torchDir);
+      uTorchPos.value[0].copy(this.camera.position);
+      uTorchDir.value[0].copy(this.torchDir);
+      uTorchPower.value[0] = this.torchPower;
+      n = 1;
+    }
+    for (const r of this.remotes.values()) {
+      if (n >= MAX_TORCHES) break;
+      if (!r.target.light || r.target.level !== this.pose.level) continue;
+      const g = r.model.group.position;
+      const ry = r.model.group.rotation.y;
+      uTorchPos.value[n].set(g.x, 1.35, g.z);
+      uTorchDir.value[n].set(-Math.sin(ry), -0.15, -Math.cos(ry)).normalize();
+      uTorchPower.value[n] = TORCH_POWER;
+      n++;
+    }
+    for (let i = n; i < MAX_TORCHES; i++) uTorchPower.value[i] = 0;
+  }
+
+  private countFps() {
+    this.fpsFrames++;
+    const now = performance.now();
+    if (now - this.fpsTime >= 500) {
+      this.hud.setFps(Math.round((this.fpsFrames * 1000) / (now - this.fpsTime)));
+      this.fpsFrames = 0;
+      this.fpsTime = now;
+    }
+  }
 
   private updateFlicker(dt: number) {
     let f = 0.9 + 0.1 * Math.sin(this.time * 41) * Math.sin(this.time * 13.7);
@@ -334,7 +391,7 @@ export class Game {
       this.battery = Math.max(0, this.battery - 1.1 * dt);
       if (this.battery === 0) this.setLight(false);
       // con poca pila la linterna falla
-      else if (this.battery < 15) this.flashlight.intensity = Math.random() < 0.1 ? 4 : TORCH_POWER;
+      else if (this.battery < 15) this.torchPower = Math.random() < 0.1 ? 0.2 : TORCH_POWER;
     }
 
     // Smilers cercanos
@@ -369,15 +426,23 @@ export class Game {
     const bobY = moving ? Math.sin(this.bob) * 0.04 : 0;
     this.camera.position.set(this.pose.x, EYE + bobY, this.pose.z);
     this.camera.rotation.set(this.pitch, this.yaw, Math.sin(this.time * 0.9) * 0.06 * insanity);
-    this.camera.fov = 75 + Math.sin(this.time * 1.3) * 6 * insanity;
-    this.camera.updateProjectionMatrix();
+    const fov = this.settings.fov + Math.sin(this.time * 1.3) * 6 * insanity;
+    if (Math.abs(fov - this.camera.fov) > 0.01) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
     this.torch.group.position.set(
       0.17 + (moving ? Math.cos(this.bob * 0.5) * 0.012 : 0),
       -0.17 - bobY * 0.4 + Math.sin(this.time * 1.5) * 0.003,
       -0.38,
     );
 
-    this.hud.bars(this.sanity, this.stamina, this.battery);
+    // la interfaz no necesita actualizarse en cada fotograma
+    this.hudTimer -= dt;
+    if (this.hudTimer <= 0) {
+      this.hudTimer = 0.1;
+      this.hud.bars(this.sanity, this.stamina, this.battery);
+    }
     this.sound.update(lightUniforms.uFlicker.value, nearest < 25 ? 1 - nearest / 25 : 0, insanity, dark);
 
     this.sendAccum += dt;
@@ -458,7 +523,7 @@ export class Game {
     window.removeEventListener('keyup', this.onKeyUp);
     document.removeEventListener('mousemove', this.onMouseMove);
     document.removeEventListener('pointerlockchange', this.onLockChange);
-    document.getElementById('lock')!.removeEventListener('click', this.lockPointer);
+    this.stopSettings();
     if (document.pointerLockElement) document.exitPointerLock();
     this.renderer.domElement.remove();
     this.renderer.dispose();
