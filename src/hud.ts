@@ -39,8 +39,11 @@ export class Hud {
 
   setInventory(slots: (Slot | null)[], selected: number) {
     const bar = $('hotbar');
+    // solo los huecos con algo; sin objetos, no se ve la barra
+    const filled = slots.filter((s): s is Slot => !!s);
+    $('inventory').hidden = filled.length === 0;
     bar.replaceChildren(
-      ...slots.map((s, i) => {
+      ...filled.map((s, i) => {
         const el = document.createElement('div');
         el.className = 'slot' + (i === selected ? ' selected' : '');
         const key = document.createElement('span');

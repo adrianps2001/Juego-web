@@ -1,10 +1,10 @@
 import * as THREE from 'three';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 
-/** Grano, viñeta, aberración cromática y distorsión según la cordura. */
+/**
+ * Grano, viñeta, aberración cromática y distorsión según la cordura. También
+ * pasa los colores a sRGB: así todo el posprocesado es una sola pasada.
+ */
 const FilmShader = {
   uniforms: {
     tDiffuse: { value: null },
@@ -24,6 +24,10 @@ const FilmShader = {
     uniform float uBrightness;
     varying vec2 vUv;
     float rand(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    vec3 toSRGB(vec3 c) {
+      c = max(c, vec3(0.0));
+      return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+    }
     void main() {
       float ins = uInsanity;
       vec2 uv = vUv + vec2(sin(vUv.y * 18.0 + uTime * 2.1), cos(vUv.x * 15.0 + uTime * 1.7)) * 0.004 * ins;
@@ -33,7 +37,7 @@ const FilmShader = {
         texture2D(tDiffuse, uv + dir * ca).r,
         texture2D(tDiffuse, uv).g,
         texture2D(tDiffuse, uv - dir * ca).b);
-      col *= uBrightness;
+      col = toSRGB(col) * uBrightness;
       float gray = dot(col, vec3(0.299, 0.587, 0.114));
       col = mix(col, vec3(gray), ins * 0.65);
       float vig = smoothstep(0.95, 0.3, length(dir) * (1.0 + ins * 0.7));
@@ -48,38 +52,52 @@ const FilmShader = {
 };
 
 export class Post {
-  readonly composer: EffectComposer;
-  private film: ShaderPass;
+  private target: THREE.WebGLRenderTarget;
+  private film = new THREE.ShaderMaterial({ ...FilmShader, uniforms: THREE.UniformsUtils.clone(FilmShader.uniforms), depthTest: false, depthWrite: false });
+  private quad = new FullScreenQuad(this.film);
+  private ratio = 1;
+  private w = 1;
+  private h = 1;
 
-  constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) {
-    this.composer = new EffectComposer(renderer);
-    this.composer.addPass(new RenderPass(scene, camera));
-    this.composer.addPass(new OutputPass());
-    this.film = new ShaderPass(FilmShader);
-    this.composer.addPass(this.film);
+  constructor(
+    private renderer: THREE.WebGLRenderer,
+    private scene: THREE.Scene,
+    private camera: THREE.Camera,
+  ) {
+    // en coma flotante de 16 bits: sin bandas en las zonas oscuras
+    this.target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
   }
 
   setBrightness(v: number) {
     this.film.uniforms.uBrightness.value = v;
   }
 
-  /** EffectComposer guarda su propia resolución: hay que avisarle aparte. */
   setPixelRatio(ratio: number) {
-    this.composer.setPixelRatio(ratio);
+    this.ratio = ratio;
+    this.setSize(this.w, this.h);
   }
 
   setSize(w: number, h: number) {
-    this.composer.setSize(w, h);
+    this.w = w;
+    this.h = h;
+    this.target.setSize(Math.max(1, Math.floor(w * this.ratio)), Math.max(1, Math.floor(h * this.ratio)));
   }
 
   render(time: number, insanity: number, damage: number) {
-    this.film.uniforms.uTime.value = time;
-    this.film.uniforms.uInsanity.value = insanity;
-    this.film.uniforms.uDamage.value = damage;
-    this.composer.render();
+    const u = this.film.uniforms;
+    u.uTime.value = time;
+    u.uInsanity.value = insanity;
+    u.uDamage.value = damage;
+    u.tDiffuse.value = this.target.texture;
+    this.renderer.setRenderTarget(this.target);
+    this.renderer.render(this.scene, this.camera);
+    this.renderer.setRenderTarget(null);
+    this.quad.render(this.renderer);
   }
 
   dispose() {
-    this.composer.dispose();
+    this.target.dispose();
+    this.film.dispose();
+    this.quad.dispose();
   }
 }

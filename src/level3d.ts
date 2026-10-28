@@ -99,7 +99,7 @@ export class Level3D {
     const floorMats = tex.floors.map((t, k) => litMaterial({ map: t }, 0, { snap: tex.floorSnap[k] ?? 0, cell: tex.floorCell[k] }));
     // los techos no se desplazan (las placas tienen que cuadrar), pero cada placa lleva su tono
     const ceilMats = tex.ceils.map((t, k) => litMaterial({ map: t }, 0, { cell: tex.ceilCell[k] }));
-    const pitMat = litMaterial({ color: 0x3a3428 }, 0.3, true);
+    const pitMat = litMaterial({ color: 0x75684e }, 0.3, true);
     const sink = new QuadSink();
     // fondo negro de los agujeros
     const voidMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
@@ -387,8 +387,9 @@ export class Level3D {
             continue;
           }
           const otherPit = (m.flags[j] & F_PIT) !== 0;
-          // escalón o borde: la vecina tiene el suelo más alto
-          if (!otherPit) {
+          // escalón o borde: la vecina tiene el suelo más alto (en un agujero
+          // ya lo cubre la pared del agujero: dibujarla dos veces parpadea)
+          if (!otherPit && !pit) {
             const o0 = fy(j, e0[0], e0[1]);
             const o1 = fy(j, e1[0], e1[1]);
             if (o0 > myFloor0 + 0.005 || o1 > myFloor1 + 0.005) {
@@ -723,7 +724,7 @@ export class Level3D {
 
   // ---------------------------------------------------------------- por fotograma
 
-  update(time: number, flicker: number, blackout: number, dt = 0.016, torch: THREE.Vector3 | null = null) {
+  update(time: number, flicker: number, blackout: number, dt = 0.016, torch: THREE.Vector3 | null = null, player: { x: number; z: number } | null = null) {
     const on = 1 - blackout;
     for (const g of this.glows) (g.sprite.material as THREE.SpriteMaterial).opacity = g.base * (0.85 + 0.15 * Math.sin(time * 3 + g.seed));
     this.steadyPanels.color.copy(this.glow).multiplyScalar(Math.max(0.03, on));
@@ -748,7 +749,7 @@ export class Level3D {
       }
     }
     this.updateCritters(time, dt, torch);
-    this.updateNpcs(time, dt);
+    this.updateNpcs(time, dt, player);
     for (const v of this.steam) {
       const t = (time + v.phase) % v.period;
       const active = t < 2.5;
@@ -819,7 +820,7 @@ export class Level3D {
     }
   }
 
-  private updateNpcs(time: number, dt: number) {
+  private updateNpcs(time: number, dt: number, player: { x: number; z: number } | null) {
     for (const n of this.npcs) {
       const path = n.def.path;
       let moving = false;
@@ -841,6 +842,11 @@ export class Level3D {
             moving = true;
           }
         }
+      }
+      // la M.E.G. no te quita ojo mientras estás cerca
+      if (n.def.kind === 'meg' && player && Math.hypot(player.x - n.x, player.z - n.z) < 16) {
+        const want = Math.atan2(n.x - player.x, n.z - player.z); // el modelo mira hacia -z
+        n.ry += Math.atan2(Math.sin(want - n.ry), Math.cos(want - n.ry)) * Math.min(1, dt * 5);
       }
       const y = floorAt(this.map, n.x, n.z);
       if (Number.isFinite(y)) n.y = y;

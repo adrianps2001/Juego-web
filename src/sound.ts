@@ -264,69 +264,132 @@ export class Sound {
   }
 
   /**
-   * Screamer: chillido agudo, disonante y distorsionado. Pasa por un limitador
-   * para que no suene más fuerte que el resto, solo más desagradable.
+   * Screamer: un chillido casi humano que se rompe. Dos voces desafinadas con
+   * formantes de garganta y un temblor irregular, distorsionadas a saco,
+   * con una capa áspera (modulación en anillo), ruido que se desgarra y un
+   * golpe grave. Un limitador lo deja al nivel de los efectos fuertes.
    */
   screamer() {
-    const t = this.ctx.currentTime;
-    const dur = 0.85;
-    const limiter = this.ctx.createDynamicsCompressor();
-    limiter.threshold.value = -14;
+    const c = this.ctx;
+    const t = c.currentTime;
+    const dur = 1.35;
+    const limiter = c.createDynamicsCompressor();
+    limiter.threshold.value = -10;
     limiter.knee.value = 0;
     limiter.ratio.value = 20;
-    limiter.attack.value = 0.002;
-    limiter.release.value = 0.1;
-    const out = this.ctx.createGain();
-    out.gain.setValueAtTime(0.0001, t);
-    out.gain.exponentialRampToValueAtTime(0.9, t + 0.01);
-    out.gain.setValueAtTime(0.9, t + dur * 0.6);
-    out.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    const shaper = this.ctx.createWaveShaper();
-    const curve = new Float32Array(1024);
+    limiter.attack.value = 0.001;
+    limiter.release.value = 0.08;
+    const level = c.createGain();
+    level.gain.value = 0.5;
+    limiter.connect(level).connect(this.sfxBus);
+    // envolvente: entra de golpe, aguanta y se quiebra al final
+    const env = c.createGain();
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.exponentialRampToValueAtTime(1, t + 0.006);
+    env.gain.setValueAtTime(1, t + 0.85);
+    env.gain.linearRampToValueAtTime(0.6, t + 1.0);
+    env.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    env.connect(limiter);
+    // distorsión dura
+    const shaper = c.createWaveShaper();
+    const curve = new Float32Array(2048);
     for (let i = 0; i < curve.length; i++) {
       const x = (i / (curve.length - 1)) * 2 - 1;
-      curve[i] = Math.tanh(x * 6);
+      curve[i] = Math.max(-1, Math.min(1, x * 9)) * 0.7 + Math.tanh(x * 3) * 0.3;
     }
     shaper.curve = curve;
-    const hp = this.ctx.createBiquadFilter();
+    shaper.oversample = '2x';
+    const hp = c.createBiquadFilter();
     hp.type = 'highpass';
-    hp.frequency.value = 500;
-    // tras el limitador, al nivel de los demás efectos fuertes (el grito al morir)
-    const level = this.ctx.createGain();
-    level.gain.value = 0.26;
-    shaper.connect(hp).connect(out).connect(limiter).connect(level).connect(this.sfxBus);
-    const pre = this.ctx.createGain();
-    pre.gain.value = 0.25;
-    pre.connect(shaper);
-    // cuatro tonos agudos que chocan entre sí, con un temblor rápido
-    const vib = this.ctx.createOscillator();
-    vib.frequency.value = 37;
-    const vibGain = this.ctx.createGain();
-    vibGain.gain.value = 90;
+    hp.frequency.value = 350;
+    shaper.connect(hp).connect(env);
+    // capa áspera: la voz multiplicada por una onda grave (suena a garganta rota)
+    const ring = c.createGain();
+    ring.gain.value = 0;
+    const ringOsc = c.createOscillator();
+    ringOsc.type = 'square';
+    ringOsc.frequency.value = 73;
+    ringOsc.connect(ring.gain);
+    ring.connect(shaper);
+    const voiceBus = c.createGain();
+    voiceBus.gain.value = 0.55;
+    voiceBus.connect(shaper);
+    voiceBus.connect(ring);
+    // formantes de una "a" chillada
+    const formants: BiquadFilterNode[] = [];
+    for (const [f, q, g] of [[950, 5, 1], [1450, 6, 0.8], [2900, 8, 0.6], [4200, 9, 0.35]]) {
+      const bp = c.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = f;
+      bp.Q.value = q;
+      const gg = c.createGain();
+      gg.gain.value = g * 2.2;
+      bp.connect(gg).connect(voiceBus);
+      formants.push(bp);
+    }
+    // temblor irregular de la voz
+    const jitter = c.createBufferSource();
+    jitter.buffer = this.noiseBuffer;
+    jitter.playbackRate.value = 0.004;
+    const jitterGain = c.createGain();
+    jitterGain.gain.value = 140;
+    jitter.connect(jitterGain);
+    const vib = c.createOscillator();
+    vib.frequency.setValueAtTime(7, t);
+    vib.frequency.linearRampToValueAtTime(13, t + dur);
+    const vibGain = c.createGain();
+    vibGain.gain.value = 55;
     vib.connect(vibGain);
-    for (const [f, type] of [[1180, 'sawtooth'], [1253, 'square'], [1770, 'sawtooth'], [2490, 'square']] as [number, OscillatorType][]) {
-      const o = this.ctx.createOscillator();
+    // dos voces que no casan: el choque es lo que da grima
+    for (const [base, peak, end, type] of [[620, 1380, 980, 'sawtooth'], [700, 1890, 1250, 'sawtooth'], [310, 690, 420, 'square']] as [number, number, number, OscillatorType][]) {
+      const o = c.createOscillator();
       o.type = type;
-      o.frequency.setValueAtTime(f * (0.97 + Math.random() * 0.06), t);
-      o.frequency.exponentialRampToValueAtTime(f * 0.72, t + dur);
+      o.frequency.setValueAtTime(base, t);
+      o.frequency.exponentialRampToValueAtTime(peak, t + 0.12);
+      o.frequency.setValueAtTime(peak, t + 0.7);
+      o.frequency.exponentialRampToValueAtTime(end, t + dur);
       vibGain.connect(o.frequency);
-      o.connect(pre);
+      jitterGain.connect(o.frequency);
+      const og = c.createGain();
+      og.gain.value = type === 'square' ? 0.35 : 0.6;
+      o.connect(og);
+      for (const f of formants) og.connect(f);
       o.start(t);
       o.stop(t + dur);
     }
-    vib.start(t);
-    vib.stop(t + dur);
-    // ruido rasposo y un golpe grave al principio
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.noiseBuffer;
-    const band = this.ctx.createBiquadFilter();
-    band.type = 'bandpass';
-    band.frequency.value = 3200;
-    band.Q.value = 1.5;
-    src.connect(band).connect(pre);
-    src.start(t, Math.random());
-    src.stop(t + dur);
-    this.tone(90, 35, 0.35, 'square', 0.25);
+    // ruido que se desgarra, con un trémolo rápido
+    const tear = c.createBufferSource();
+    tear.buffer = this.noiseBuffer;
+    const tearF = c.createBiquadFilter();
+    tearF.type = 'bandpass';
+    tearF.frequency.setValueAtTime(2500, t);
+    tearF.frequency.exponentialRampToValueAtTime(5200, t + 0.5);
+    tearF.Q.value = 0.9;
+    const trem = c.createGain();
+    trem.gain.value = 0.35;
+    const tremOsc = c.createOscillator();
+    tremOsc.frequency.value = 31;
+    const tremDepth = c.createGain();
+    tremDepth.gain.value = 0.3;
+    tremOsc.connect(tremDepth).connect(trem.gain);
+    tear.connect(tearF).connect(trem).connect(shaper);
+    // golpe y rugido grave al principio
+    const thump = c.createOscillator();
+    thump.type = 'sine';
+    thump.frequency.setValueAtTime(95, t);
+    thump.frequency.exponentialRampToValueAtTime(32, t + 0.45);
+    const thumpG = c.createGain();
+    thumpG.gain.setValueAtTime(0.9, t);
+    thumpG.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+    thump.connect(thumpG).connect(limiter);
+    for (const n of [ringOsc, vib, tremOsc, thump]) {
+      n.start(t);
+      n.stop(t + dur);
+    }
+    jitter.start(t, Math.random());
+    jitter.stop(t + dur);
+    tear.start(t, Math.random());
+    tear.stop(t + dur);
   }
 
   /** Gorgoteo húmedo de un Clump. */

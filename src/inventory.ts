@@ -39,13 +39,23 @@ export class Inventory {
     return true;
   }
 
-  /** Gasta uno del hueco seleccionado y devuelve qué era. */
+  /** Gasta uno del hueco seleccionado y devuelve qué era. Los huecos vacíos no dejan agujeros. */
   takeSelected(): ItemKind | null {
     const s = this.slots[this.selected];
     if (!s) return null;
     s.count--;
-    if (s.count <= 0) this.slots[this.selected] = null;
+    if (s.count <= 0) {
+      this.slots.splice(this.selected, 1);
+      this.slots.push(null);
+      this.selected = Math.max(0, Math.min(this.selected, this.used - 1));
+    }
     return s.kind;
+  }
+
+  /** Huecos ocupados (siempre son los primeros). */
+  get used(): number {
+    const i = this.slots.indexOf(null);
+    return i < 0 ? this.slots.length : i;
   }
 
   current(): Slot | null {

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Hud } from './hud';
 import { ITEM_INFO, Inventory } from './inventory';
 import { Level3D } from './level3d';
+import { loadThemeTextures, themeReady } from './textures';
 import { ESCAPED, LEVELS, getMap } from './levels';
 import { MAX_TORCHES, lightUniforms } from './lighting';
 import { Anim, makeBattery, makeBottle, makeCan, makeEnemy, makeEnergyBar, makeFlareStick, makeHumanoid, makeLitFlare, makeMedkit, makeViewTorch, type EnemyModel, type Humanoid } from './models';
@@ -23,8 +24,10 @@ const JUMP = 4.6;
 const RESPAWN_TIME = 4;
 const TORCH_POWER = 1.6;
 const MOUSE_SPEED = 0.0022;
-// se dibuja a media resolución: se ve algo más borroso pero va fluido
+// se dibuja a media resolución: se ve algo más borroso pero va fluido. Si el
+// equipo no llega a ~40 FPS, la resolución baja sola (hasta MIN_PIXEL_RATIO)
 const PIXEL_RATIO = 0.5;
+const MIN_PIXEL_RATIO = 0.3;
 // movimientos de ratón más grandes que esto en un solo evento son fallos del navegador
 const MAX_MOUSE_JUMP = 250;
 // por debajo de esta altura se ha caído por un agujero
@@ -39,6 +42,9 @@ interface Remote {
 interface Enemy {
   model: EnemyModel;
   target: EntityState;
+  vx: number; // velocidad estimada entre actualizaciones (para anticipar)
+  vz: number;
+  at: number; // cuándo llegó la última actualización
 }
 
 type StateMsg = Extract<HostMessage, { t: 'state' }>;
@@ -135,6 +141,11 @@ export class Game {
   private fpsTime = 0;
   private lockedAt = 0;
   private hurtSound = 0;
+  private pixelRatio = PIXEL_RATIO;
+  private levelToken = 0;
+  private loopWraps = 0;
+  private frameAvg = 1 / 60;
+  private resClock = 3;
 
   constructor(
     private container: HTMLElement,
@@ -163,6 +174,8 @@ export class Game {
     window.addEventListener('resize', this.resize);
     hud.show(true);
     this.enterLevel(0, false);
+    // precarga las texturas de los demás niveles en segundo plano
+    for (const L of LEVELS) void loadThemeTextures(L.theme);
     this.refreshInventory();
     this.renderer.setAnimationLoop(this.tick);
   }
@@ -207,12 +220,22 @@ export class Game {
     for (const e of entities) {
       let en = this.enemies.get(e.id);
       if (!en) {
-        en = { model: makeEnemy(e.kind, e.id), target: e };
+        en = { model: makeEnemy(e.kind, e.id), target: e, vx: 0, vz: 0, at: performance.now() };
         en.model.group.position.set(e.x, this.floorY(e.x, e.z), e.z);
         en.model.group.rotation.y = e.ry;
         this.enemies.set(e.id, en);
         this.scene.add(en.model.group);
       }
+      const now = performance.now();
+      const gap = Math.max(0.02, (now - en.at) / 1000);
+      const jump = Math.hypot(e.x - en.target.x, e.z - en.target.z);
+      // velocidad suavizada; un salto grande (aparece, sale de una pared) no cuenta
+      const vx = jump < 2 ? (e.x - en.target.x) / gap : 0;
+      const vz = jump < 2 ? (e.z - en.target.z) / gap : 0;
+      en.vx += (vx - en.vx) * 0.5;
+      en.vz += (vz - en.vz) * 0.5;
+      en.at = now;
+      if (jump >= 2) en.model.group.position.set(e.x, this.floorY(e.x, e.z), e.z);
       en.target = e;
       en.model.group.visible = e.level === this.pose.level;
     }
@@ -278,12 +301,8 @@ export class Game {
     return Math.sin(a - (this.yaw + Math.PI)) * -1;
   }
 
-  /** En el Nivel 0 no se ve a nadie (Aislamiento), salvo en la sala de encuentro. */
   private canSee(p: PlayerState): boolean {
-    if (p.level !== this.pose.level || p.dead) return false;
-    if (!this.level?.map.def.isolation) return true;
-    const map = this.level.map;
-    return inZone(map, 'meeting', p.x, p.z) && inZone(map, 'meeting', this.pose.x, this.pose.z);
+    return p.level === this.pose.level && !p.dead;
   }
 
   private applyShifts(list: string[]) {
@@ -344,6 +363,7 @@ export class Game {
     for (const e of this.enemies.values()) e.model.group.visible = e.target.level === level;
 
     if (level === ESCAPED) {
+      this.levelToken++;
       this.scene.fog = null;
       this.scene.background = new THREE.Color(0x000000);
       this.setLight(false);
@@ -367,15 +387,21 @@ export class Game {
     // más allá de la niebla no se ve nada: no hace falta dibujarlo
     this.camera.far = L.fog.far + 4;
     this.camera.updateProjectionMatrix();
-    this.level = new Level3D(map, this.picked);
-    this.scene.add(this.level.group);
-    this.applyShifts([...this.closedShifts]);
-    for (const fl of this.flares.values()) fl.model.group.visible = fl.data.level === level;
     this.zoneNow = '';
     this.noteKey = null;
     this.hud.showNote(null);
-    if (L.isolation) setTimeout(() => this.hud.notice('Aquí no puedes ver a los demás aunque estén a tu lado. Buscad la sala pequeña donde sí os veréis.'), 5500);
     this.sendPose();
+    // las texturas se generan en otro hilo (normalmente ya están precargadas)
+    const token = ++this.levelToken;
+    const build = () => {
+      if (token !== this.levelToken || !this.running) return;
+      this.level = new Level3D(map, this.picked);
+      this.scene.add(this.level.group);
+      this.applyShifts([...this.closedShifts]);
+      for (const fl of this.flares.values()) fl.model.group.visible = fl.data.level === level;
+    };
+    if (themeReady(L.theme)) build();
+    else void loadThemeTextures(L.theme).then(build);
   }
 
   /** Tras escapar: volver a empezar desde el Nivel 0. */
@@ -423,7 +449,7 @@ export class Game {
     // Ctrl+W cerraría la pestaña: con Ctrl solo se agacha
     if (e.code === 'ControlLeft' && this.locked()) e.preventDefault();
     const n = Number(e.key);
-    if (n >= 1 && n <= this.inventory.slots.length) this.select(n - 1);
+    if (n >= 1 && n <= this.inventory.used) this.select(n - 1);
   };
   private onKeyUp = (e: KeyboardEvent) => this.keys.delete(e.code);
   private onMouseDown = (e: MouseEvent) => {
@@ -431,7 +457,8 @@ export class Game {
   };
   private onWheel = (e: WheelEvent) => {
     if (!this.locked()) return;
-    const n = this.inventory.slots.length;
+    const n = this.inventory.used;
+    if (n === 0) return;
     this.select((this.inventory.selected + (e.deltaY > 0 ? 1 : -1) + n) % n);
   };
   private onMouseMove = (e: MouseEvent) => {
@@ -548,7 +575,9 @@ export class Game {
   private tick = () => {
     if (!this.running) return;
     this.timer.update();
-    const dt = Math.min(this.timer.getDelta(), 0.05);
+    const raw = this.timer.getDelta();
+    const dt = Math.min(raw, 0.05);
+    this.adaptResolution(raw);
     this.time += dt;
     this.updateFlicker(dt);
     this.damage = Math.max(0, this.damage - dt * 0.8);
@@ -566,7 +595,7 @@ export class Game {
       const ct = this.circuitLevels.includes(this.pose.level) ? 0 : 1;
       if (ct !== Math.round(c.value) && Math.abs(ct - c.value) > 0.5 && ct === 0) this.sound.clunk();
       c.value += (ct - c.value) * Math.min(1, dt * (ct ? 1.5 : 8));
-      this.level.update(this.time, lightUniforms.uFlicker.value * c.value, b.value, dt, this.pose.light && this.dead <= 0 ? this.camera.position : null);
+      this.level.update(this.time, lightUniforms.uFlicker.value * c.value, b.value, dt, this.pose.light && this.dead <= 0 ? this.camera.position : null, this.pose);
       for (const fl of this.flares.values()) fl.model.update(this.time, fl.data.left);
     }
     this.pressed.clear();
@@ -575,6 +604,23 @@ export class Game {
     const insanity = this.level ? Math.max(0, 1 - this.sanity / 45) : 0;
     this.post.render(this.time, insanity, this.damage);
   };
+
+  /** Resolución dinámica: baja si los fotogramas tardan, sube si sobra tiempo. */
+  private adaptResolution(raw: number) {
+    if (raw > 0.25) return; // pestaña en segundo plano
+    this.frameAvg += (raw - this.frameAvg) * 0.05;
+    this.resClock -= raw;
+    if (this.resClock > 0) return;
+    this.resClock = 2;
+    let r = this.pixelRatio;
+    if (this.frameAvg > 1 / 40 && r > MIN_PIXEL_RATIO + 0.001) r -= 0.05;
+    else if (this.frameAvg < 1 / 56 && r < PIXEL_RATIO - 0.001) r += 0.05;
+    if (r === this.pixelRatio) return;
+    this.pixelRatio = r;
+    this.renderer.setPixelRatio(r);
+    this.post.setPixelRatio(r);
+    this.resize();
+  }
 
   private torchDir = new THREE.Vector3();
 
@@ -609,6 +655,7 @@ export class Game {
       n++;
     }
     for (let i = n; i < MAX_TORCHES; i++) uTorchPower.value[i] = 0;
+    lightUniforms.uTorchCount.value = n;
   }
 
   private countFps() {
@@ -912,7 +959,7 @@ export class Game {
         const a = Math.atan2(l.landmark.x - this.pose.x, l.landmark.z - this.pose.z);
         const look = Math.atan2(-Math.sin(this.yaw), -Math.cos(this.yaw));
         const diff = Math.abs(Math.atan2(Math.sin(a - look), Math.cos(a - look)));
-        if (diff < 0.35 && Math.abs(this.pitch) < 0.5) continue;
+        if (diff < 0.6 && Math.abs(this.pitch) < 0.5) continue;
       }
       const forward = l.oneWay ?? 0;
       if (this.prevX <= l.x1 && this.pose.x > l.x1 && forward >= 0) {
@@ -928,6 +975,8 @@ export class Game {
   private loopTeleport(dx: number) {
     this.camera.position.x += dx;
     this.prevX += dx;
+    this.loopWraps++;
+    if (this.loopWraps === 3 && this.zoneNow === 'red') this.hud.notice('El pasillo no se acaba. Busca la pared que parpadea.');
     if (Math.random() < 0.3) this.sound.humSpike();
   }
 
@@ -942,7 +991,13 @@ export class Game {
       fog.far = 9;
       (this.scene.background as THREE.Color).set(0x000000);
       this.hud.notice('No hay nada. Absolutamente nada.');
-    } else if (prev === 'void') {
+    } else if (zone === 'red') {
+      // niebla roja espesa: no se ven los extremos del pasillo que se repite
+      fog.color.set(0x220605);
+      fog.near = 1.5;
+      fog.far = 10;
+      (this.scene.background as THREE.Color).set(0x220605);
+    } else if (prev === 'void' || prev === 'red') {
       fog.color.set(L.fog.color);
       fog.near = L.fog.near;
       fog.far = L.fog.far;
@@ -950,7 +1005,6 @@ export class Game {
     }
     if (zone === 'red' && prev !== 'red') this.hud.notice('El papel de las paredes se despega. Debajo, todo es rojo.');
     if (zone === 'safe') this.hud.notice('Zona segura: aquí no entran las entidades.');
-    if (zone === 'meeting') this.hud.notice('Por fin: aquí sí podéis veros.');
   }
 
   /** Personajes de la M.E.G. y trabajadores sombra. Devuelve true si mueres. */
@@ -1125,14 +1179,20 @@ export class Game {
       g.rotation.y += diff * k;
       r.model.animate(dt, r.speed);
     }
+    const now = performance.now();
     for (const e of this.enemies.values()) {
       const g = e.model.group;
-      g.position.x += (e.target.x - g.position.x) * k;
-      g.position.z += (e.target.z - g.position.z) * k;
+      // posición anticipada: la última conocida más lo que habrá avanzado desde entonces
+      const ahead = Math.min(0.12, (now - e.at) / 1000);
+      const tx = e.target.x + e.vx * ahead;
+      const tz = e.target.z + e.vz * ahead;
+      const ke = 1 - Math.exp(-14 * dt);
+      g.position.x += (tx - g.position.x) * ke;
+      g.position.z += (tz - g.position.z) * ke;
       g.position.y = this.floorY(g.position.x, g.position.z);
       let diff = e.target.ry - g.rotation.y;
       diff = Math.atan2(Math.sin(diff), Math.cos(diff));
-      g.rotation.y += diff * k;
+      g.rotation.y += diff * (1 - Math.exp(-8 * dt));
       e.model.animate(dt, this.time, e.target.anim);
     }
   }

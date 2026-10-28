@@ -23,7 +23,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .top-left { position: fixed; top: 12px; left: 12px; padding: 12px; font-size: 0.85rem; max-width: calc(100% - 24px); }
 .top-left button { padding: 3px 8px; font-size: 0.75rem; }
 #level { font-weight: 700; color: #e4cf73; margin-bottom: 4px; }
-#players { list-style: none; padding: 0; margin: 8px 0; }
+#players { list-style: none; padding: 0; margin: 8px 0 0; }
 #players li { display: flex; align-items: center; gap: 6px; }
 #players .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
 

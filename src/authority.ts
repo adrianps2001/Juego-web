@@ -68,7 +68,24 @@ interface Entity extends EntityState {
   stare: number;
   close: number; // tiempo que llevas demasiado cerca (Skin-Stealer)
   sayCd: number;
+  vx: number; // velocidad actual (se acelera y frena con suavidad)
+  vz: number;
 }
+
+/** Radio de las criaturas al chocar con las paredes. */
+const BODY = 0.28;
+const DIRS8 = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+  [1, 1],
+  [1, -1],
+  [-1, 1],
+  [-1, -1],
+] as const;
+/** Criaturas a la vez por nivel, como mucho. */
+const MAX_ACTIVE = 3;
 
 interface Player extends PlayerState {
   speed: number;
@@ -332,6 +349,15 @@ export class Authority {
       const spec = SPEC[lair.kind];
       const minDist = lair.kind === 'faceling' || lair.kind === 'duller' || lair.kind === 'skinstealer' ? 0 : lair.kind === 'figure' ? 12 : 7;
       if (near > spec.wake || near < minDist) continue;
+      // no todas las guaridas tienen a alguien dentro (la mitad de las veces, nada)
+      if (Math.random() < 0.5) {
+        lair.cooldown = 45 + Math.random() * 45;
+        continue;
+      }
+      if (this.entities.filter((x) => x.level === lair.level && x.kind !== 'figure').length >= MAX_ACTIVE && lair.kind !== 'figure') {
+        lair.cooldown = 15;
+        continue;
+      }
       const e: Entity = {
         id: this.nextId++,
         kind: lair.kind,
@@ -350,6 +376,8 @@ export class Authority {
         stare: 0,
         close: 0,
         sayCd: 2,
+        vx: 0,
+        vz: 0,
       };
       lair.entity = e.id;
       this.entities.push(e);
@@ -358,7 +386,7 @@ export class Authority {
 
   private despawn(e: Entity, cooldown: number) {
     e.lair.entity = null;
-    e.lair.cooldown = cooldown;
+    e.lair.cooldown = cooldown * 1.5;
     this.entities = this.entities.filter((x) => x !== e);
   }
 
@@ -758,62 +786,104 @@ export class Authority {
     return d < range && facingDot(p, e) > cos && this.sees(e, p, map);
   }
 
-  /** Avanza hacia un punto siguiendo el campo de distancias. */
+  /**
+   * Avanza hacia un punto. Si lo tiene a la vista y el camino está libre, va
+   * en línea recta; si no, baja por el campo de distancias y apunta a la
+   * casilla más lejana del camino a la que se puede ir recto (así recorta
+   * las esquinas en vez de ir en zigzag de casilla en casilla).
+   */
   private follow(e: Entity, field: Int16Array, p: { x: number; z: number }, map: LevelMap, speed: number, dt: number, mask?: Uint8Array): boolean {
+    const w = map.w;
     const ex = cellOf(e.x);
     const ez = cellOf(e.z);
-    const d = field[ez * map.w + ex];
-    if (d < 0) return false;
+    const d0 = field[ez * w + ex];
+    if (d0 < 0) return false;
     let tx = p.x;
     let tz = p.z;
-    if (d > 1) {
-      let found = false;
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const n = (ez + dz) * map.w + ex + dx;
-        if (field[n] === d - 1) {
-          tx = center(ex + dx);
-          tz = center(ez + dz);
-          found = true;
-          break;
+    const direct = Math.hypot(p.x - e.x, p.z - e.z) < 16 && this.clear(map, e.x, e.z, p.x, p.z, mask);
+    if (!direct) {
+      let cx = ex;
+      let cz = ez;
+      let cur = d0;
+      let best: [number, number] | null = null;
+      let first: [number, number] | null = null;
+      for (let k = 0; k < 18 && cur > 0; k++) {
+        let nbx = -1;
+        let nbz = -1;
+        let nbv = cur;
+        for (const [dx, dz] of DIRS8) {
+          const nx = cx + dx;
+          const nz = cz + dz;
+          if (nx < 0 || nz < 0 || nx >= w || nz >= map.h) continue;
+          const v = field[nz * w + nx];
+          if (v < 0 || v >= nbv) continue;
+          // en diagonal solo si no se corta una esquina de pared
+          if (dx && dz && (field[cz * w + nx] < 0 || field[nz * w + cx] < 0)) continue;
+          nbv = v;
+          nbx = nx;
+          nbz = nz;
         }
+        if (nbx < 0) break;
+        cx = nbx;
+        cz = nbz;
+        cur = nbv;
+        first ??= [cx, cz];
+        if (this.clear(map, e.x, e.z, center(cx), center(cz), mask)) best = [cx, cz];
+        else if (best) break;
       }
-      if (!found) return false;
+      const goal = best ?? first;
+      if (!goal) return false;
+      if (cur === 0 && best && best[0] === cx && best[1] === cz) {
+        // el destino está a la vista desde el final del camino
+        tx = p.x;
+        tz = p.z;
+      } else {
+        tx = center(goal[0]);
+        tz = center(goal[1]);
+      }
     }
-    this.step(e, tx, tz, speed, dt, map, mask);
+    this.steer(e, tx, tz, speed, dt, map, mask);
     return true;
   }
 
-  /** Se aleja del jugador (hacia la casilla vecina más lejana). */
+  /** Se aleja del jugador subiendo por el campo de distancias. */
   private away(e: Entity, p: Player, map: LevelMap, speed: number, dt: number) {
     const field = this.field(map, p.x, p.z, false);
-    const ex = cellOf(e.x);
-    const ez = cellOf(e.z);
-    let best = field[ez * map.w + ex];
-    let tx = e.x;
-    let tz = e.z;
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const v = field[(ez + dz) * map.w + ex + dx];
-      if (v > best) {
-        best = v;
-        tx = center(ex + dx);
-        tz = center(ez + dz);
+    const w = map.w;
+    let cx = cellOf(e.x);
+    let cz = cellOf(e.z);
+    let cur = field[cz * w + cx];
+    for (let k = 0; k < 6; k++) {
+      let moved = false;
+      for (const [dx, dz] of DIRS8) {
+        const nx = cx + dx;
+        const nz = cz + dz;
+        if (nx < 0 || nz < 0 || nx >= w || nz >= map.h) continue;
+        const v = field[nz * w + nx];
+        if (v > cur && !(dx && dz && (field[cz * w + nx] < 0 || field[nz * w + cx] < 0))) {
+          cur = v;
+          cx = nx;
+          cz = nz;
+          moved = true;
+        }
       }
+      if (!moved) break;
     }
-    this.step(e, tx, tz, speed, dt, map);
+    this.steer(e, center(cx), center(cz), speed, dt, map);
   }
 
   /** Paseo sin rumbo cerca de su guarida. */
   private wander(e: Entity, map: LevelMap, speed: number, radius: number, dt: number) {
     if (e.mode !== 'wander') this.setMode(e, 'wander');
-    if (!e.goal || Math.hypot(e.goal.x - e.x, e.goal.z - e.z) < 0.3 || e.timer > 12) {
+    if (!e.goal || Math.hypot(e.goal.x - e.x, e.goal.z - e.z) < 0.4 || e.timer > 12) {
       e.timer = 0;
       e.anim = Anim.Idle;
+      this.steer(e, e.x, e.z, 0, dt, map); // frena
       if (Math.random() < 0.02) {
         for (let k = 0; k < 10; k++) {
           const gx = e.lair.x + (Math.random() - 0.5) * radius * 2;
           const gz = e.lair.z + (Math.random() - 0.5) * radius * 2;
-          const i = cellOf(gz) * map.w + cellOf(gx);
-          if (i >= 0 && i < map.w * map.h && walkable(map, i) && !inZone(map, 'safe', gx, gz) && Math.abs(map.floor[i] - floorAt(map, e.x, e.z)) < 0.6) {
+          if (this.clear(map, e.x, e.z, gx, gz)) {
             e.goal = { x: gx, z: gz };
             break;
           }
@@ -822,28 +892,95 @@ export class Authority {
       return;
     }
     e.anim = Anim.Walk;
-    const before = e.x + e.z;
-    this.step(e, e.goal.x, e.goal.z, speed, dt, map);
-    if (Math.abs(e.x + e.z - before) < 1e-4) e.goal = null; // atascado
+    const bx = e.x;
+    const bz = e.z;
+    this.steer(e, e.goal.x, e.goal.z, speed, dt, map);
+    if (Math.hypot(e.x - bx, e.z - bz) < speed * dt * 0.1) e.goal = null; // atascado
   }
 
-  /** Mueve en línea recta respetando paredes, desniveles, zonas seguras y (si se da) la máscara. */
-  private step(e: Entity, tx: number, tz: number, speed: number, dt: number, map: LevelMap, mask?: Uint8Array) {
+  /** ¿Cabe la criatura en (x, z)? */
+  private free(map: LevelMap, x: number, z: number, mask?: Uint8Array): boolean {
+    for (const [ox, oz] of [[-BODY, -BODY], [BODY, -BODY], [-BODY, BODY], [BODY, BODY]]) {
+      const cx = cellOf(x + ox);
+      const cz = cellOf(z + oz);
+      if (cx < 0 || cz < 0 || cx >= map.w || cz >= map.h || !walkable(map, cz * map.w + cx)) return false;
+    }
+    const i = cellOf(z) * map.w + cellOf(x);
+    if (mask && !mask[i]) return false;
+    return !inZone(map, 'safe', x, z);
+  }
+
+  /** ¿Se puede ir en línea recta de un punto a otro sin chocar ni saltar desniveles? */
+  private clear(map: LevelMap, x0: number, z0: number, x1: number, z1: number, mask?: Uint8Array): boolean {
+    const d = Math.hypot(x1 - x0, z1 - z0);
+    const n = Math.ceil(d / 0.25);
+    let py = floorAt(map, x0, z0);
+    for (let k = 1; k <= n; k++) {
+      const t = k / n;
+      const x = x0 + (x1 - x0) * t;
+      const z = z0 + (z1 - z0) * t;
+      if (!this.free(map, x, z, mask)) return false;
+      const y = floorAt(map, x, z);
+      if (!Number.isFinite(y) || Math.abs(y - py) > 0.6) return false;
+      py = y;
+    }
+    return true;
+  }
+
+  /**
+   * Movimiento con inercia: acelera y frena con suavidad, gira hacia donde va,
+   * se separa de otras criaturas y resbala por las paredes en vez de quedarse
+   * clavada.
+   */
+  private steer(e: Entity, tx: number, tz: number, speed: number, dt: number, map: LevelMap, mask?: Uint8Array) {
     const dx = tx - e.x;
     const dz = tz - e.z;
     const d = Math.hypot(dx, dz);
-    if (d < 0.001) return;
-    const s = Math.min(d, speed * dt);
-    const nx = e.x + (dx / d) * s;
-    const nz = e.z + (dz / d) * s;
-    e.ry = turn(e.ry, Math.atan2(-dx, -dz), dt * 8);
-    const i = cellOf(nz) * map.w + cellOf(nx);
-    if (!walkable(map, i)) return;
-    if (Math.abs(floorAt(map, nx, nz) - floorAt(map, e.x, e.z)) > 0.6) return;
-    if (mask && !mask[i]) return;
-    if (inZone(map, 'safe', nx, nz)) return;
-    e.x = nx;
-    e.z = nz;
+    let wx = 0;
+    let wz = 0;
+    if (d > 0.05 && speed > 0) {
+      const s = speed * Math.min(1, d / 0.5);
+      wx = (dx / d) * s;
+      wz = (dz / d) * s;
+    }
+    for (const o of this.entities) {
+      if (o === e || o.level !== e.level) continue;
+      const ox = e.x - o.x;
+      const oz = e.z - o.z;
+      const od = Math.hypot(ox, oz);
+      if (od < 0.9 && od > 1e-3) {
+        wx += (ox / od) * (0.9 - od) * 3;
+        wz += (oz / od) * (0.9 - od) * 3;
+      }
+    }
+    const k = Math.min(1, dt * 7);
+    e.vx += (wx - e.vx) * k;
+    e.vz += (wz - e.vz) * k;
+    this.move(e, e.vx * dt, e.vz * dt, map, mask);
+    if (Math.hypot(e.vx, e.vz) > 0.25) e.ry = turn(e.ry, Math.atan2(-e.vx, -e.vz), dt * 7);
+  }
+
+  private move(e: Entity, mx: number, mz: number, map: LevelMap, mask?: Uint8Array) {
+    const y0 = floorAt(map, e.x, e.z);
+    // si está encajada (al aparecer junto a una pared), solo se comprueba el centro
+    const stuck = !this.free(map, e.x, e.z, mask);
+    const ok = (x: number, z: number) => {
+      const fine = stuck ? walkable(map, cellOf(z) * map.w + cellOf(x)) : this.free(map, x, z, mask);
+      return fine && Math.abs(floorAt(map, x, z) - y0) < 0.6;
+    };
+    if (ok(e.x + mx, e.z + mz)) {
+      e.x += mx;
+      e.z += mz;
+    } else if (ok(e.x + mx, e.z)) {
+      e.x += mx;
+      e.vz *= 0.5;
+    } else if (ok(e.x, e.z + mz)) {
+      e.z += mz;
+      e.vx *= 0.5;
+    } else {
+      e.vx *= 0.3;
+      e.vz *= 0.3;
+    }
   }
 }
 

@@ -93,7 +93,7 @@ function level0(): LevelMap {
   b.solid(9, 2, 0.5, 5).solid(2, 9, 5, 0.5);
   b.prop('outlet', 2.05, 12, E, { y: 0.35 }).prop('vent', 12, 2.05, S, { y: 2.3 });
   b.glitch(15.95, 11, W, 1.2, 1.6);
-  b.note(2.05, 5, E, 'Nota arrugada', 'Si lees esto, has hecho noclip. Estás en el Nivel 0.\n\nAquí no hay nadie. Aunque tus amigos hayan caído contigo, no los verás. Solo en una sala pequeña, al oeste, nos encontramos de verdad.\n\nNo te acerques a los agujeros del suelo. Y si una pared parpadea… atraviésala.');
+  b.note(2.05, 5, E, 'Nota arrugada', 'Si lees esto, has hecho noclip. Estás en el Nivel 0.\n\nAquí no hay nadie más. Si alguien te habla desde detrás de una pared, no contestes. Hay una sala pequeña, al oeste, donde se está tranquilo.\n\nNo te acerques a los agujeros del suelo. Y si una pared parpadea… atraviésala.');
 
   // ---- laberinto de salas y pasillos ----
   b.open(16, 5, 8, 2);
@@ -111,7 +111,7 @@ function level0(): LevelMap {
   b.open(26, 34.5, 14, 2);
   // la sala pequeña donde sí se puede ver a los demás
   b.open(20, 28, 6, 5, { wall: 2, floorMat: 1, lamps: 3 }).open(22, 33, 2, 1.5).open(22, 34.5, 4, 2).zone('meeting', 20, 28, 6, 5);
-  b.note(20.05, 30.5, E, 'Escrito en la pared', 'AQUÍ SÍ TE VEO.\nAQUÍ SÍ ME VES.\nNO SALGAS SOLO.', true, 1.5);
+  b.note(20.05, 30.5, E, 'Escrito en la pared', 'AQUÍ NO LLEGA EL ZUMBIDO.\nDESCANSA.\nNO SALGAS SOLO.', true, 1.5);
   b.open(6, 30, 2, 8).open(2, 38, 30, 2).open(28, 36.5, 2, 1.5);
   b.open(10, 40, 2, 6);
   // cambio periférico: pares de huecos que se turnan
@@ -175,18 +175,24 @@ function level0(): LevelMap {
   b.lair('figure', 104, 35).lair('figure', 84, 58).lair('figure', 92, 40);
   b.item('pila', 100, 35);
   b.note(72.05, 36, E, 'Nota casi ilegible', 'Aquí no llega el zumbido. Aquí no llega la luz.\nHay figuras al fondo que solo se mueven cuando no miras.\nEl suelo está hundido y mojado: no corras.');
-  b.prop('text', 72.05, 41, E, { y: 1.6, text: 'SIGUE EL ZUMBIDO', w: 2.6 });
+  b.prop('text', 72.05, 45, E, { y: 1.6, text: 'SIGUE EL ZUMBIDO', w: 2.6 });
 
   // ---- Habitaciones Rojas ----
   b.open(90, 62, 2.5, 6, { wall: 4, lamps: 3 });
   b.open(80, 68, 20, 6, { wall: 4, floorMat: 3, lamps: 3.5 });
   b.open(98, 74, 2, 2, { floorMat: 3 });
-  b.open(74, 76, 34, 3.5, { wall: 4, floorMat: 3, lamps: 3.5 });
+  // el pasillo que no se acaba: se repite cada 12 m y la niebla roja (game.ts)
+  // no deja ver los extremos; puertas y luces cada 3-6 m para que encaje
+  b.open(74, 76, 34, 3.5, { wall: 4, floorMat: 3, lamps: false });
+  for (let x = 75.5; x < 108; x += 3) b.lamp(x, 77.75);
   b.red(90, 64, 2.5, 4).red(80, 68, 20, 6).red(74, 74, 34, 8);
   b.shift(98, 74, 2, 2, false, 4); // la entrada: se cierra a tu espalda
-  b.loop({ axis: 'x', x0: 78, x1: 104, z0: 76, z1: 79.5 });
+  b.loop({ axis: 'x', x0: 84, x1: 96, z0: 76, z1: 79.5 });
   for (const x of [80, 86, 92, 98, 104]) b.prop('door2wall', x, 79.45, N);
-  b.glitch(91, 76.05, S, 1.2, 2, true); // casi nadie la encuentra
+  for (const x of [77, 83, 95, 101, 107]) b.prop('door2wall', x, 76.05, S);
+  // la única salida: una pared que parpadea, con un aviso pintado enfrente
+  b.glitch(89, 76.05, S, 1.6, 2.2, true);
+  b.prop('text', 89, 79.44, N, { y: 1.9, text: 'ATRAVIESA LA PARED QUE PARPADEA', w: 3.4 });
   b.zone('red', 74, 62, 34, 20);
   b.prop('text', 90.05, 66, E, { y: 1.6, text: 'VUELVE', w: 1.4 });
 
@@ -239,7 +245,7 @@ function level1(): LevelMap {
   b.prop('megcloth', 69.95, 6, W, { y: 2 }).item('agua', 69, 6.5);
   b.note(69.95, 7.6, W, 'Nota atada a una tela lima', '¡Hola, viajero! Esta agua es para ti, cortesía de la M.E.G.\n\nSigue los pasillos hasta ver gente: te llevaremos a un lugar seguro. Deja la botella vacía aquí, por favor. ¡Suerte!', true, 1.3);
   // una columna pintada de naranja: referencia para el pasillo que no acaba
-  b.prop('paint', 69.4, 31.5, W, { y: 0, h: 5.5 });
+  b.prop('paint', 66.61, 32, E, { y: 0, h: 5.5 }); // cara este de la columna
   b.lair('hound', 30, 44).lair('smiler', 66, 46).lair('duller', 12.6, 30).lair('duller', 12.6, 18);
   b.lair('skinstealer', 48, 30, ['¿Hola?', '¿Hay alguien ahí?', 'Me he perdido…', 'Hola. Hola. Hola.']);
   b.dark(60, 40, 10, 10);
@@ -259,9 +265,9 @@ function level1(): LevelMap {
 
   // ---- pasillo de hormigón que no acaba (no euclídeo) ----
   b.open(70, 30, 30, 3, { ceil: 3.5, lamps: 5, wall: 0 });
-  b.loop({ axis: 'x', x0: 73, x1: 96, z0: 30, z1: 33, oneWay: 1, landmark: { x: 99, z: 31.5 } });
-  b.prop('panel', 99.95, 31.5, W, { y: 1 });
-  b.note(70.5, 29.6, S, 'Garabato en la pared', 'Si el pasillo no se acaba, mira el panel eléctrico del fondo y NO apartes la vista mientras andas.', true, 1.6);
+  b.loop({ axis: 'x', x0: 73, x1: 96, z0: 30, z1: 33, oneWay: 1, landmark: { x: 98.5, z: 30.2 } });
+  b.prop('panel', 98.5, 30.05, S, { y: 1 });
+  b.note(70.5, 30.05, S, 'Garabato en la pared', 'Si el pasillo no se acaba, mira el panel eléctrico del fondo y NO apartes la vista mientras andas.', true, 1.6);
 
   // ---- sector en obras ----
   b.open(100, 26, 18, 24, { ceil: 5, wall: 2, lamps: 6 });
@@ -271,7 +277,7 @@ function level1(): LevelMap {
   b.npc({ kind: 'worker', x: 104, z: 33, ry: N, lines: [], path: [[104, 33], [104, 42], [102, 42]] });
   b.npc({ kind: 'worker', x: 112, z: 42, ry: E, lines: [], path: [[108, 42], [116, 42], [116, 36]] });
   b.npc({ kind: 'worker', x: 114, z: 36, ry: W, lines: [] });
-  b.note(100.5, 25.6, S, 'Cartel torcido', 'PELIGRO — OBRAS\nNo te acerques a los trabajadores. No contestan y no se apartan.', true, 1.8);
+  b.note(100.5, 26.05, S, 'Cartel torcido', 'PELIGRO — OBRAS\nNo te acerques a los trabajadores. No contestan y no se apartan.', true, 1.8);
   b.crate(116, 48, 0.4, 'herramientas');
 
   // ---- sector Gild (almacén con estanterías) ----
@@ -319,7 +325,7 @@ function level1(): LevelMap {
   b.open(109.5, 87.5, 5, 5.5, { ceil: 2.8, wall: 1, floorMat: 3, lamps: 4 }).open(111, 87, 1.5, 0.5, { ceil: 2.8 }); // enfermería
   b.prop('bed', 113, 90.5, E, { solid: [2.1, 1] }).prop('table', 110.8, 89.2, 0, { solid: [1.4, 0.8] }).item('vendas', 111, 91.8);
   b.open(102.5, 78, 4.5, 5, { ceil: 2.6, wall: 1, floorMat: 2, lamps: 3 }).open(102, 80, 0.5, 1.5, { ceil: 2.6 }); // sala acolchada con una silla medio hundida en el suelo
-  b.prop('chair', 105, 80.5, 0.7, { y: -0.25 }).prop('padding', 106.95, 80.5, W, { w: 5 });
+  b.prop('chair', 105, 80.5, 0.7, { y: -0.25 }).prop('padding', 108.95, 81.75, W, { w: 2.5 });
   b.open(102, 66, 4.5, 6, { ceil: 2.6, wall: 1, lamps: 3 }).open(106.5, 68, 0.5, 1.5, { ceil: 2.6 }); // sala de cuadros (en las paredes y en el suelo)
   b.prop('painting', 102.05, 68, E, { y: 1.5 }).prop('painting', 104.5, 66.05, S, { y: 1.5 }).prop('floorpainting', 104, 70, 0.4).prop('floorpainting', 105.2, 68.5, 1.9);
   // pasillo largo: la Skin-Stealer llora al fondo, con un rastro de sangre

@@ -110,8 +110,13 @@ joinBtn.onclick = () => start('join');
 codeInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') void start('join');
 });
-$('leave').onclick = () => leave();
-$('copy').onclick = () => navigator.clipboard.writeText(location.href);
+$('copy').onclick = () => {
+  navigator.clipboard.writeText(location.href).then(
+    () => ($('copy').textContent = 'Enlace copiado'),
+    () => ($('copy').textContent = location.href),
+  );
+  setTimeout(() => ($('copy').textContent = 'Copiar enlace de la sala'), 2500);
+};
 $('reenter').onclick = () => game?.reenter();
 $('menu-settings').onclick = () => openSettings();
 $('pause-settings').onclick = () => openSettings();

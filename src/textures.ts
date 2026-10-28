@@ -13,7 +13,7 @@ import type { Theme } from './world';
 /** Las texturas de pared son el doble de anchas que de "base": cubren más metros. */
 const WX = 2;
 
-type Painter = (ctx: CanvasRenderingContext2D, w: number, h: number) => void;
+export type Painter = (ctx: CanvasRenderingContext2D, w: number, h: number) => void;
 
 export function canvasTexture(w: number, h: number, paint: Painter, repeat = true): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
@@ -354,11 +354,12 @@ const grate = (seed: number): Painter =>
 
 // ---------------------------------------------------------------- catálogo
 
-export interface ThemeTextures {
-  walls: THREE.Texture[];
-  wallUppers: THREE.Texture[]; // versión sin zócalo, que se repite en vertical
-  floors: THREE.Texture[];
-  ceils: THREE.Texture[];
+/** Texturas de un tema (T = textura de Three.js, o imagen en el worker). */
+export interface ThemeData<T> {
+  walls: T[];
+  wallUppers: T[]; // versión sin zócalo, que se repite en vertical
+  floors: T[];
+  ceils: T[];
   wallScale: number; // metros de ancho que cubre la textura de pared
   wallHeight: number; // metros de alto (el zócalo queda abajo)
   floorScale: number;
@@ -375,21 +376,76 @@ export interface ThemeTextures {
   ceilCell: number[];
 }
 
-const cache = new Map<Theme, ThemeTextures>();
+export type ThemeTextures = ThemeData<THREE.Texture>;
 
-/** Texturas de un tema. Se generan una vez y se reutilizan. */
+const cache = new Map<Theme, ThemeTextures>();
+const pending = new Map<Theme, Promise<ThemeTextures>>();
+
+/** Texturas de un tema ya generadas (o generadas ahora mismo, bloqueando). */
 export function themeTextures(theme: Theme): ThemeTextures {
   let t = cache.get(theme);
   if (!t) {
-    t = buildTheme(theme);
+    t = buildTheme(theme, canvasTexture);
     cache.set(theme, t);
   }
   return t;
 }
 
-function buildTheme(theme: Theme): ThemeTextures {
-  const wall = (p: Painter) => canvasTexture(256 * WX, 512, p);
-  const sq = (p: Painter, s = 512) => canvasTexture(s, s, p);
+export const themeReady = (theme: Theme) => cache.has(theme);
+
+let worker: Worker | null | undefined;
+
+/**
+ * Genera las texturas de un tema en un hilo aparte (Web Worker), para que el
+ * juego no se congele al cambiar de nivel. Si el navegador no puede, las
+ * genera aquí.
+ */
+export function loadThemeTextures(theme: Theme): Promise<ThemeTextures> {
+  const done = cache.get(theme);
+  if (done) return Promise.resolve(done);
+  let p = pending.get(theme);
+  if (p) return p;
+  if (worker === undefined) {
+    try {
+      worker = typeof OffscreenCanvas !== 'undefined' ? new Worker(new URL('./texworker.ts', import.meta.url), { type: 'module' }) : null;
+    } catch {
+      worker = null;
+    }
+  }
+  const w = worker;
+  if (!w) return Promise.resolve(themeTextures(theme));
+  p = new Promise<ThemeTextures>((resolve) => {
+    const onMessage = (e: MessageEvent<{ theme: Theme; data?: ThemeData<ImageBitmap>; error?: string }>) => {
+      if (e.data.theme !== theme) return;
+      w.removeEventListener('message', onMessage);
+      if (!e.data.data) {
+        resolve(themeTextures(theme));
+        return;
+      }
+      const wrap = (img: ImageBitmap) => {
+        const tex = new THREE.Texture(img);
+        tex.flipY = false; // el worker ya la manda girada
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = 4;
+        tex.needsUpdate = true;
+        return tex;
+      };
+      const d = e.data.data;
+      const t: ThemeTextures = { ...d, walls: d.walls.map(wrap), wallUppers: d.wallUppers.map(wrap), floors: d.floors.map(wrap), ceils: d.ceils.map(wrap) };
+      if (!cache.has(theme)) cache.set(theme, t);
+      resolve(cache.get(theme)!);
+    };
+    w.addEventListener('message', onMessage);
+    w.postMessage(theme);
+  });
+  pending.set(theme, p);
+  return p;
+}
+
+export function buildTheme<T>(theme: Theme, make: (w: number, h: number, p: Painter) => T): ThemeData<T> {
+  const wall = (p: Painter) => make(256 * WX, 512, p);
+  const sq = (p: Painter, s = 512) => make(s, s, p);
   const pair = (mk: (trim: boolean) => Painter) => [wall(mk(true)), wall(mk(false))];
   const build = (list: ((trim: boolean) => Painter)[]) => {
     const p = list.map(pair);

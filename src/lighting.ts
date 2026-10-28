@@ -19,6 +19,7 @@ export const lightUniforms = {
   uTorchPos: { value: Array.from({ length: 6 }, () => new THREE.Vector3()) },
   uTorchDir: { value: Array.from({ length: 6 }, () => new THREE.Vector3(0, 0, -1)) },
   uTorchPower: { value: [0, 0, 0, 0, 0, 0] },
+  uTorchCount: { value: 0 }, // cuántas de las anteriores están encendidas (las primeras)
   // suciedad en coordenadas del mundo (manchas, humedad, chorretones)
   uGrimeMap: { value: null as THREE.Texture | null },
   uGrimeTint: { value: new THREE.Color(0.55, 0.45, 0.25) },
@@ -202,6 +203,7 @@ uniform vec3 uEmissive;
 uniform vec3 uTorchPos[MAX_TORCHES];
 uniform vec3 uTorchDir[MAX_TORCHES];
 uniform float uTorchPower[MAX_TORCHES];
+uniform int uTorchCount;
 uniform sampler2D uGrimeMap;
 uniform vec3 uGrimeTint;
 uniform float uGrimeAmount;
@@ -239,9 +241,11 @@ varying vec3 vWorldNormal;
       oa.y = 0.0;
       ob.y = 0.0;
     }
-    vec4 ca = texture2D(map, vMapUv + oa);
-    vec4 cb = texture2D(map, vMapUv + ob);
-    sampledDiffuseColor = mix(ca, cb, smoothstep(0.25, 0.75, ff - 0.1 * dot(ca.rgb - cb.rgb, vec3(1.0))));
+    // solo en la franja de transición hace falta leer la textura dos veces
+    float bl = smoothstep(0.3, 0.7, ff);
+    if (bl <= 0.0) sampledDiffuseColor = texture2D(map, vMapUv + oa);
+    else if (bl >= 1.0) sampledDiffuseColor = texture2D(map, vMapUv + ob);
+    else sampledDiffuseColor = mix(texture2D(map, vMapUv + oa), texture2D(map, vMapUv + ob), bl);
   } else {
     sampledDiffuseColor = texture2D(map, vMapUv);
   }
@@ -291,7 +295,7 @@ varying vec3 vWorldNormal;
   // un poco más oscuro abajo, como si la luz viniera del techo
   lmLight *= mix(0.55, 1.0, clamp(above / max(lmCeil - lmFloor, 0.5), 0.0, 1.0));
   // los agujeros: cuanto más hondo, más oscuro
-  lmLight *= clamp(1.0 + above * 0.4, 0.0, 1.0);
+  lmLight *= clamp(1.0 + above * 0.65, 0.0, 1.0);
   // un poco de sombreado según hacia dónde mira la cara: da volumen a columnas y muebles
   lmLight *= 0.8 + 0.2 * abs(dot(vWorldNormal, vec3(0.74, 0.42, 0.52)));
   vec3 light = uTint * lmLight + uAmbient;
@@ -299,6 +303,7 @@ varying vec3 vWorldNormal;
   float fres = pow(1.0 - max(dot(vWorldNormal, viewDir), 0.0), 3.0);
   vec3 sheen = uTint * lmLight * wet * fres * 0.35;
   for (int i = 0; i < MAX_TORCHES; i++) {
+    if (i >= uTorchCount) break;
     if (uTorchPower[i] <= 0.0) continue;
     vec3 d = vWorldPos - uTorchPos[i];
     float dist = length(d);

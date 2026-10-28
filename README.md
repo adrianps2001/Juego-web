@@ -9,7 +9,7 @@ lore de la wiki de los Backrooms:
 
 | Nivel | Nombre | Qué hay |
 |---|---|---|
-| 0 | El Umbral | Salas de papel amarillo y moqueta húmeda que **cambian cuando nadie mira** (cambio periférico). **Aislamiento**: no ves a tus compañeros salvo en una sala pequeña. Sala de columnas enorme, **agujeros sin fondo** (caer es morir), zona de arcos con moqueta empapada, **zona de apagón** con fluido hasta los tobillos y figuras que te acechan, y las **Habitaciones Rojas**, que se cierran en bucle. Se sale atravesando una **pared que parpadea**. |
+| 0 | El Umbral | Salas de papel amarillo y moqueta húmeda que **cambian cuando nadie mira** (cambio periférico). Sala de columnas enorme, **agujeros sin fondo** (caer es morir), zona de arcos con moqueta empapada, **zona de apagón** con fluido hasta los tobillos y figuras que te acechan, y las **Habitaciones Rojas**: un pasillo envuelto en niebla roja que se repite sin fin y del que solo se sale por la pared que parpadea. La salida del nivel es otra **pared que parpadea**. |
 | 1 | La Zona Habitable | Sector **Aquila** (columnas, tuberías que gotean, escombros, marca de la M.E.G.), **Base Alpha** de la M.E.G. con patrullas que te hablan (zona segura), un **pasillo que no acaba** (mira el panel del fondo), sector en obras con **trabajadores sombra**, sector **Gild** de estanterías, sector **gótico** con el Círculo de Ariadna, y los **pasillos** tras la puerta de SALIDA verde: oficina, sala de ladrillo, enfermería, sala de goma y sala de cuadros. **Parpadeos**: apagones totales tras los que reaparecen cajas. |
 | 2 | Pipe Dreams | Túneles estrechos de hormigón y ladrillo que giran a 45°, con tuberías y máquinas muertas, en dos alturas. Fluorescentes **en serie** (si uno falla se apaga todo el tramo), luces violetas de emergencia, puertas de acero cerradas, una que da a un pasillo que vuelve sobre sí mismo y otra que da **al Vacío**. Ventanas al final de los túneles en las que mejor no mirar. Campamento abandonado, polillas y ratas. |
 
@@ -36,7 +36,7 @@ lore de la wiki de los Backrooms:
   recuperar la mitad. **Barrita** y **lata** la reponen.
 - **Ruido**: correr, gritar o chapotear te delata; agachado casi no haces ruido.
 - **Linterna**: gasta **pilas**, y atrae a los Smilers.
-- **Inventario**: 6 huecos (hasta 5 objetos iguales en cada uno).
+- **Inventario**: hasta 6 huecos (5 objetos iguales en cada uno). La barra solo aparece cuando llevas algo y solo muestra los huecos ocupados.
 - **Notas**: hay notas de otros exploradores con pistas (`E` para leerlas).
 - **Screamers**: si una criatura te alcanza, si te asomas a la ventana
   equivocada o si deambulas a oscuras con poca cordura, una cara te salta a la
@@ -54,8 +54,11 @@ bengala se lanza) · `Esc` pausa.
 Desde el menú principal o desde la pausa (`Esc`) se puede ajustar el volumen
 (general, ambiente y efectos), la sensibilidad del ratón, invertir el eje
 vertical, el campo de visión, el brillo y el contador de FPS. Los ajustes se
-guardan en el navegador. El juego se dibuja siempre a media resolución para que
-vaya fluido (`PIXEL_RATIO` en `src/game.ts`).
+guardan en el navegador. El juego se dibuja a media resolución para que vaya
+fluido y, si el equipo no llega a unos 40 FPS, la baja solo un poco más
+(`PIXEL_RATIO` y `MIN_PIXEL_RATIO` en `src/game.ts`). Las texturas se generan
+en un hilo aparte (`src/texworker.ts`) para que cambiar de nivel no congele el
+juego.
 
 ## Cómo jugar con amigos
 
@@ -148,6 +151,7 @@ src/
 ├── settings.ts   # ajustes guardados
 ├── settings-ui.ts # panel de configuración
 ├── textures.ts   # texturas dibujadas por código
+├── texworker.ts  # genera las texturas en otro hilo
 ├── post.ts       # postprocesado
 ├── screamer.ts   # sustos a pantalla completa
 ├── game.ts       # bucle del juego en primera persona
