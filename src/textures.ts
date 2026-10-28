@@ -4,6 +4,14 @@ import type { Theme } from './world';
 // Todas las texturas se generan por código. Las de superficies se calculan
 // píxel a píxel con ruido "periódico": lo que sale por un borde entra por el
 // opuesto, así que al repetirse no se nota ningún corte.
+//
+// Para que tampoco se note la repetición, las texturas base solo llevan
+// detalle fino y uniforme. Las manchas grandes, la humedad y los chorretones
+// se añaden en el shader (lighting.ts) con la textura de suciedad, en
+// coordenadas del mundo y a escalas que no coinciden con las de la base.
+
+/** Las texturas de pared son el doble de anchas que de "base": cubren más metros. */
+const WX = 2;
 
 type Painter = (ctx: CanvasRenderingContext2D, w: number, h: number) => void;
 
@@ -117,27 +125,27 @@ function wallpaperPainter(o: WallpaperOpts, seed: number): Painter {
   const motif = o.pale ? 0.03 : 0.06;
   const base = pixels((u, v, x) => {
     // franjas verticales suaves (número entero por textura: sin cortes)
-    const s = Math.sin(u * Math.PI * 2 * 6);
-    const fine = Math.sin(u * Math.PI * 2 * 48) * 0.5 + 0.5;
+    const s = Math.sin(u * Math.PI * 2 * 6 * WX);
+    const fine = Math.sin(u * Math.PI * 2 * 48 * WX) * 0.5 + 0.5;
     let c = mix(o.base, o.stripe, (s * 0.5 + 0.5) * 0.35 + fine * 0.08);
     // pequeño motivo de rombos impreso
-    const du = (u * 12) % 1;
+    const du = (u * 12 * WX) % 1;
     const dv = (v * (o.trim ? 24 : 12)) % 1;
     const diamond = Math.abs(du - 0.5) + Math.abs(dv - 0.5) < 0.18 ? 1 : 0;
     c = mul(c, 1 - diamond * motif);
-    // manchas de humedad y grano del papel
-    const stain = fbm(u, v, 3, o.trim ? 6 : 3, 4, seed);
-    c = mul(c, 1 - smooth(0.55, 0.85, stain) * o.stain);
+    // manchas muy suaves (las grandes las pone el shader) y grano del papel
+    const stain = fbm(u, v, 3 * WX, o.trim ? 6 : 3, 4, seed);
+    c = mul(c, 1 - smooth(0.55, 0.85, stain) * o.stain * 0.25);
     const grain = hash2(x, Math.floor(v * 4096), seed) * 0.06 - 0.03;
     c = mul(c, 1 + grain);
     if (o.peel) {
-      const p = fbm(u, v, 4, o.trim ? 8 : 4, 3, seed + 7);
-      if (p > 0.66) c = mix([150, 22, 18], [90, 10, 10], fbm(u, v, 16, 32, 2, seed + 9));
+      const p = fbm(u, v, 4 * WX, o.trim ? 8 : 4, 3, seed + 7);
+      if (p > 0.66) c = mix([150, 22, 18], [90, 10, 10], fbm(u, v, 16 * WX, 32, 2, seed + 9));
       else if (p > 0.63) c = mul(c, 0.55); // borde del papel despegado
     }
     if (o.trim) {
       // humedad que sube del suelo
-      c = mul(c, 1 - smooth(0.62, 1.0, v) * 0.22 * (0.6 + stain * 0.8));
+      c = mul(c, 1 - smooth(0.75, 1.0, v) * 0.08);
     }
     return c;
   });
@@ -158,9 +166,9 @@ function wallpaperPainter(o: WallpaperOpts, seed: number): Painter {
 /** Yeso rugoso de las zonas de apagón. */
 const roughPlaster = (seed: number): Painter =>
   pixels((u, v) => {
-    const n = fbm(u, v, 8, 16, 5, seed);
-    const m = fbm(u, v, 2, 4, 3, seed + 3);
-    return mul([178, 160, 108], 0.75 + n * 0.45 - m * 0.15);
+    const n = fbm(u, v, 8 * WX, 16, 5, seed);
+    const m = fbm(u, v, 2 * WX, 4, 3, seed + 3);
+    return mul([178, 160, 108], 0.75 + n * 0.45 - m * 0.06);
   });
 
 /** Moqueta tipo bereber: bucles pequeños y humedad. */
@@ -170,8 +178,8 @@ const carpet = (base: Rgb, wet: number, seed: number): Painter =>
     const fibres = hash2(x, y, seed) * 0.16 - 0.08;
     const tone = fbm(u, v, 4, 4, 4, seed) - 0.5;
     const damp = smooth(0.5, 0.8, fbm(u, v, 2, 2, 4, seed + 11)) * wet;
-    let c = mul(base, 1 + loops * 0.07 + fibres + tone * 0.25);
-    c = mul(c, 1 - damp * 0.35);
+    let c = mul(base, 1 + loops * 0.07 + fibres + tone * 0.12);
+    c = mul(c, 1 - damp * 0.1);
     return c;
   });
 
@@ -184,10 +192,9 @@ const ceilingTiles = (stained: number, seed: number): Painter =>
     let c: Rgb = [214, 206, 180];
     const holes = hash2(x >> 1, y >> 1, seed) < 0.06 ? 0.82 : 1;
     c = mul(c, holes * (0.96 + hash2(x, y, seed + 1) * 0.06));
+    // (el tono de cada placa y las manchas grandes se ponen en el shader)
     const stain = smooth(0.55, 0.8, fbm(u, v, 2, 2, 4, seed + 5)) * stained;
-    c = mix(c, [150, 120, 60], stain * 0.45);
-    // cada placa con un tono ligeramente distinto
-    c = mul(c, 0.94 + hash2(Math.floor(u * 2), Math.floor(v * 2), seed + 2) * 0.08);
+    c = mix(c, [150, 120, 60], stain * 0.12);
     if (edge < 0.012) c = [138, 130, 108];
     else if (edge < 0.022) c = mul(c, 0.88);
     return c;
@@ -200,7 +207,7 @@ const linoleum = (seed: number): Painter =>
     const tv = Math.floor(v * 4);
     let c: Rgb = (tu + tv) % 2 ? [168, 160, 138] : [186, 178, 156];
     c = mul(c, 0.94 + fbm(u, v, 8, 8, 3, seed) * 0.12 + hash2(x, y, seed) * 0.04);
-    c = mul(c, 1 - smooth(0.6, 0.85, fbm(u, v, 2, 2, 3, seed + 4)) * 0.2);
+    c = mul(c, 1 - smooth(0.6, 0.85, fbm(u, v, 2, 2, 3, seed + 4)) * 0.06);
     const eu = (u * 4) % 1;
     const ev = (v * 4) % 1;
     if (Math.min(eu, 1 - eu, ev, 1 - ev) < 0.01) c = mul(c, 0.7);
@@ -209,7 +216,7 @@ const linoleum = (seed: number): Painter =>
 
 const officePaint = (seed: number, trim: boolean): Painter =>
   pixels((u, v) => {
-    const n = fbm(u, v, 4, 8, 4, seed);
+    const n = fbm(u, v, 4 * WX, 8, 4, seed);
     let c = mul([202, 192, 158], 0.92 + n * 0.14);
     if (trim) {
       if (v > 0.62) c = mul([143, 132, 103], 0.92 + n * 0.14);
@@ -222,25 +229,27 @@ const officePaint = (seed: number, trim: boolean): Painter =>
 // ---------------------------------------------------------------- Nivel 1 y 2
 
 /** Hormigón: base, poros, manchas y grietas finas (todo periódico). */
-const concrete = (base: Rgb, o: { stains?: number; seed: number; cracks?: number; leak?: number }): PixelFn => {
+const concrete = (base: Rgb, o: { stains?: number; seed: number; cracks?: number; leak?: number; wx?: number }): PixelFn => {
+  const wx = o.wx ?? 1;
   return (u, v, x, y) => {
-    const n = fbm(u, v, 6, 6, 5, o.seed);
+    // grano fino y uniforme: nada que llame la atención al repetirse
+    const n = fbm(u, v, 12 * wx, 12, 4, o.seed);
     const pores = hash2(x, y, o.seed) < 0.02 ? 0.75 : 1;
-    let c = mul(base, (0.8 + n * 0.4) * pores);
-    const stain = smooth(0.52, 0.85, fbm(u, v, 2, 2, 4, o.seed + 1));
-    c = mul(c, 1 - stain * (o.stains ?? 0.25));
+    let c = mul(base, (0.88 + n * 0.24) * pores);
+    const stain = smooth(0.52, 0.85, fbm(u, v, 2 * wx, 2, 4, o.seed + 1));
+    c = mul(c, 1 - stain * (o.stains ?? 0.25) * 0.3);
     if (o.cracks) {
       // grietas finas solo en algunas zonas, no por toda la superficie
-      const zone = smooth(0.58, 0.72, fbm(u, v, 2, 2, 3, o.seed + 5));
-      const cr = Math.abs(fbm(u, v, 3, 3, 4, o.seed + 2) - 0.5);
+      const zone = smooth(0.6, 0.72, fbm(u, v, 2 * wx, 2, 3, o.seed + 5));
+      const cr = Math.abs(fbm(u, v, 3 * wx, 3, 4, o.seed + 2) - 0.5);
       const line = 1 - smooth(0.0015 * o.cracks, 0.004 * o.cracks, cr);
-      c = mul(c, 1 - line * zone * 0.4);
+      c = mul(c, 1 - line * zone * 0.3);
     }
     if (o.leak) {
       // chorretones verticales de agua y óxido
-      const col = fbm(u, 0, 24, 1, 2, o.seed + 3);
-      const streak = smooth(0.62, 0.8, col) * smooth(1, 0.2, v + fbm(u, v, 4, 4, 2, o.seed + 4) * 0.4);
-      c = mix(c, mul(c, 0.6), streak * o.leak);
+      const col = fbm(u, 0, 24 * wx, 1, 2, o.seed + 3);
+      const streak = smooth(0.62, 0.8, col) * smooth(1, 0.2, v + fbm(u, v, 4 * wx, 4, 2, o.seed + 4) * 0.4);
+      c = mix(c, mul(c, 0.6), streak * o.leak * 0.35);
     }
     return c;
   };
@@ -249,11 +258,11 @@ const concrete = (base: Rgb, o: { stains?: number; seed: number; cracks?: number
 const blockWall = (base: Rgb, seed: number, trim: 'hazard' | 'none'): Painter =>
   layers(
     pixels((u, v, x, y) => {
-      let c = concrete(base, { seed, stains: 0.3, leak: 0.5 })(u, v, x, y);
-      // juntas de los bloques (2 × 10 por textura, al tresbolillo)
+      let c = concrete(base, { seed, stains: 0.3, leak: 0.5, wx: WX })(u, v, x, y);
+      // juntas de los bloques (2 × 10 por cada 256 px, al tresbolillo)
       const rows = 10;
       const row = Math.floor(v * rows);
-      const bu = (u * 2 + (row % 2) * 0.5) % 1;
+      const bu = (u * 2 * WX + (row % 2) * 0.5) % 1;
       const bv = (v * rows) % 1;
       if (bv < 0.03 || bu < 0.012) c = mul(c, 0.72);
       return c;
@@ -264,7 +273,7 @@ const blockWall = (base: Rgb, seed: number, trim: 'hazard' | 'none'): Painter =>
       ctx.fillStyle = '#c9a227';
       ctx.fillRect(0, h - sh, w, sh);
       ctx.fillStyle = '#1b1b1b';
-      const n = 6; // número entero de franjas por textura: sin cortes
+      const n = 6 * WX; // número entero de franjas por textura: sin cortes
       const step = w / n;
       for (let k = -1; k <= n; k++) {
         const x = k * step;
@@ -289,9 +298,9 @@ const blockWall = (base: Rgb, seed: number, trim: 'hazard' | 'none'): Painter =>
 
 const paintedWall = (top: Rgb, bottom: Rgb | null, seed: number): Painter =>
   pixels((u, v, x, y) => {
-    let c = concrete(top, { seed, stains: 0.18 })(u, v, x, y);
+    let c = concrete(top, { seed, stains: 0.18, wx: WX })(u, v, x, y);
     if (bottom) {
-      if (v > 0.55) c = concrete(bottom, { seed: seed + 9, stains: 0.25 })(u, v, x, y);
+      if (v > 0.55) c = concrete(bottom, { seed: seed + 9, stains: 0.25, wx: WX })(u, v, x, y);
       if (Math.abs(v - 0.55) < 0.005) c = mul(bottom, 0.6);
     }
     return c;
@@ -301,7 +310,7 @@ const paintedWall = (top: Rgb, bottom: Rgb | null, seed: number): Painter =>
 const brick = (a: Rgb, b: Rgb, seed: number): Painter =>
   pixels((u, v, x, y) => {
     const rows = 16;
-    const cols = 4;
+    const cols = 4 * WX;
     const row = Math.floor(v * rows);
     const bu = u * cols + (row % 2) * 0.5;
     const col = Math.floor(bu) % cols;
@@ -310,23 +319,23 @@ const brick = (a: Rgb, b: Rgb, seed: number): Painter =>
     const mortar = fu < 0.04 || fv < 0.1;
     const tone = hash2(col, row, seed);
     let c = mortar ? ([96, 88, 78] as Rgb) : mix(a, b, tone);
-    c = mul(c, 0.85 + fbm(u, v, 8, 16, 3, seed + 1) * 0.3 + hash2(x, y, seed) * 0.06);
+    c = mul(c, 0.88 + fbm(u, v, 8 * WX, 16, 3, seed + 1) * 0.24 + hash2(x, y, seed) * 0.06);
     // polvo blanquecino (las paredes del Nivel 2 son "calcáreas")
-    c = mix(c, [150, 140, 125], smooth(0.55, 0.85, fbm(u, v, 3, 6, 3, seed + 2)) * 0.25);
+    c = mix(c, [150, 140, 125], smooth(0.55, 0.85, fbm(u, v, 3 * WX, 6, 3, seed + 2)) * 0.1);
     return c;
   });
 
 const rustMetal = (seed: number): Painter =>
   pixels((u, v, x, y) => {
-    const n = fbm(u, v, 6, 12, 5, seed);
-    let c = mul([82, 70, 60], 0.8 + n * 0.4);
-    const rust = smooth(0.5, 0.75, fbm(u, v, 3, 6, 4, seed + 1));
-    c = mix(c, [124, 62, 24], rust * 0.7);
+    const n = fbm(u, v, 6 * WX, 12, 5, seed);
+    let c = mul([82, 70, 60], 0.85 + n * 0.3);
+    const rust = smooth(0.5, 0.75, fbm(u, v, 3 * WX, 6, 4, seed + 1));
+    c = mix(c, [124, 62, 24], rust * 0.4);
     // paneles con remaches
-    const pu = (u * 2) % 1;
+    const pu = (u * 2 * WX) % 1;
     const pv = (v * 4) % 1;
-    if (pu < 0.008 || pv < 0.006) c = mul(c, 0.5);
-    const ru = (u * 2) % 0.5;
+    if (pu < 0.008 * WX || pv < 0.006) c = mul(c, 0.5);
+    const ru = (u * 2 * WX) % 0.5;
     const rv = (v * 4) % 1;
     if (Math.hypot(ru - 0.04, rv - 0.06) < 0.012) c = mul(c, 0.55);
     return mul(c, 1 + hash2(x, y, seed) * 0.05);
@@ -354,6 +363,16 @@ export interface ThemeTextures {
   wallHeight: number; // metros de alto (el zócalo queda abajo)
   floorScale: number;
   ceilScale: number;
+  /**
+   * Cada cuánto (en fracción de la textura) se repite el dibujo regular de
+   * cada textura: el shader solo desplaza la textura en múltiplos de esto para
+   * que juntas, ladrillos y losetas sigan alineados. 0 = desplazamiento libre.
+   */
+  wallSnap: number[];
+  floorSnap: number[];
+  /** Tamaño en metros de las losetas/placas (para dar a cada una un tono); 0 = no son losetas. */
+  floorCell: number[];
+  ceilCell: number[];
 }
 
 const cache = new Map<Theme, ThemeTextures>();
@@ -369,7 +388,7 @@ export function themeTextures(theme: Theme): ThemeTextures {
 }
 
 function buildTheme(theme: Theme): ThemeTextures {
-  const wall = (p: Painter) => canvasTexture(256, 512, p);
+  const wall = (p: Painter) => canvasTexture(256 * WX, 512, p);
   const sq = (p: Painter, s = 512) => canvasTexture(s, s, p);
   const pair = (mk: (trim: boolean) => Painter) => [wall(mk(true)), wall(mk(false))];
   const build = (list: ((trim: boolean) => Painter)[]) => {
@@ -391,22 +410,26 @@ function buildTheme(theme: Theme): ThemeTextures {
         // 0 moqueta · 1 linóleo · 2 moqueta más seca y clara (salas de columnas) · 3 moqueta roja espesa
         floors: [sq(carpet([150, 126, 82], 1, 21)), sq(linoleum(22)), sq(carpet([166, 142, 96], 0.4, 23)), sq(carpet([118, 40, 30], 0.8, 24))],
         ceils: [sq(ceilingTiles(0.3, 31)), sq(ceilingTiles(1, 32))],
-        wallScale: 1.6,
+        wallScale: 1.6 * WX,
         wallHeight: 2.8,
         floorScale: 3,
         ceilScale: 1.2,
+        wallSnap: [1 / 12, 1 / 12, 0, 0, 1 / 12],
+        floorSnap: [0, 0.5, 0, 0],
+        floorCell: [0, 3 / 4, 0, 0],
+        ceilCell: [0.6, 0.6],
       };
     }
     case 'habitable': {
       // 0 hormigón gris (Aquila) · 1 hormigón blanco (pasillos) · 2 bloques con franja (almacén)
       // 3 ladrillo · 4 pintura verde (M.E.G.) · 5 piedra cálida (sector gótico) · 6 manila
       const w = build([
-        (trim) => pixels(concrete([132, 134, 136], { seed: 41, stains: 0.3, leak: trim ? 0.6 : 0.3, cracks: 1 })),
+        (trim) => pixels(concrete([132, 134, 136], { seed: 41, stains: 0.3, leak: trim ? 0.6 : 0.3, cracks: 1, wx: WX })),
         (trim) => paintedWall([196, 196, 190], trim ? [168, 168, 160] : null, 42),
         (trim) => blockWall([140, 142, 144], 43, trim ? 'hazard' : 'none'),
         () => brick([120, 62, 46], [92, 48, 38], 44),
         (trim) => paintedWall([186, 188, 178], trim ? [79, 107, 88] : null, 45),
-        () => pixels(concrete([150, 136, 116], { seed: 46, stains: 0.25, cracks: 1 })),
+        () => pixels(concrete([150, 136, 116], { seed: 46, stains: 0.25, cracks: 1, wx: WX })),
         (trim) => paintedWall([214, 198, 148], trim ? [178, 160, 116] : null, 47), // 6 manila
       ]);
       return {
@@ -419,16 +442,20 @@ function buildTheme(theme: Theme): ThemeTextures {
           sq(linoleum(54)),
         ],
         ceils: [sq(pixels(concrete([110, 112, 114], { seed: 61, stains: 0.35 }))), sq(ceilingTiles(0.6, 62))],
-        wallScale: 2.4,
+        wallScale: 2.4 * WX,
         wallHeight: 3,
         floorScale: 5,
         ceilScale: 4,
+        wallSnap: [0, 0, 1 / 4, 1 / 8, 0, 0, 0],
+        floorSnap: [0, 0, 1 / 8, 0.5],
+        floorCell: [0, 0, 0, 5 / 4],
+        ceilCell: [0, 2],
       };
     }
     case 'pipes': {
       // 0 hormigón polvoriento · 1 ladrillo marrón barro · 2 ladrillo negro · 3 metal oxidado
       const w = build([
-        () => pixels((u, v, x, y) => mix(concrete([96, 84, 72], { seed: 71, stains: 0.45, cracks: 2, leak: 0.7 })(u, v, x, y), [150, 140, 125], smooth(0.6, 0.9, fbm(u, v, 3, 6, 3, 72)) * 0.22)),
+        () => pixels((u, v, x, y) => mix(concrete([96, 84, 72], { seed: 71, stains: 0.45, cracks: 2, leak: 0.7, wx: WX })(u, v, x, y), [150, 140, 125], smooth(0.6, 0.9, fbm(u, v, 3 * WX, 6, 3, 72)) * 0.1)),
         () => brick([108, 74, 50], [82, 56, 40], 73),
         () => brick([46, 40, 36], [30, 26, 24], 74),
         () => rustMetal(75),
@@ -438,13 +465,51 @@ function buildTheme(theme: Theme): ThemeTextures {
         // 0 hormigón sucio · 1 rejilla
         floors: [sq(pixels(concrete([74, 66, 58], { seed: 81, stains: 0.45, cracks: 2 }))), sq(grate(82), 256)],
         ceils: [sq(pixels(concrete([58, 50, 44], { seed: 91, stains: 0.5 })))],
-        wallScale: 1.8,
+        wallScale: 1.8 * WX,
         wallHeight: 2.6,
         floorScale: 2.5,
         ceilScale: 3,
+        wallSnap: [0, 1 / 8, 1 / 8, 1 / 4],
+        floorSnap: [0, 0.1],
+        floorCell: [0, 0],
+        ceilCell: [0],
       };
     }
   }
+}
+
+// ---------------------------------------------------------------- suciedad
+
+let grimeTex: THREE.Texture | null = null;
+
+/**
+ * Textura de suciedad (se repite sin cortes y se muestrea a varias escalas):
+ * R = manchas grandes, G = manchas medianas, B = ruido estirado en vertical
+ * (chorretones). No lleva espacio de color: son datos.
+ */
+export function grimeTexture(): THREE.Texture {
+  if (grimeTex) return grimeTex;
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const img = ctx.createImageData(size, size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+      const v = y / size;
+      const i = (y * size + x) * 4;
+      img.data[i] = fbm(u, v, 4, 4, 5, 501) * 255;
+      img.data[i + 1] = fbm(u, v, 8, 8, 4, 502) * 255;
+      img.data[i + 2] = fbm(u, v, 32, 2, 3, 503) * 255;
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  grimeTex = tex;
+  return tex;
 }
 
 // ---------------------------------------------------------------- objetos

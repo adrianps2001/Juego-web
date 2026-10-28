@@ -93,11 +93,12 @@ export class Level3D {
     const L = map.def;
     const tex = themeTextures(L.theme);
     this.disposables.push(...useLevelLight(map), ...tex.walls, ...tex.wallUppers, ...tex.floors, ...tex.ceils);
-    const wallMats = tex.walls.map((t) => litMaterial({ map: t }, 0.3, true));
+    const wallMats = tex.walls.map((t, k) => litMaterial({ map: t }, 0.3, { snap: tex.wallSnap[k] ?? 0 }));
     // para las paredes más altas que la textura: la versión sin zócalo, que se repite hacia arriba
-    this.upperOf = new Map(wallMats.map((m, k) => [m, litMaterial({ map: tex.wallUppers[k] }, 0.3, true)]));
-    const floorMats = tex.floors.map((t) => litMaterial({ map: t }, 0, true));
-    const ceilMats = tex.ceils.map((t) => litMaterial({ map: t }, 0, true));
+    this.upperOf = new Map(wallMats.map((m, k) => [m, litMaterial({ map: tex.wallUppers[k] }, 0.3, { snap: tex.wallSnap[k] ?? 0 })]));
+    const floorMats = tex.floors.map((t, k) => litMaterial({ map: t }, 0, { snap: tex.floorSnap[k] ?? 0, cell: tex.floorCell[k] }));
+    // los techos no se desplazan (las placas tienen que cuadrar), pero cada placa lleva su tono
+    const ceilMats = tex.ceils.map((t, k) => litMaterial({ map: t }, 0, { cell: tex.ceilCell[k] }));
     const pitMat = litMaterial({ color: 0x3a3428 }, 0.3, true);
     const sink = new QuadSink();
     // fondo negro de los agujeros

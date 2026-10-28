@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { CELL, F_DEEP, F_RED, F_WET, type LevelMap } from './world';
+import { grimeTexture } from './textures';
+import { CELL, F_DEEP, F_RED, F_WET, type LevelMap, type Theme } from './world';
 
 /**
  * Uniforms compartidos por todos los materiales "iluminados". Al cambiar de
@@ -18,6 +19,16 @@ export const lightUniforms = {
   uTorchPos: { value: Array.from({ length: 6 }, () => new THREE.Vector3()) },
   uTorchDir: { value: Array.from({ length: 6 }, () => new THREE.Vector3(0, 0, -1)) },
   uTorchPower: { value: [0, 0, 0, 0, 0, 0] },
+  // suciedad en coordenadas del mundo (manchas, humedad, chorretones)
+  uGrimeMap: { value: null as THREE.Texture | null },
+  uGrimeTint: { value: new THREE.Color(0.55, 0.45, 0.25) },
+  uGrimeAmount: { value: 0.6 },
+};
+
+const GRIME: Record<Theme, [number, number, number, number]> = {
+  lobby: [0.55, 0.45, 0.24, 0.6],
+  habitable: [0.42, 0.42, 0.4, 0.65],
+  pipes: [0.33, 0.25, 0.18, 0.7],
 };
 
 export const MAX_TORCHES = 6;
@@ -79,6 +90,10 @@ export function useLevelLight(map: LevelMap): THREE.DataTexture[] {
   lightUniforms.uTint.value.setRGB(...L.tint);
   lightUniforms.uAmbient.value = L.ambient;
   lightUniforms.uCircuit.value = 1;
+  const [r, g, b, amount] = GRIME[L.theme];
+  lightUniforms.uGrimeMap.value = grimeTexture();
+  lightUniforms.uGrimeTint.value.setRGB(r, g, b);
+  lightUniforms.uGrimeAmount.value = amount;
   return [light, detail];
 }
 
@@ -129,6 +144,18 @@ function blur(src: Float32Array, w: number, h: number): Float32Array {
 
 export type LitParams = THREE.MeshBasicMaterialParameters & { emissive?: THREE.ColorRepresentation };
 
+/** Opciones de las superficies del nivel (paredes, suelos y techos). */
+export interface WorldOpts {
+  /**
+   * Desplazar la textura al azar por zonas para que no se vea la repetición.
+   * Valor = paso del desplazamiento (fracción de textura) para que el dibujo
+   * regular siga alineado; 0 = libre; omitido = no desplazar (techos).
+   */
+  snap?: number;
+  /** Tamaño en metros de cada loseta o placa: a cada una le toca un tono. */
+  cell?: number;
+}
+
 /**
  * Material ligero para todo el mundo: no usa las luces de Three.js (que se
  * calculan en cada píxel aunque estén apagadas). Combina la luz precalculada
@@ -139,14 +166,18 @@ export type LitParams = THREE.MeshBasicMaterialParameters & { emissive?: THREE.C
  * Con `world`, además aplica el mapa de detalle (humedad, rojo) y una
  * variación de color a gran escala que disimula la repetición de texturas.
  */
-export function litMaterial(params: LitParams = {}, offset = 0.35, world = false): THREE.MeshBasicMaterial {
+export function litMaterial(params: LitParams = {}, offset = 0.35, worldOpts: boolean | WorldOpts = false): THREE.MeshBasicMaterial {
   const { emissive, ...basic } = params;
   const mat = new THREE.MeshBasicMaterial(basic);
   const emissiveColor = new THREE.Color(emissive ?? 0x000000);
+  const world = worldOpts !== false;
+  const wo: WorldOpts = typeof worldOpts === 'object' ? worldOpts : {};
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, lightUniforms);
     shader.uniforms.uLmOffset = { value: offset };
     shader.uniforms.uEmissive = { value: emissiveColor };
+    shader.uniforms.uTileSnap = { value: wo.snap ?? -1 };
+    shader.uniforms.uCell = { value: wo.cell ?? 0 };
     shader.vertexShader =
       'uniform float uLmOffset;\nvarying vec3 vLmPos;\nvarying vec3 vWorldPos;\nvarying vec3 vWorldNormal;\n' +
       shader.vertexShader.replace(
@@ -171,11 +202,53 @@ uniform vec3 uEmissive;
 uniform vec3 uTorchPos[MAX_TORCHES];
 uniform vec3 uTorchDir[MAX_TORCHES];
 uniform float uTorchPower[MAX_TORCHES];
+uniform sampler2D uGrimeMap;
+uniform vec3 uGrimeTint;
+uniform float uGrimeAmount;
+uniform float uTileSnap;
+uniform float uCell;
 varying vec3 vLmPos;
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 ` +
       shader.fragmentShader.replace(
+        '#include <map_fragment>',
+        world
+          ? `// coordenadas en metros sobre la superficie: xz en suelos y techos, (horizontal, altura) en paredes
+  vec3 an = abs(vWorldNormal);
+  bool isWall = an.y < 0.5;
+  vec2 wp = !isWall ? vWorldPos.xz : (an.x > an.z ? vec2(vWorldPos.z, vWorldPos.y) : vec2(vWorldPos.x, vWorldPos.y));
+  // dos escalas que no coinciden entre sí ni con la textura base
+  float g1 = texture2D(uGrimeMap, wp * 0.137 + vec2(0.31, 0.73)).r;
+  float g2 = texture2D(uGrimeMap, mat2(0.8, -0.6, 0.6, 0.8) * wp * 0.371).g;
+#ifdef USE_MAP
+  vec4 sampledDiffuseColor;
+  if (uTileSnap >= 0.0) {
+    // cada zona desplaza la textura a su manera y se funde con la de al lado
+    float idx = g1 * 10.0 + g2 * 3.0;
+    float ii = floor(idx);
+    float ff = fract(idx);
+    vec2 oa = fract(sin(vec2(3.1, 7.7) * ii) * 43.7);
+    vec2 ob = fract(sin(vec2(3.1, 7.7) * (ii + 1.0)) * 43.7);
+    if (uTileSnap > 0.0) {
+      oa = floor(oa / uTileSnap) * uTileSnap;
+      ob = floor(ob / uTileSnap) * uTileSnap;
+    }
+    // en las paredes solo en horizontal: el zócalo se queda en su sitio
+    if (isWall) {
+      oa.y = 0.0;
+      ob.y = 0.0;
+    }
+    vec4 ca = texture2D(map, vMapUv + oa);
+    vec4 cb = texture2D(map, vMapUv + ob);
+    sampledDiffuseColor = mix(ca, cb, smoothstep(0.25, 0.75, ff - 0.1 * dot(ca.rgb - cb.rgb, vec3(1.0))));
+  } else {
+    sampledDiffuseColor = texture2D(map, vMapUv);
+  }
+  diffuseColor *= sampledDiffuseColor;
+#endif`
+          : '#include <map_fragment>',
+      ).replace(
         '#include <opaque_fragment>',
         `vec4 lm = texture2D(uLightMap, vLmPos.xz * uLmScale);
   float lmFloor = lm.b * ${H_RANGE.toFixed(1)} + ${H_MIN.toFixed(1)};
@@ -193,6 +266,26 @@ varying vec3 vWorldNormal;
   // Habitaciones Rojas: todo vira al rojo
   float lum = dot(diffuseColor.rgb, vec3(0.45, 0.4, 0.15));
   diffuseColor.rgb = mix(diffuseColor.rgb, vec3(lum * 1.55, lum * 0.22, lum * 0.18), dm.g * 0.9);
+  // losetas y placas: cada una con su tono, y alguna manchada
+  if (uCell > 0.0) {
+    vec2 cid = floor(wp / uCell + 0.001);
+    float h = fract(sin(dot(cid, vec2(12.9898, 78.233))) * 43758.5453);
+    diffuseColor.rgb *= 0.91 + h * 0.12;
+    if (h > 0.92) diffuseColor.rgb *= mix(vec3(1.0), uGrimeTint, 0.55);
+  }
+  // suciedad: manchas grandes por todas partes
+  float grime = smoothstep(0.5, 0.78, g1 * 0.65 + g2 * 0.35) * 0.8;
+  if (isWall) {
+    float h01 = clamp(above / max(lmCeil - lmFloor, 0.5), 0.0, 1.0);
+    // humedad que sube desde el suelo, con el borde irregular
+    grime += (1.0 - smoothstep(0.02, 0.1 + g2 * 0.4, h01)) * 0.45;
+    // chorretones que bajan desde el techo
+    // (anchos e irregulares, y solo en algunas zonas, para que no parezcan costuras)
+    float st = texture2D(uGrimeMap, vec2(wp.x * 0.11, wp.y * 0.012)).b;
+    float streak = smoothstep(0.56, 0.8, st) * smoothstep(0.42, 0.7, g2);
+    grime += streak * smoothstep(0.3, 1.0, h01 + g1 * 0.3) * 0.45;
+  }
+  diffuseColor.rgb *= mix(vec3(1.0), uGrimeTint, clamp(grime, 0.0, 1.0) * uGrimeAmount);
 #endif
   float lmLight = 2.0 * (lm.r + lm.g * uFlicker * uCircuit) * (1.0 - uBlackout);
   // un poco más oscuro abajo, como si la luz viniera del techo
