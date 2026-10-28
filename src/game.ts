@@ -17,9 +17,10 @@ const CATCH_DIST = 0.8;
 const RESPAWN_TIME = 4;
 const TORCH_POWER = 1.6;
 const MOUSE_SPEED = 0.0022;
-
-// resolución de render según la calidad (fracción de los píxeles de la pantalla)
-const PIXEL_RATIO = { baja: 0.5, media: 0.75, alta: 1.5 };
+// se dibuja a media resolución: se ve algo más borroso pero va fluido
+const PIXEL_RATIO = 0.5;
+// movimientos de ratón más grandes que esto en un solo evento son fallos del navegador
+const MAX_MOUSE_JUMP = 250;
 
 interface Remote {
   model: Humanoid;
@@ -81,13 +82,16 @@ export class Game {
     this.picked = new Set(picked);
     this.pose = { level: 0, x: spawn.x, z: spawn.z, ry: 0, light: false };
 
+    this.renderer.setPixelRatio(PIXEL_RATIO);
     container.appendChild(this.renderer.domElement);
     this.post = new Post(this.renderer, this.scene, this.camera);
+    this.post.setPixelRatio(PIXEL_RATIO);
     this.camera.rotation.order = 'YXZ';
     this.camera.add(this.torch.group);
     this.scene.add(this.camera);
 
     this.bindInput();
+    this.resize();
     this.stopSettings = onSettings((st) => this.applySettings(st));
     window.addEventListener('resize', this.resize);
     hud.show(true);
@@ -213,9 +217,14 @@ export class Game {
 
   /** Captura el ratón para jugar (el botón «Continuar» del menú de pausa). */
   lockPointer = () => {
-    if (this.pose.level !== ESCAPED) void this.renderer.domElement.requestPointerLock();
+    if (this.pose.level === ESCAPED) return;
+    const canvas = this.renderer.domElement;
+    // movimiento "en bruto", sin la aceleración del sistema (si el navegador lo admite)
+    canvas.requestPointerLock({ unadjustedMovement: true })?.catch(() => canvas.requestPointerLock());
   };
+  private lockedAt = 0;
   private onLockChange = () => {
+    this.lockedAt = performance.now();
     this.hud.showLock(document.pointerLockElement !== this.renderer.domElement && this.pose.level !== ESCAPED);
   };
   private onKeyDown = (e: KeyboardEvent) => {
@@ -225,6 +234,10 @@ export class Game {
   private onKeyUp = (e: KeyboardEvent) => this.keys.delete(e.code);
   private onMouseMove = (e: MouseEvent) => {
     if (document.pointerLockElement !== this.renderer.domElement) return;
+    // Chrome a veces manda un salto enorme de golpe (al capturar el ratón o
+    // al cambiar de ventana): se ignora para que la cámara no pegue un giro
+    if (Math.abs(e.movementX) > MAX_MOUSE_JUMP || Math.abs(e.movementY) > MAX_MOUSE_JUMP) return;
+    if (performance.now() - this.lockedAt < 150) return;
     const speed = MOUSE_SPEED * this.settings.sensitivity;
     this.yaw -= e.movementX * speed;
     this.pitch = THREE.MathUtils.clamp(this.pitch - e.movementY * speed * (this.settings.invertY ? -1 : 1), -1.4, 1.4);
@@ -241,11 +254,6 @@ export class Game {
 
   private applySettings(st: Settings) {
     this.settings = st;
-    const ratio = Math.min(window.devicePixelRatio, PIXEL_RATIO[st.quality]);
-    this.renderer.setPixelRatio(ratio);
-    this.post.setPixelRatio(ratio);
-    this.resize();
-    this.post.setBloom(st.quality === 'alta');
     this.post.setBrightness(st.brightness);
     this.hud.showFps(st.showFps);
   }
@@ -425,8 +433,9 @@ export class Game {
     const insanity = Math.max(0, 1 - this.sanity / 40);
     const bobY = moving ? Math.sin(this.bob) * 0.04 : 0;
     this.camera.position.set(this.pose.x, EYE + bobY, this.pose.z);
-    this.camera.rotation.set(this.pitch, this.yaw, Math.sin(this.time * 0.9) * 0.06 * insanity);
-    const fov = this.settings.fov + Math.sin(this.time * 1.3) * 6 * insanity;
+    // con poca cordura la cámara se inclina un poco y el zoom respira, sin tocar hacia dónde miras
+    this.camera.rotation.set(this.pitch, this.yaw, Math.sin(this.time * 0.9) * 0.02 * insanity);
+    const fov = this.settings.fov + Math.sin(this.time * 1.3) * 2 * insanity;
     if (Math.abs(fov - this.camera.fov) > 0.01) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();

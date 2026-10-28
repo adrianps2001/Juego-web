@@ -3,7 +3,6 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
 /** Grano, viñeta, aberración cromática y distorsión según la cordura. */
 const FilmShader = {
@@ -50,22 +49,14 @@ const FilmShader = {
 
 export class Post {
   readonly composer: EffectComposer;
-  private bloom: UnrealBloomPass;
   private film: ShaderPass;
 
   constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) {
     this.composer = new EffectComposer(renderer);
     this.composer.addPass(new RenderPass(scene, camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.32, 0.35, 1.05);
-    this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
     this.film = new ShaderPass(FilmShader);
     this.composer.addPass(this.film);
-  }
-
-  /** El resplandor es lo más caro del postprocesado. */
-  setBloom(on: boolean) {
-    this.bloom.enabled = on;
   }
 
   setBrightness(v: number) {

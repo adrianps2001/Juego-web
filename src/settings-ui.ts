@@ -1,4 +1,4 @@
-import { DEFAULTS, onSettings, updateSettings, type Quality, type Settings } from './settings';
+import { DEFAULTS, onSettings, updateSettings, type Settings } from './settings';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -25,8 +25,6 @@ export function initSettingsUi() {
   invert.addEventListener('change', () => updateSettings({ invertY: invert.checked }));
   const fps = $<HTMLInputElement>('set-fps');
   fps.addEventListener('change', () => updateSettings({ showFps: fps.checked }));
-  const quality = $<HTMLSelectElement>('set-quality');
-  quality.addEventListener('change', () => updateSettings({ quality: quality.value as Quality }));
 
   onSettings((s) => {
     for (const r of ranges) {
@@ -35,7 +33,6 @@ export function initSettingsUi() {
     }
     invert.checked = s.invertY;
     fps.checked = s.showFps;
-    quality.value = s.quality;
   });
 
   $('settings-reset').addEventListener('click', () => updateSettings({ ...DEFAULTS }));

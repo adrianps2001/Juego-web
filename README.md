@@ -38,11 +38,10 @@ Desde el menú principal o desde la pausa (`Esc`) se puede ajustar:
 - **Sonido**: volumen general, ambiente (el zumbido de los fluorescentes) y
   efectos.
 - **Controles**: sensibilidad del ratón e invertir el eje vertical.
-- **Gráficos**: calidad, campo de visión, brillo y contador de FPS.
-  - *Baja*: resolución al 50 %, sin resplandor. Para ordenadores modestos.
-  - *Media* (por defecto): resolución al 75 %, sin resplandor.
-  - *Alta*: resolución completa (hasta 1,5× en pantallas de alta densidad) y
-    resplandor en las luces.
+- **Gráficos**: campo de visión, brillo y contador de FPS.
+
+El juego se dibuja siempre a media resolución para que vaya fluido en
+cualquier ordenador (`PIXEL_RATIO` en `src/game.ts`).
 
 Los ajustes se guardan en el navegador.
 
@@ -77,8 +76,8 @@ Smilers, etc.) están en `LEVELS`, en [`src/world.ts`](src/world.ts).
 ## Tecnología
 
 - **Three.js** para el 3D, con iluminación precalculada (un mapa de luz que
-  tiene en cuenta las sombras de las paredes) y postprocesado (resplandor,
-  grano de película y distorsión cuando pierdes la cordura). No se usan luces
+  tiene en cuenta las sombras de las paredes) y postprocesado (grano de
+  película y distorsión cuando pierdes la cordura). No se usan luces
   de Three.js: las linternas (la tuya y las de tus compañeros) se calculan en
   el mismo shader que el mapa de luz, que es mucho más ligero.
 - **PeerJS (WebRTC)** para el online. El jugador que crea la sala es el

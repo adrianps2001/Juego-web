@@ -60,7 +60,6 @@ button.secondary:hover { background: #4d4630; }
 .setting { display: grid; grid-template-columns: 1fr 1.2fr 52px; align-items: center; gap: 10px; font-size: 0.9rem; }
 .setting output { text-align: right; font-variant-numeric: tabular-nums; opacity: 0.8; font-size: 0.85rem; }
 .setting input[type=range] { width: 100%; accent-color: #b39b3c; padding: 0; }
-select { padding: 6px 8px; border-radius: 6px; border: 1px solid #5a5030; background: #0f0e09; color: #f1ead2; font-size: 0.9rem; }
 .check { flex-direction: row; align-items: center; gap: 8px; font-size: 0.9rem; }
 .check input { accent-color: #b39b3c; width: 16px; height: 16px; }
 .settings-panel .row { margin-top: 10px; }

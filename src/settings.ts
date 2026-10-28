@@ -1,15 +1,12 @@
 // Ajustes del jugador. Se guardan en el navegador (si se puede) y avisan a
 // quien esté suscrito cuando cambian.
 
-export type Quality = 'baja' | 'media' | 'alta';
-
 export interface Settings {
   master: number; // volumen general (0-1)
   ambient: number; // zumbido de fondo
   sfx: number; // pasos, Smilers, efectos
   sensitivity: number; // multiplicador de la sensibilidad del ratón
   invertY: boolean;
-  quality: Quality;
   fov: number;
   brightness: number;
   showFps: boolean;
@@ -21,7 +18,6 @@ export const DEFAULTS: Settings = {
   sfx: 0.8,
   sensitivity: 1,
   invertY: false,
-  quality: 'media',
   fov: 75,
   brightness: 1,
   showFps: false,
