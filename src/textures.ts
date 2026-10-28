@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import type { Theme } from './world';
 
-// Todas las texturas se dibujan en un <canvas>: no hace falta ningún archivo.
+// Todas las texturas se generan por código. Las de superficies se calculan
+// píxel a píxel con ruido "periódico": lo que sale por un borde entra por el
+// opuesto, así que al repetirse no se nota ningún corte.
 
 type Painter = (ctx: CanvasRenderingContext2D, w: number, h: number) => void;
 
@@ -13,340 +15,339 @@ export function canvasTexture(w: number, h: number, paint: Painter, repeat = tru
   const tex = new THREE.CanvasTexture(canvas);
   if (repeat) tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 8;
+  tex.anisotropy = 4;
   return tex;
 }
 
-function noise(ctx: CanvasRenderingContext2D, w: number, h: number, amount: number, density = 0.6) {
-  const n = w * h * density;
-  for (let i = 0; i < n; i++) {
-    const v = (Math.random() - 0.5) * amount;
-    ctx.fillStyle = v > 0 ? `rgba(255,255,255,${v})` : `rgba(0,0,0,${-v})`;
-    ctx.fillRect(Math.random() * w, Math.random() * h, 1 + Math.random(), 1 + Math.random());
-  }
+// ---------------------------------------------------------------- ruido
+
+function hash2(x: number, y: number, seed: number): number {
+  let h = Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(seed, 1442695041);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
-function blotches(ctx: CanvasRenderingContext2D, w: number, h: number, color: string, count: number, maxR: number, y0 = 0, y1 = h) {
-  for (let i = 0; i < count; i++) {
-    const x = Math.random() * w;
-    const y = y0 + Math.random() * (y1 - y0);
-    const r = maxR * (0.3 + Math.random() * 0.7);
-    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, color);
-    g.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = g;
-    for (const ox of [-w, 0, w]) {
-      ctx.fillRect(x - r + ox, y - r, r * 2, r * 2);
-    }
-  }
+/** Ruido de valor que se repite cada `px` × `py` celdas. */
+function vnoise(x: number, y: number, px: number, py: number, seed: number): number {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const fx = x - ix;
+  const fy = y - iy;
+  const sx = fx * fx * (3 - 2 * fx);
+  const sy = fy * fy * (3 - 2 * fy);
+  const x0 = ((ix % px) + px) % px;
+  const y0 = ((iy % py) + py) % py;
+  const x1 = (x0 + 1) % px;
+  const y1 = (y0 + 1) % py;
+  const a = hash2(x0, y0, seed);
+  const b = hash2(x1, y0, seed);
+  const c = hash2(x0, y1, seed);
+  const d = hash2(x1, y1, seed);
+  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
 }
 
-// ---- paredes: la textura cubre toda la altura (zócalo abajo) ----
-
-const wallpaper: Painter = (ctx, w, h) => {
-  ctx.fillStyle = '#c8b25e';
-  ctx.fillRect(0, 0, w, h);
-  const stripe = w / 6;
-  for (let x = 0; x < w; x += stripe) {
-    ctx.fillStyle = 'rgba(125, 98, 32, 0.13)';
-    ctx.fillRect(x, 0, stripe * 0.22, h);
-    ctx.fillStyle = 'rgba(255, 240, 170, 0.07)';
-    ctx.fillRect(x + stripe * 0.5, 0, stripe * 0.08, h);
+/** Ruido fractal periódico. u, v en [0, 1); `cells` = celdas de la primera octava. */
+function fbm(u: number, v: number, cellsX: number, cellsY: number, octaves: number, seed: number): number {
+  let sum = 0;
+  let amp = 0.5;
+  let norm = 0;
+  for (let o = 0; o < octaves; o++) {
+    const cx = cellsX << o;
+    const cy = cellsY << o;
+    sum += vnoise(u * cx, v * cy, cx, cy, seed + o * 31) * amp;
+    norm += amp;
+    amp *= 0.5;
   }
-  // motivo de rombos
-  ctx.fillStyle = 'rgba(115, 88, 28, 0.17)';
-  const step = stripe / 2;
-  for (let x = stripe * 0.11; x < w; x += stripe) {
-    for (let y = 0; y < h; y += step) {
-      const s = step * 0.32;
-      ctx.beginPath();
-      ctx.moveTo(x + stripe * 0.25, y);
-      ctx.lineTo(x + stripe * 0.25 + s, y + s);
-      ctx.lineTo(x + stripe * 0.25, y + 2 * s);
-      ctx.lineTo(x + stripe * 0.25 - s, y + s);
-      ctx.fill();
-    }
-  }
-  // humedad que sube desde el suelo y manchas sueltas
-  const damp = ctx.createLinearGradient(0, h, 0, h * 0.6);
-  damp.addColorStop(0, 'rgba(70, 52, 15, 0.35)');
-  damp.addColorStop(1, 'rgba(70, 52, 15, 0)');
-  ctx.fillStyle = damp;
-  ctx.fillRect(0, h * 0.6, w, h * 0.4);
-  blotches(ctx, w, h, 'rgba(95, 72, 20, 0.16)', 7, w / 5);
-  blotches(ctx, w, h, 'rgba(80, 60, 15, 0.22)', 4, w / 8, h * 0.8, h);
-  noise(ctx, w, h, 0.08);
-  // zócalo de madera
-  const bh = h * 0.045;
-  ctx.fillStyle = '#6b5232';
-  ctx.fillRect(0, h - bh, w, bh);
-  ctx.fillStyle = 'rgba(255,230,180,0.25)';
-  ctx.fillRect(0, h - bh, w, 2);
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  ctx.fillRect(0, h - bh - 2, w, 2);
-  // moldura del techo
-  ctx.fillStyle = 'rgba(90, 70, 25, 0.35)';
-  ctx.fillRect(0, 0, w, 3);
-};
-
-const concreteWall: Painter = (ctx, w, h) => {
-  ctx.fillStyle = '#8b8d8e';
-  ctx.fillRect(0, 0, w, h);
-  noise(ctx, w, h, 0.18, 1);
-  blotches(ctx, w, h, 'rgba(40, 45, 50, 0.28)', 10, w / 4);
-  // juntas de los bloques de hormigón
-  ctx.fillStyle = 'rgba(0,0,0,0.22)';
-  const bw = w / 2;
-  const bhh = h / 10;
-  for (let row = 0; row < 10; row++) {
-    ctx.fillRect(0, row * bhh, w, 2);
-    const off = row % 2 ? bw / 2 : 0;
-    for (let x = off; x < w; x += bw) ctx.fillRect(x, row * bhh, 2, bhh);
-  }
-  // franja de seguridad amarilla y negra abajo
-  const sh = h * 0.08;
-  ctx.fillStyle = '#c9a227';
-  ctx.fillRect(0, h - sh, w, sh);
-  ctx.fillStyle = '#1b1b1b';
-  for (let x = -sh; x < w + sh; x += sh * 1.4) {
-    ctx.beginPath();
-    ctx.moveTo(x, h);
-    ctx.lineTo(x + sh * 0.7, h);
-    ctx.lineTo(x + sh * 1.4, h - sh);
-    ctx.lineTo(x + sh * 0.7, h - sh);
-    ctx.fill();
-  }
-  noise(ctx, w, sh, 0.25, 1);
-};
-
-const grimeWall: Painter = (ctx, w, h) => {
-  ctx.fillStyle = '#54453a';
-  ctx.fillRect(0, 0, w, h);
-  noise(ctx, w, h, 0.2, 1);
-  blotches(ctx, w, h, 'rgba(20, 10, 5, 0.4)', 10, w / 4);
-  for (let i = 0; i < 30; i++) {
-    const x = Math.random() * w;
-    const g = ctx.createLinearGradient(0, 0, 0, h);
-    g.addColorStop(0, 'rgba(25, 12, 4, 0.45)');
-    g.addColorStop(1, 'rgba(25, 12, 4, 0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(x, 0, 2 + Math.random() * 5, h * (0.3 + Math.random() * 0.7));
-  }
-  // remaches
-  ctx.fillStyle = 'rgba(0,0,0,0.5)';
-  for (let x = w / 8; x < w; x += w / 4) {
-    for (const y of [h * 0.1, h * 0.9]) {
-      ctx.beginPath();
-      ctx.arc(x, y, 3, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-};
-
-// ---- suelos y techos ----
-
-const carpet: Painter = (ctx, w, h) => {
-  ctx.fillStyle = '#9a8449';
-  ctx.fillRect(0, 0, w, h);
-  noise(ctx, w, h, 0.22, 1.6);
-  blotches(ctx, w, h, 'rgba(60, 45, 15, 0.28)', 6, w / 3);
-};
-
-const ceilingTiles: Painter = (ctx, w, h) => {
-  ctx.fillStyle = '#d8d1b4';
-  ctx.fillRect(0, 0, w, h);
-  // agujeritos típicos de las placas de techo
-  ctx.fillStyle = 'rgba(80,70,40,0.25)';
-  for (let i = 0; i < w * h * 0.01; i++) ctx.fillRect(Math.random() * w, Math.random() * h, 1.5, 1.5);
-  noise(ctx, w, h, 0.1, 0.8);
-  blotches(ctx, w, h, 'rgba(130, 105, 40, 0.18)', 3, w / 4);
-  ctx.fillStyle = '#8f8670';
-  for (let i = 0; i < w; i += w / 2) {
-    ctx.fillRect(i, 0, 4, h);
-    ctx.fillRect(0, i, w, 4);
-  }
-};
-
-const concreteFloor: Painter = (ctx, w, h) => {
-  ctx.fillStyle = '#5c5e5f';
-  ctx.fillRect(0, 0, w, h);
-  noise(ctx, w, h, 0.18, 1);
-  blotches(ctx, w, h, 'rgba(15, 20, 25, 0.4)', 8, w / 3);
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
-  ctx.fillRect(0, 0, w, 2);
-  ctx.fillRect(0, 0, 2, h);
-  // líneas de aparcamiento
-  ctx.fillStyle = 'rgba(220, 200, 120, 0.35)';
-  ctx.fillRect(w * 0.48, h * 0.1, w * 0.04, h * 0.35);
-};
-
-const concreteCeiling: Painter = (ctx, w, h) => {
-  ctx.fillStyle = '#6b6d6f';
-  ctx.fillRect(0, 0, w, h);
-  noise(ctx, w, h, 0.15, 1);
-  blotches(ctx, w, h, 'rgba(20, 20, 20, 0.3)', 6, w / 3);
-};
-
-const grate: Painter = (ctx, w, h) => {
-  ctx.fillStyle = '#1a1714';
-  ctx.fillRect(0, 0, w, h);
-  ctx.fillStyle = '#4a423a';
-  const n = 8;
-  for (let i = 0; i < n; i++) {
-    ctx.fillRect((i * w) / n, 0, w / n / 3, h);
-    ctx.fillRect(0, (i * h) / n, w, h / n / 6);
-  }
-  noise(ctx, w, h, 0.3, 1);
-  blotches(ctx, w, h, 'rgba(80, 35, 10, 0.4)', 6, w / 4);
-};
-
-const pipeCeiling: Painter = (ctx, w, h) => {
-  ctx.fillStyle = '#3a302a';
-  ctx.fillRect(0, 0, w, h);
-  noise(ctx, w, h, 0.2, 1);
-  blotches(ctx, w, h, 'rgba(10, 5, 0, 0.45)', 6, w / 3);
-};
-
-// ---- variantes extra ----
-
-const oldWallpaper: Painter = (ctx, w, h) => {
-  wallpaper(ctx, w, h);
-  ctx.fillStyle = 'rgba(70, 55, 20, 0.28)';
-  ctx.fillRect(0, 0, w, h);
-  blotches(ctx, w, h, 'rgba(60, 50, 15, 0.35)', 10, w / 4);
-  blotches(ctx, w, h, 'rgba(50, 60, 30, 0.25)', 5, w / 6); // moho
-  // papel despegado: tiras más claras con borde oscuro
-  for (let i = 0; i < 3; i++) {
-    const x = Math.random() * w;
-    const y = Math.random() * h * 0.6;
-    const pw = 15 + Math.random() * 30;
-    const ph = 40 + Math.random() * 120;
-    ctx.fillStyle = 'rgba(205, 190, 140, 0.9)';
-    ctx.fillRect(x, y, pw, ph);
-    ctx.fillStyle = 'rgba(40, 30, 10, 0.5)';
-    ctx.fillRect(x, y + ph, pw, 3);
-    ctx.fillRect(x + pw, y, 2, ph);
-  }
-};
-
-const officePaint: Painter = (ctx, w, h) => {
-  ctx.fillStyle = '#c9bf9c';
-  ctx.fillRect(0, 0, w, h);
-  noise(ctx, w, h, 0.07, 0.8);
-  blotches(ctx, w, h, 'rgba(110, 95, 60, 0.15)', 6, w / 4);
-  // media pared inferior más oscura con moldura
-  ctx.fillStyle = '#8f8467';
-  ctx.fillRect(0, h * 0.62, w, h * 0.38);
-  ctx.fillStyle = '#5e5440';
-  ctx.fillRect(0, h * 0.61, w, 5);
-  noise(ctx, w, h * 0.38, 0.1, 0.8);
-  ctx.fillStyle = '#3d362a';
-  ctx.fillRect(0, h - h * 0.04, w, h * 0.04);
-};
-
-const wetCarpet: Painter = (ctx, w, h) => {
-  carpet(ctx, w, h);
-  ctx.fillStyle = 'rgba(40, 32, 12, 0.35)';
-  ctx.fillRect(0, 0, w, h);
-  blotches(ctx, w, h, 'rgba(20, 18, 8, 0.4)', 8, w / 3);
-};
-
-const linoleum: Painter = (ctx, w, h) => {
-  const n = 4;
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) {
-      ctx.fillStyle = (i + j) % 2 ? '#a59d86' : '#b8b09a';
-      ctx.fillRect((i * w) / n, (j * h) / n, w / n, h / n);
-    }
-  }
-  noise(ctx, w, h, 0.12, 0.8);
-  blotches(ctx, w, h, 'rgba(60, 50, 30, 0.2)', 5, w / 4);
-  ctx.fillStyle = 'rgba(0,0,0,0.25)';
-  for (let i = 0; i <= n; i++) {
-    ctx.fillRect((i * w) / n, 0, 1.5, h);
-    ctx.fillRect(0, (i * h) / n, w, 1.5);
-  }
-};
-
-const brokenTiles: Painter = (ctx, w, h) => {
-  ceilingTiles(ctx, w, h);
-  blotches(ctx, w, h, 'rgba(110, 80, 20, 0.35)', 6, w / 3);
-  blotches(ctx, w, h, 'rgba(60, 50, 20, 0.3)', 3, w / 5);
-  // una placa combada y más oscura
-  ctx.fillStyle = 'rgba(80, 65, 30, 0.25)';
-  ctx.fillRect(w / 2 + 4, 4, w / 2 - 8, h / 2 - 8);
-};
-
-const greenOffice: Painter = (ctx, w, h) => {
-  ctx.fillStyle = '#b7b9b0';
-  ctx.fillRect(0, 0, w, h);
-  noise(ctx, w, h, 0.12, 1);
-  ctx.fillStyle = '#4f6b58';
-  ctx.fillRect(0, h * 0.55, w, h * 0.45);
-  noise(ctx, w, h * 0.45, 0.15, 1);
-  blotches(ctx, w, h, 'rgba(30, 40, 30, 0.25)', 8, w / 4);
-  ctx.fillStyle = '#2c3b31';
-  ctx.fillRect(0, h * 0.55, w, 4);
-};
-
-const dirtyConcrete: Painter = (ctx, w, h) => {
-  concreteWall(ctx, w, h);
-  ctx.fillStyle = 'rgba(30, 25, 15, 0.3)';
-  ctx.fillRect(0, 0, w, h);
-  blotches(ctx, w, h, 'rgba(20, 15, 5, 0.4)', 10, w / 3);
-  // marca de agua: hasta donde llegó la inundación
-  ctx.fillStyle = 'rgba(25, 30, 25, 0.4)';
-  ctx.fillRect(0, h * 0.7, w, h * 0.3);
-};
-
-const wetConcrete: Painter = (ctx, w, h) => {
-  concreteFloor(ctx, w, h);
-  ctx.fillStyle = 'rgba(10, 18, 25, 0.35)';
-  ctx.fillRect(0, 0, w, h);
-  blotches(ctx, w, h, 'rgba(120, 140, 160, 0.12)', 6, w / 3); // reflejos
-};
-
-const paintedFloor: Painter = (ctx, w, h) => {
-  ctx.fillStyle = '#5a5f5c';
-  ctx.fillRect(0, 0, w, h);
-  noise(ctx, w, h, 0.16, 1);
-  ctx.fillStyle = 'rgba(214, 180, 40, 0.75)';
-  ctx.fillRect(0, h * 0.45, w, h * 0.06);
-  noise(ctx, w, h, 0.1, 0.5);
-};
-
-const beamCeiling: Painter = (ctx, w, h) => {
-  concreteCeiling(ctx, w, h);
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  ctx.fillRect(0, h * 0.42, w, h * 0.16);
-  ctx.fillStyle = 'rgba(255,255,255,0.06)';
-  ctx.fillRect(0, h * 0.42, w, 3);
-};
-
-const rustMetal: Painter = (ctx, w, h) => {
-  ctx.fillStyle = '#4b3a2c';
-  ctx.fillRect(0, 0, w, h);
-  noise(ctx, w, h, 0.25, 1);
-  blotches(ctx, w, h, 'rgba(120, 55, 15, 0.45)', 12, w / 4);
-  ctx.fillStyle = 'rgba(0,0,0,0.5)';
-  for (let x = 0; x < w; x += w / 2) ctx.fillRect(x, 0, 3, h);
-  for (let y = 0; y < h; y += h / 4) ctx.fillRect(0, y, w, 3);
-  ctx.fillStyle = 'rgba(0,0,0,0.6)';
-  for (let x = 6; x < w; x += w / 2) for (let y = 6; y < h; y += h / 4) {
-    ctx.beginPath();
-    ctx.arc(x, y, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-};
-
-/** Mitad superior de una textura de pared, estirada (sin zócalo ni franjas). */
-export function upperHalf(tex: THREE.Texture): THREE.CanvasTexture {
-  const src = tex.image as HTMLCanvasElement;
-  return canvasTexture(src.width, src.height, (ctx, w, h) => ctx.drawImage(src, 0, 0, w, h / 2, 0, 0, w, h));
+  return sum / norm;
 }
+
+type Rgb = [number, number, number];
+type PixelFn = (u: number, v: number, x: number, y: number) => Rgb;
+
+/** Pinta cada píxel con la función dada (u, v en [0, 1); v = 0 arriba). */
+function pixels(fn: PixelFn): Painter {
+  return (ctx, w, h) => {
+    const img = ctx.createImageData(w, h);
+    const d = img.data;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const [r, g, b] = fn(x / w, y / h, x, y);
+        const i = (y * w + x) * 4;
+        d[i] = r;
+        d[i + 1] = g;
+        d[i + 2] = b;
+        d[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  };
+}
+
+const mix = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const mul = (a: Rgb, k: number): Rgb => [a[0] * k, a[1] * k, a[2] * k];
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+const smooth = (e0: number, e1: number, v: number) => {
+  const t = clamp01((v - e0) / (e1 - e0));
+  return t * t * (3 - 2 * t);
+};
+
+/** Pinta en un painter después de otro. */
+const layers =
+  (...ps: Painter[]): Painter =>
+  (ctx, w, h) => {
+    for (const p of ps) p(ctx, w, h);
+  };
+
+// Las texturas de pared cubren la altura de la pared: abajo llevan zócalo o
+// franja. Para paredes más altas se usa la versión "upper" (sin zócalo) que
+// sí se repite en vertical sin cortes.
+
+// ---------------------------------------------------------------- Nivel 0
+
+interface WallpaperOpts {
+  base: Rgb;
+  stripe: Rgb;
+  stain: number;
+  trim: boolean;
+  pale?: boolean;
+  peel?: boolean; // deja ver rojo debajo
+}
+
+function wallpaperPainter(o: WallpaperOpts, seed: number): Painter {
+  const motif = o.pale ? 0.03 : 0.06;
+  const base = pixels((u, v, x) => {
+    // franjas verticales suaves (número entero por textura: sin cortes)
+    const s = Math.sin(u * Math.PI * 2 * 6);
+    const fine = Math.sin(u * Math.PI * 2 * 48) * 0.5 + 0.5;
+    let c = mix(o.base, o.stripe, (s * 0.5 + 0.5) * 0.35 + fine * 0.08);
+    // pequeño motivo de rombos impreso
+    const du = (u * 12) % 1;
+    const dv = (v * (o.trim ? 24 : 12)) % 1;
+    const diamond = Math.abs(du - 0.5) + Math.abs(dv - 0.5) < 0.18 ? 1 : 0;
+    c = mul(c, 1 - diamond * motif);
+    // manchas de humedad y grano del papel
+    const stain = fbm(u, v, 3, o.trim ? 6 : 3, 4, seed);
+    c = mul(c, 1 - smooth(0.55, 0.85, stain) * o.stain);
+    const grain = hash2(x, Math.floor(v * 4096), seed) * 0.06 - 0.03;
+    c = mul(c, 1 + grain);
+    if (o.peel) {
+      const p = fbm(u, v, 4, o.trim ? 8 : 4, 3, seed + 7);
+      if (p > 0.66) c = mix([150, 22, 18], [90, 10, 10], fbm(u, v, 16, 32, 2, seed + 9));
+      else if (p > 0.63) c = mul(c, 0.55); // borde del papel despegado
+    }
+    if (o.trim) {
+      // humedad que sube del suelo
+      c = mul(c, 1 - smooth(0.62, 1.0, v) * 0.22 * (0.6 + stain * 0.8));
+    }
+    return c;
+  });
+  if (!o.trim) return base;
+  return layers(base, (ctx, w, h) => {
+    const bh = Math.round(h * 0.045);
+    ctx.fillStyle = '#6a5233';
+    ctx.fillRect(0, h - bh, w, bh);
+    ctx.fillStyle = 'rgba(255,230,180,0.22)';
+    ctx.fillRect(0, h - bh, w, 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(0, h - bh - 2, w, 2);
+    ctx.fillStyle = 'rgba(80, 62, 25, 0.35)';
+    ctx.fillRect(0, 0, w, 3);
+  });
+}
+
+/** Yeso rugoso de las zonas de apagón. */
+const roughPlaster = (seed: number): Painter =>
+  pixels((u, v) => {
+    const n = fbm(u, v, 8, 16, 5, seed);
+    const m = fbm(u, v, 2, 4, 3, seed + 3);
+    return mul([178, 160, 108], 0.75 + n * 0.45 - m * 0.15);
+  });
+
+/** Moqueta tipo bereber: bucles pequeños y humedad. */
+const carpet = (base: Rgb, wet: number, seed: number): Painter =>
+  pixels((u, v, x, y) => {
+    const loops = Math.sin(u * Math.PI * 2 * 64) * Math.sin(v * Math.PI * 2 * 64);
+    const fibres = hash2(x, y, seed) * 0.16 - 0.08;
+    const tone = fbm(u, v, 4, 4, 4, seed) - 0.5;
+    const damp = smooth(0.5, 0.8, fbm(u, v, 2, 2, 4, seed + 11)) * wet;
+    let c = mul(base, 1 + loops * 0.07 + fibres + tone * 0.25);
+    c = mul(c, 1 - damp * 0.35);
+    return c;
+  });
+
+/** Placas de techo de 60 × 60 cm, con perforaciones y manchas. */
+const ceilingTiles = (stained: number, seed: number): Painter =>
+  pixels((u, v, x, y) => {
+    const tu = (u * 2) % 1;
+    const tv = (v * 2) % 1;
+    const edge = Math.min(tu, 1 - tu, tv, 1 - tv);
+    let c: Rgb = [214, 206, 180];
+    const holes = hash2(x >> 1, y >> 1, seed) < 0.06 ? 0.82 : 1;
+    c = mul(c, holes * (0.96 + hash2(x, y, seed + 1) * 0.06));
+    const stain = smooth(0.55, 0.8, fbm(u, v, 2, 2, 4, seed + 5)) * stained;
+    c = mix(c, [150, 120, 60], stain * 0.45);
+    // cada placa con un tono ligeramente distinto
+    c = mul(c, 0.94 + hash2(Math.floor(u * 2), Math.floor(v * 2), seed + 2) * 0.08);
+    if (edge < 0.012) c = [138, 130, 108];
+    else if (edge < 0.022) c = mul(c, 0.88);
+    return c;
+  });
+
+/** Linóleo de oficina en losetas. */
+const linoleum = (seed: number): Painter =>
+  pixels((u, v, x, y) => {
+    const tu = Math.floor(u * 4);
+    const tv = Math.floor(v * 4);
+    let c: Rgb = (tu + tv) % 2 ? [168, 160, 138] : [186, 178, 156];
+    c = mul(c, 0.94 + fbm(u, v, 8, 8, 3, seed) * 0.12 + hash2(x, y, seed) * 0.04);
+    c = mul(c, 1 - smooth(0.6, 0.85, fbm(u, v, 2, 2, 3, seed + 4)) * 0.2);
+    const eu = (u * 4) % 1;
+    const ev = (v * 4) % 1;
+    if (Math.min(eu, 1 - eu, ev, 1 - ev) < 0.01) c = mul(c, 0.7);
+    return c;
+  });
+
+const officePaint = (seed: number, trim: boolean): Painter =>
+  pixels((u, v) => {
+    const n = fbm(u, v, 4, 8, 4, seed);
+    let c = mul([202, 192, 158], 0.92 + n * 0.14);
+    if (trim) {
+      if (v > 0.62) c = mul([143, 132, 103], 0.92 + n * 0.14);
+      if (Math.abs(v - 0.615) < 0.006) c = [94, 84, 64];
+      if (v > 0.96) c = [61, 54, 42];
+    }
+    return c;
+  });
+
+// ---------------------------------------------------------------- Nivel 1 y 2
+
+/** Hormigón: base, poros, manchas y grietas finas (todo periódico). */
+const concrete = (base: Rgb, o: { stains?: number; seed: number; cracks?: number; leak?: number }): PixelFn => {
+  return (u, v, x, y) => {
+    const n = fbm(u, v, 6, 6, 5, o.seed);
+    const pores = hash2(x, y, o.seed) < 0.02 ? 0.75 : 1;
+    let c = mul(base, (0.8 + n * 0.4) * pores);
+    const stain = smooth(0.52, 0.85, fbm(u, v, 2, 2, 4, o.seed + 1));
+    c = mul(c, 1 - stain * (o.stains ?? 0.25));
+    if (o.cracks) {
+      // grietas finas solo en algunas zonas, no por toda la superficie
+      const zone = smooth(0.58, 0.72, fbm(u, v, 2, 2, 3, o.seed + 5));
+      const cr = Math.abs(fbm(u, v, 3, 3, 4, o.seed + 2) - 0.5);
+      const line = 1 - smooth(0.0015 * o.cracks, 0.004 * o.cracks, cr);
+      c = mul(c, 1 - line * zone * 0.4);
+    }
+    if (o.leak) {
+      // chorretones verticales de agua y óxido
+      const col = fbm(u, 0, 24, 1, 2, o.seed + 3);
+      const streak = smooth(0.62, 0.8, col) * smooth(1, 0.2, v + fbm(u, v, 4, 4, 2, o.seed + 4) * 0.4);
+      c = mix(c, mul(c, 0.6), streak * o.leak);
+    }
+    return c;
+  };
+};
+
+const blockWall = (base: Rgb, seed: number, trim: 'hazard' | 'none'): Painter =>
+  layers(
+    pixels((u, v, x, y) => {
+      let c = concrete(base, { seed, stains: 0.3, leak: 0.5 })(u, v, x, y);
+      // juntas de los bloques (2 × 10 por textura, al tresbolillo)
+      const rows = 10;
+      const row = Math.floor(v * rows);
+      const bu = (u * 2 + (row % 2) * 0.5) % 1;
+      const bv = (v * rows) % 1;
+      if (bv < 0.03 || bu < 0.012) c = mul(c, 0.72);
+      return c;
+    }),
+    (ctx, w, h) => {
+      if (trim !== 'hazard') return;
+      const sh = h * 0.08;
+      ctx.fillStyle = '#c9a227';
+      ctx.fillRect(0, h - sh, w, sh);
+      ctx.fillStyle = '#1b1b1b';
+      const n = 6; // número entero de franjas por textura: sin cortes
+      const step = w / n;
+      for (let k = -1; k <= n; k++) {
+        const x = k * step;
+        ctx.beginPath();
+        ctx.moveTo(x, h);
+        ctx.lineTo(x + step / 2, h);
+        ctx.lineTo(x + step, h - sh);
+        ctx.lineTo(x + step / 2, h - sh);
+        ctx.fill();
+      }
+      // la pintura está gastada: se mezcla con ruido
+      const img = ctx.getImageData(0, h - sh, w, sh);
+      for (let i = 0; i < img.data.length; i += 4) {
+        const k = 0.75 + hash2(i, 7, 43) * 0.3;
+        img.data[i] *= k;
+        img.data[i + 1] *= k;
+        img.data[i + 2] *= k;
+      }
+      ctx.putImageData(img, 0, h - sh);
+    },
+  );
+
+const paintedWall = (top: Rgb, bottom: Rgb | null, seed: number): Painter =>
+  pixels((u, v, x, y) => {
+    let c = concrete(top, { seed, stains: 0.18 })(u, v, x, y);
+    if (bottom) {
+      if (v > 0.55) c = concrete(bottom, { seed: seed + 9, stains: 0.25 })(u, v, x, y);
+      if (Math.abs(v - 0.55) < 0.005) c = mul(bottom, 0.6);
+    }
+    return c;
+  });
+
+/** Ladrillo (colores del Nivel 2: marrón barro y casi negro). */
+const brick = (a: Rgb, b: Rgb, seed: number): Painter =>
+  pixels((u, v, x, y) => {
+    const rows = 16;
+    const cols = 4;
+    const row = Math.floor(v * rows);
+    const bu = u * cols + (row % 2) * 0.5;
+    const col = Math.floor(bu) % cols;
+    const fu = bu % 1;
+    const fv = (v * rows) % 1;
+    const mortar = fu < 0.04 || fv < 0.1;
+    const tone = hash2(col, row, seed);
+    let c = mortar ? ([96, 88, 78] as Rgb) : mix(a, b, tone);
+    c = mul(c, 0.85 + fbm(u, v, 8, 16, 3, seed + 1) * 0.3 + hash2(x, y, seed) * 0.06);
+    // polvo blanquecino (las paredes del Nivel 2 son "calcáreas")
+    c = mix(c, [150, 140, 125], smooth(0.55, 0.85, fbm(u, v, 3, 6, 3, seed + 2)) * 0.25);
+    return c;
+  });
+
+const rustMetal = (seed: number): Painter =>
+  pixels((u, v, x, y) => {
+    const n = fbm(u, v, 6, 12, 5, seed);
+    let c = mul([82, 70, 60], 0.8 + n * 0.4);
+    const rust = smooth(0.5, 0.75, fbm(u, v, 3, 6, 4, seed + 1));
+    c = mix(c, [124, 62, 24], rust * 0.7);
+    // paneles con remaches
+    const pu = (u * 2) % 1;
+    const pv = (v * 4) % 1;
+    if (pu < 0.008 || pv < 0.006) c = mul(c, 0.5);
+    const ru = (u * 2) % 0.5;
+    const rv = (v * 4) % 1;
+    if (Math.hypot(ru - 0.04, rv - 0.06) < 0.012) c = mul(c, 0.55);
+    return mul(c, 1 + hash2(x, y, seed) * 0.05);
+  });
+
+const grate = (seed: number): Painter =>
+  pixels((u, v, x, y) => {
+    const gu = (u * 10) % 1;
+    const gv = (v * 10) % 1;
+    const bar = gu < 0.28 || gv < 0.16;
+    let c: Rgb = bar ? [74, 66, 58] : [16, 14, 12];
+    c = mul(c, 0.85 + fbm(u, v, 4, 4, 3, seed) * 0.3 + hash2(x, y, seed) * 0.05);
+    if (bar) c = mix(c, [120, 60, 25], smooth(0.55, 0.8, fbm(u, v, 3, 3, 3, seed + 1)) * 0.6);
+    return c;
+  });
+
+// ---------------------------------------------------------------- catálogo
 
 export interface ThemeTextures {
   walls: THREE.Texture[];
+  wallUppers: THREE.Texture[]; // versión sin zócalo, que se repite en vertical
   floors: THREE.Texture[];
   ceils: THREE.Texture[];
   wallScale: number; // metros de ancho que cubre la textura de pared
@@ -355,52 +356,107 @@ export interface ThemeTextures {
   ceilScale: number;
 }
 
+const cache = new Map<Theme, ThemeTextures>();
+
+/** Texturas de un tema. Se generan una vez y se reutilizan. */
 export function themeTextures(theme: Theme): ThemeTextures {
+  let t = cache.get(theme);
+  if (!t) {
+    t = buildTheme(theme);
+    cache.set(theme, t);
+  }
+  return t;
+}
+
+function buildTheme(theme: Theme): ThemeTextures {
   const wall = (p: Painter) => canvasTexture(256, 512, p);
-  const sq = (p: Painter) => canvasTexture(256, 256, p);
+  const sq = (p: Painter, s = 512) => canvasTexture(s, s, p);
+  const pair = (mk: (trim: boolean) => Painter) => [wall(mk(true)), wall(mk(false))];
+  const build = (list: ((trim: boolean) => Painter)[]) => {
+    const p = list.map(pair);
+    return { walls: p.map((x) => x[0]), wallUppers: p.map((x) => x[1]) };
+  };
   switch (theme) {
-    case 'lobby':
+    case 'lobby': {
+      // 0 papel amarillo · 1 papel pálido (arcos) · 2 pintura de oficina · 3 yeso rugoso (apagón) · 4 papel rojo despegado
+      const w = build([
+        (trim) => wallpaperPainter({ base: [201, 178, 92], stripe: [176, 150, 70], stain: 0.28, trim }, 11),
+        (trim) => wallpaperPainter({ base: [214, 202, 150], stripe: [196, 182, 128], stain: 0.2, trim, pale: true }, 12),
+        (trim) => officePaint(13, trim),
+        () => roughPlaster(14),
+        (trim) => wallpaperPainter({ base: [176, 92, 64], stripe: [150, 60, 45], stain: 0.35, trim, peel: true }, 15),
+      ]);
       return {
-        walls: [wall(wallpaper), wall(oldWallpaper), wall(officePaint)],
-        floors: [sq(carpet), sq(wetCarpet), sq(linoleum)],
-        ceils: [sq(ceilingTiles), sq(brokenTiles)],
-        wallScale: 1.4,
+        ...w,
+        // 0 moqueta · 1 linóleo · 2 moqueta más seca y clara (salas de columnas) · 3 moqueta roja espesa
+        floors: [sq(carpet([150, 126, 82], 1, 21)), sq(linoleum(22)), sq(carpet([166, 142, 96], 0.4, 23)), sq(carpet([118, 40, 30], 0.8, 24))],
+        ceils: [sq(ceilingTiles(0.3, 31)), sq(ceilingTiles(1, 32))],
+        wallScale: 1.6,
         wallHeight: 2.8,
-        floorScale: 2.5,
+        floorScale: 3,
         ceilScale: 1.2,
       };
-    case 'habitable':
+    }
+    case 'habitable': {
+      // 0 hormigón gris (Aquila) · 1 hormigón blanco (pasillos) · 2 bloques con franja (almacén)
+      // 3 ladrillo · 4 pintura verde (M.E.G.) · 5 piedra cálida (sector gótico) · 6 manila
+      const w = build([
+        (trim) => pixels(concrete([132, 134, 136], { seed: 41, stains: 0.3, leak: trim ? 0.6 : 0.3, cracks: 1 })),
+        (trim) => paintedWall([196, 196, 190], trim ? [168, 168, 160] : null, 42),
+        (trim) => blockWall([140, 142, 144], 43, trim ? 'hazard' : 'none'),
+        () => brick([120, 62, 46], [92, 48, 38], 44),
+        (trim) => paintedWall([186, 188, 178], trim ? [79, 107, 88] : null, 45),
+        () => pixels(concrete([150, 136, 116], { seed: 46, stains: 0.25, cracks: 1 })),
+        (trim) => paintedWall([214, 198, 148], trim ? [178, 160, 116] : null, 47), // 6 manila
+      ]);
       return {
-        walls: [wall(concreteWall), wall(greenOffice), wall(dirtyConcrete)],
-        floors: [sq(concreteFloor), sq(wetConcrete), sq(paintedFloor)],
-        ceils: [sq(beamCeiling)],
+        ...w,
+        // 0 hormigón · 1 hormigón pintado · 2 goma acolchada · 3 baldosa de enfermería
+        floors: [
+          sq(pixels(concrete([98, 100, 101], { seed: 51, stains: 0.35, cracks: 2 }))),
+          sq(pixels(concrete([92, 98, 94], { seed: 52, stains: 0.2 }))),
+          sq(pixels((u, v) => mul([70, 72, 78], 0.85 + fbm(u, v, 8, 8, 3, 53) * 0.2 + (((u * 8) % 1 < 0.04 || (v * 8) % 1 < 0.04) ? -0.3 : 0)))),
+          sq(linoleum(54)),
+        ],
+        ceils: [sq(pixels(concrete([110, 112, 114], { seed: 61, stains: 0.35 }))), sq(ceilingTiles(0.6, 62))],
         wallScale: 2.4,
         wallHeight: 3,
         floorScale: 5,
         ceilScale: 4,
       };
-    case 'pipes':
+    }
+    case 'pipes': {
+      // 0 hormigón polvoriento · 1 ladrillo marrón barro · 2 ladrillo negro · 3 metal oxidado
+      const w = build([
+        () => pixels((u, v, x, y) => mix(concrete([96, 84, 72], { seed: 71, stains: 0.45, cracks: 2, leak: 0.7 })(u, v, x, y), [150, 140, 125], smooth(0.6, 0.9, fbm(u, v, 3, 6, 3, 72)) * 0.22)),
+        () => brick([108, 74, 50], [82, 56, 40], 73),
+        () => brick([46, 40, 36], [30, 26, 24], 74),
+        () => rustMetal(75),
+      ]);
       return {
-        walls: [wall(grimeWall), wall(rustMetal)],
-        floors: [sq(grate), sq(concreteFloor)],
-        ceils: [sq(pipeCeiling)],
-        wallScale: 1.6,
+        ...w,
+        // 0 hormigón sucio · 1 rejilla
+        floors: [sq(pixels(concrete([74, 66, 58], { seed: 81, stains: 0.45, cracks: 2 }))), sq(grate(82), 256)],
+        ceils: [sq(pixels(concrete([58, 50, 44], { seed: 91, stains: 0.5 })))],
+        wallScale: 1.8,
         wallHeight: 2.6,
-        floorScale: 1.2,
+        floorScale: 2.5,
         ceilScale: 3,
       };
+    }
   }
 }
 
+// ---------------------------------------------------------------- objetos
+
 export function crateTexture(): THREE.CanvasTexture {
   return canvasTexture(256, 256, (ctx, w, h) => {
-    ctx.fillStyle = '#8a6a3e';
-    ctx.fillRect(0, 0, w, h);
-    for (let y = 0; y < h; y += h / 6) {
-      ctx.fillStyle = `rgba(0,0,0,${0.1 + Math.random() * 0.1})`;
-      ctx.fillRect(0, y, w, 3);
-    }
-    noise(ctx, w, h, 0.2, 1);
+    pixels((u, v, x, y) => {
+      const grain = Math.sin((v * 40 + fbm(u, v, 2, 8, 3, 101) * 6) * Math.PI) * 0.06;
+      return mul([140, 106, 62], 0.88 + grain + hash2(x, y, 102) * 0.06);
+    })(ctx, w, h);
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    for (let k = 1; k < 6; k++) ctx.fillRect(0, (k * h) / 6, w, 2);
     ctx.strokeStyle = '#5b4224';
     ctx.lineWidth = 22;
     ctx.strokeRect(11, 11, w - 22, h - 22);
@@ -488,3 +544,23 @@ export function textTexture(text: string, color: string, bg: string, w = 256, h 
     false,
   );
 }
+
+/** Lienzo con texto de varias líneas (notas, carteles). */
+export function paperTexture(lines: string[], o: { w?: number; h?: number; bg?: string; ink?: string; font?: string } = {}): THREE.CanvasTexture {
+  const w = o.w ?? 256;
+  const h = o.h ?? 320;
+  return canvasTexture(
+    w,
+    h,
+    (ctx) => {
+      ctx.fillStyle = o.bg ?? '#ece4cc';
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = o.ink ?? '#2a2418';
+      ctx.font = o.font ?? '16px "Comic Sans MS", cursive';
+      lines.forEach((l, i) => ctx.fillText(l, 14, 30 + i * 22));
+    },
+    false,
+  );
+}
+
+export { fbm, hash2 };

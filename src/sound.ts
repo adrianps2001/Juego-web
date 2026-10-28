@@ -19,6 +19,10 @@ export class Sound {
   private clickTimer = 0;
   private noiseBuffer: AudioBuffer;
   private humLevel = HUM_GAIN[0];
+  private level = 0;
+  private spike = 0; // subida repentina del zumbido (Nivel 0)
+  private ambientTimer = 4;
+  private whir = this.ctx.createGain(); // máquinas del Nivel 2
 
   constructor() {
     this.master.connect(this.ctx.destination);
@@ -87,6 +91,16 @@ export class Sound {
     src.connect(band).connect(this.whisper).connect(this.sfxBus);
     src.start();
     this.whisper.gain.value = 0;
+
+    // zumbido de máquinas viejas (Nivel 2, salas de máquinas)
+    const whirFilter = this.ctx.createBiquadFilter();
+    whirFilter.type = 'bandpass';
+    whirFilter.frequency.value = 160;
+    whirFilter.Q.value = 2;
+    this.osc('sawtooth', 50, whirFilter, 0.6);
+    this.osc('triangle', 151, whirFilter, 0.4);
+    whirFilter.connect(this.whir).connect(this.ambientBus);
+    this.whir.gain.value = 0;
   }
 
   private osc(type: OscillatorType, freq: number, dest: AudioNode, gain: number) {
@@ -100,13 +114,26 @@ export class Sound {
   }
 
   setLevel(level: number) {
+    this.level = level;
     this.humLevel = HUM_GAIN[level] ?? 0;
   }
 
+  /** Cercanía de una máquina (0-1). */
+  setWhir(k: number) {
+    this.whir.gain.setTargetAtTime(0.08 * k, this.ctx.currentTime, 0.3);
+  }
+
+  /** El zumbido sube de golpe durante unos segundos. */
+  humSpike() {
+    this.spike = 1;
+  }
+
   /** Se llama cada fotograma con el estado actual (cercanía de cada criatura, 0-1). */
-  update(flicker: number, smiler: number, hound: number, stealer: number, insanity: number, dark: boolean) {
+  update(flicker: number, smiler: number, hound: number, stealer: number, insanity: number, dark: boolean, dt = 1 / 60) {
     const t = this.ctx.currentTime;
-    this.hum.gain.setTargetAtTime(this.humLevel * flicker * (dark ? 0.3 : 1), t, 0.05);
+    this.spike = Math.max(0, this.spike - dt * 0.25);
+    this.hum.gain.setTargetAtTime(this.humLevel * flicker * (dark ? 0.3 : 1) * (1 + this.spike * 4), t, 0.05);
+    this.ambient(dt, insanity, dark);
     this.drone.gain.setTargetAtTime(0.35 * smiler, t, 0.1);
     this.whine.gain.setTargetAtTime(0.012 * smiler * smiler, t, 0.1);
     this.growl.gain.setTargetAtTime(0.5 * hound * hound, t, 0.15);
@@ -120,7 +147,30 @@ export class Sound {
     this.whisper.gain.setTargetAtTime(0.06 * insanity * wobble, t, 0.2);
   }
 
-  private burst(duration: number, freq: number, gain: number, type: BiquadFilterType = 'lowpass') {
+  /** Ruidos de fondo de cada nivel, de vez en cuando y desde un lado al azar. */
+  private ambient(dt: number, insanity: number, dark: boolean) {
+    this.ambientTimer -= dt;
+    if (this.ambientTimer > 0) return;
+    this.ambientTimer = 5 + Math.random() * 12 - insanity * 4;
+    const pan = Math.random() * 2 - 1;
+    const r = Math.random();
+    if (this.level === 0) {
+      // arañazos detrás de las paredes, susurros o un paso que no es tuyo
+      if (r < 0.4) this.scratch(0.25, pan);
+      else if (r < 0.7 || dark) this.murmur(0.12, pan);
+      else this.burst(0.12, 500, 0.12, 'lowpass', pan);
+    } else if (this.level === 1) {
+      if (r < 0.5) this.drip(0.2, pan);
+      else if (r < 0.75) this.burst(0.5, 300, 0.2, 'lowpass', pan); // algo cae a lo lejos
+      else this.tone(90, 70, 1.2, 'sawtooth', 0.04, pan); // un motor lejano
+    } else if (this.level === 2) {
+      if (r < 0.45) this.clang(0.25, pan);
+      else if (r < 0.7) this.drip(0.18, pan);
+      else this.burst(0.8, 4000, 0.06, 'highpass', pan); // vapor lejos
+    }
+  }
+
+  private burst(duration: number, freq: number, gain: number, type: BiquadFilterType = 'lowpass', pan = 0) {
     const src = this.ctx.createBufferSource();
     src.buffer = this.noiseBuffer;
     src.playbackRate.value = 0.8 + Math.random() * 0.4;
@@ -131,14 +181,97 @@ export class Sound {
     const t = this.ctx.currentTime;
     g.gain.setValueAtTime(gain, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + duration);
-    src.connect(f).connect(g).connect(this.sfxBus);
+    src.connect(f).connect(g).connect(this.panner(pan));
     src.start(t, Math.random());
     src.stop(t + duration);
   }
 
-  step(level: number) {
+  private panner(pan: number): AudioNode {
+    if (!pan) return this.sfxBus;
+    const p = this.ctx.createStereoPanner();
+    p.pan.value = Math.max(-1, Math.min(1, pan));
+    p.connect(this.sfxBus);
+    return p;
+  }
+
+  /** Uñas contra yeso, detrás de la pared (también avisa de un Duller). */
+  scratch(gain = 0.3, pan = 0) {
+    for (let i = 0; i < 5; i++) setTimeout(() => this.burst(0.09 + Math.random() * 0.08, 3200 + Math.random() * 1500, gain, 'bandpass', pan), i * (90 + Math.random() * 80));
+  }
+
+  /** Voz ahogada que no se entiende. */
+  murmur(gain = 0.12, pan = 0) {
+    for (let i = 0; i < 4 + Math.random() * 4; i++) {
+      setTimeout(() => {
+        const f = 140 + Math.random() * 90;
+        this.tone(f, f * (0.8 + Math.random() * 0.4), 0.12 + Math.random() * 0.12, 'sawtooth', gain * 0.35, pan);
+        this.burst(0.1, 900 + Math.random() * 600, gain * 0.5, 'bandpass', pan);
+      }, i * 160);
+    }
+  }
+
+  /** Lo que dice una criatura: sílabas imitando una voz humana. */
+  voice(text: string, gain = 0.25, pan = 0) {
+    const n = Math.min(10, Math.max(2, Math.round(text.length / 4)));
+    const base = 170 + Math.random() * 60;
+    for (let i = 0; i < n; i++) {
+      setTimeout(() => {
+        const f = base * (0.85 + Math.random() * 0.4);
+        this.tone(f, f * 0.9, 0.14, 'sawtooth', gain * 0.3, pan);
+        this.burst(0.08, 1200 + Math.random() * 1500, gain * 0.35, 'bandpass', pan);
+      }, i * 150);
+    }
+  }
+
+  drip(gain = 0.2, pan = 0) {
+    this.tone(1400 + Math.random() * 600, 500, 0.08, 'sine', gain, pan);
+  }
+
+  /** Golpe metálico en las tuberías. */
+  clang(gain = 0.25, pan = 0) {
+    const f = 220 + Math.random() * 300;
+    this.tone(f, f * 0.97, 1.4, 'triangle', gain, pan);
+    this.tone(f * 2.76, f * 2.7, 0.9, 'sine', gain * 0.5, pan);
+    this.burst(0.05, 2000, gain, 'bandpass', pan);
+  }
+
+  shout() {
+    this.tone(260, 200, 0.7, 'sawtooth', 0.22);
+    this.burst(0.6, 900, 0.5, 'bandpass');
+  }
+
+  /** Pomo de una puerta cerrada con llave. */
+  rattle() {
+    for (let i = 0; i < 3; i++) setTimeout(() => this.burst(0.06, 2500, 0.5, 'bandpass'), i * 90);
+  }
+
+  splash() {
+    this.burst(0.25, 1100, 0.35, 'bandpass');
+  }
+
+  squeak(pan = 0) {
+    this.tone(3200, 4200, 0.07, 'sine', 0.05, pan);
+  }
+
+  /** Susto: una nota aguda que se rompe. */
+  sting() {
+    this.tone(1800, 600, 0.6, 'sawtooth', 0.2);
+    this.tone(95, 60, 0.9, 'square', 0.25);
+  }
+
+  flare() {
+    this.burst(1.2, 3500, 0.35, 'highpass');
+  }
+
+  /** Gorgoteo húmedo de un Clump. */
+  gurgle(gain = 0.3, pan = 0) {
+    for (let i = 0; i < 4; i++) setTimeout(() => this.tone(90 + Math.random() * 60, 50, 0.15, 'square', gain * 0.3, pan), i * 110);
+  }
+
+  step(level: number, quiet = false) {
     // moqueta amortiguada, hormigón seco, rejilla metálica
-    if (level === 0) this.burst(0.12, 500, 0.25);
+    if (quiet) this.burst(0.08, 400, 0.08);
+    else if (level === 0) this.burst(0.12, 500, 0.25);
     else if (level === 1) this.burst(0.08, 1800, 0.18);
     else this.burst(0.1, 3000, 0.12, 'bandpass');
   }
@@ -183,6 +316,8 @@ export class Sound {
     if (kind === 'agua') for (let i = 0; i < 3; i++) setTimeout(() => this.tone(300, 180, 0.12, 'sine', 0.25), i * 220);
     else if (kind === 'barrita') for (let i = 0; i < 4; i++) setTimeout(() => this.burst(0.06, 3000, 0.3, 'highpass'), i * 120);
     else if (kind === 'vendas') this.burst(0.5, 4000, 0.35, 'highpass');
+    else if (kind === 'lata') for (let i = 0; i < 3; i++) setTimeout(() => this.burst(0.08, 700, 0.3), i * 200);
+    else if (kind === 'bengala') this.flare();
     else this.tone(1200, 1600, 0.08, 'square', 0.08);
   }
 
@@ -210,7 +345,7 @@ export class Sound {
     this.burst(0.5, 2000, 0.5, 'bandpass');
   }
 
-  private tone(f0: number, f1: number, duration: number, type: OscillatorType, gain: number) {
+  private tone(f0: number, f1: number, duration: number, type: OscillatorType, gain: number, pan = 0) {
     const o = this.ctx.createOscillator();
     const g = this.ctx.createGain();
     const t = this.ctx.currentTime;
@@ -219,7 +354,7 @@ export class Sound {
     o.frequency.exponentialRampToValueAtTime(f1, t + duration);
     g.gain.setValueAtTime(gain, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + duration);
-    o.connect(g).connect(this.sfxBus);
+    o.connect(g).connect(this.panner(pan));
     o.start(t);
     o.stop(t + duration);
   }

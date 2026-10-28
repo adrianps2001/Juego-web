@@ -83,3 +83,9 @@ button.secondary:hover { background: #4d4630; }
 #escaped { background: #000; }
 #escaped h2 { font-size: 2rem; color: #e4cf73; }
 .dim { opacity: 0.6; }
+
+#subtitle { position: fixed; bottom: 22%; left: 50%; transform: translateX(-50%); max-width: min(620px, calc(100% - 32px)); text-align: center; background: rgba(0, 0, 0, 0.6); padding: 6px 14px; border-radius: 6px; font-size: 1rem; font-style: italic; pointer-events: none; }
+#note { background: rgba(0, 0, 0, 0.55); pointer-events: none; }
+#note .paper { background: #ece4cc; color: #2a2418; max-width: min(460px, calc(100% - 32px)); padding: 22px 26px; border-radius: 3px; box-shadow: 0 8px 30px #000; text-align: left; transform: rotate(-1deg); font-family: 'Comic Sans MS', 'Segoe Print', cursive; }
+#note h3 { margin: 0 0 10px; font-size: 1.1rem; }
+#note p { white-space: pre-line; line-height: 1.45; margin: 0 0 10px; }

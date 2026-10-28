@@ -22,6 +22,8 @@ export function mat(color: number, extra: LitParams = {}, key = ''): THREE.Mater
 export function disposePropMaterials() {
   for (const m of mats.values()) m.dispose();
   mats.clear();
+  for (const m of texMats.values()) m.dispose();
+  texMats.clear();
 }
 
 function box(w: number, h: number, d: number, m: THREE.Material, x = 0, y = 0, z = 0, ry = 0): THREE.Mesh {
@@ -334,10 +336,439 @@ function metalDoor(): THREE.Group {
   );
 }
 
+// ---- piezas con textura propia ----
+
+const texMats = new Map<string, THREE.Material>();
+const texCache = new Map<string, THREE.Texture>();
+/** Material con una textura dibujada a mano (la textura se guarda entre niveles). */
+function texMat(key: string, w: number, h: number, paint: (ctx: CanvasRenderingContext2D, w: number, h: number) => void, extra: LitParams = {}): THREE.Material {
+  let m = texMats.get(key);
+  if (!m) {
+    let t = texCache.get(key);
+    if (!t) {
+      t = canvasTexture(w, h, paint, false);
+      texCache.set(key, t);
+    }
+    m = litMaterial({ map: t, ...extra }, 0.2);
+    texMats.set(key, m);
+  }
+  return m;
+}
+
+function plane(w: number, h: number, m: THREE.Material, x = 0, y = 0, z = 0): THREE.Mesh {
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), m);
+  mesh.position.set(x, y, z);
+  return mesh;
+}
+
+/** Plano tumbado en el suelo. */
+function decal(w: number, d: number, m: THREE.Material, y = 0.012): THREE.Mesh {
+  const mesh = plane(w, d, m, 0, y, 0);
+  mesh.rotation.x = -Math.PI / 2;
+  return mesh;
+}
+
+// ---- Nivel 0 ----
+
+/** Molduras curvas en lo alto de un hueco: el hueco parece un arco. */
+function arch(w = 1.6, h = 2.2): THREE.Group {
+  const r = Math.min(0.55, w / 2);
+  const s = new THREE.Shape();
+  s.moveTo(-w / 2, h - r);
+  s.lineTo(-w / 2, h + 0.01);
+  s.lineTo(w / 2, h + 0.01);
+  s.lineTo(w / 2, h - r);
+  s.absellipse(0, h - r, w / 2, r, 0, Math.PI, false);
+  const geo = new THREE.ExtrudeGeometry(s, { depth: 0.5, bevelEnabled: false, curveSegments: 10 });
+  geo.translate(0, 0, -0.25);
+  // las UV de la extrusión van en metros: se escalan como la pared
+  const uv = geo.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) / 1.6, uv.getY(i) / 2.4);
+  return group(new THREE.Mesh(geo, mat(0xd8cc8c)));
+}
+
+/** Arco ciego: un arco dibujado en la pared que no lleva a ninguna parte. */
+function blindArch(w = 1.6, h = 2.2): THREE.Group {
+  const r = w / 2;
+  const s = new THREE.Shape();
+  s.moveTo(-w / 2, 0);
+  s.lineTo(-w / 2, h - r);
+  s.absarc(0, h - r, r, Math.PI, 0, true);
+  s.lineTo(w / 2, 0);
+  s.lineTo(-w / 2, 0);
+  const inner = new THREE.Mesh(new THREE.ShapeGeometry(s, 12), mat(0x6e6438));
+  inner.position.z = 0.012;
+  const frame = new THREE.Mesh(new THREE.ShapeGeometry(s, 12), mat(0xb9ac6c));
+  frame.scale.set(1.12, 1.05, 1);
+  frame.position.z = 0.006;
+  return group(frame, inner);
+}
+
+// ---- Nivel 1 ----
+
+/** Tubería con fuga en el techo: gotea (la gota se anima). */
+function drip(): THREE.Group {
+  const p = cyl(0.09, 0.09, 1.2, mat(0x5d6366), 0, 0, 0, 10);
+  p.rotation.z = Math.PI / 2;
+  const joint = cyl(0.13, 0.13, 0.12, mat(0x7a4426), 0, 0, 0, 10);
+  joint.rotation.z = Math.PI / 2;
+  const drop = new THREE.Mesh(new THREE.SphereGeometry(0.025, 6, 4), new THREE.MeshBasicMaterial({ color: 0x8aa0aa, transparent: true, opacity: 0.8 }));
+  drop.name = 'drop';
+  drop.scale.y = 1.6;
+  return group(p, joint, drop);
+}
+
+/** Tubería larga bajo el techo (w = largo). */
+function longPipe(w = 20): THREE.Group {
+  const m = mat(0x5d6366);
+  const p = cyl(0.14, 0.14, w, m, 0, 0, 0, 12);
+  p.rotation.z = Math.PI / 2;
+  const g = group(p);
+  for (let x = -w / 2 + 1.5; x < w / 2; x += 3) {
+    const f = cyl(0.19, 0.19, 0.08, mat(0x464b4e), x, 0, 0, 12);
+    f.rotation.z = Math.PI / 2;
+    g.add(f, box(0.04, 0.35, 0.04, mat(0x333333), x + 0.3, 0.2, 0));
+  }
+  return g;
+}
+
+/** Montón de escombros: losas rotas, madera y hierros. */
+function debris(): THREE.Group {
+  const conc = mat(0x8a8780);
+  const wood = mat(0x7a6040);
+  const g = new THREE.Group();
+  for (let i = 0; i < 7; i++) {
+    const s = 0.25 + ((i * 37) % 10) / 25;
+    const b = box(s, s * 0.45, s * 0.8, conc, Math.sin(i * 2.1) * 0.5, s * 0.2, Math.cos(i * 1.7) * 0.4, i);
+    b.rotation.z = Math.sin(i) * 0.4;
+    g.add(b);
+  }
+  for (let i = 0; i < 3; i++) {
+    const plank = box(1.4, 0.04, 0.18, wood, Math.sin(i * 4) * 0.3, 0.25 + i * 0.08, Math.cos(i * 3) * 0.3, i * 1.1);
+    plank.rotation.z = 0.25 - i * 0.2;
+    g.add(plank);
+  }
+  for (let i = 0; i < 3; i++) {
+    const bar = cyl(0.012, 0.012, 1.1, mat(0x5a3a26), Math.sin(i * 3) * 0.4, 0.4, Math.cos(i * 5) * 0.3, 4);
+    bar.rotation.set(0.9 + i * 0.3, i, 0.6);
+    g.add(bar);
+  }
+  return g;
+}
+
+function megPainter(big: boolean) {
+  return (ctx: CanvasRenderingContext2D, w: number, h: number) => {
+    ctx.fillStyle = '#b6d63a';
+    ctx.fillRect(0, 0, w, h);
+    // tela: arrugas
+    for (let i = 0; i < 40; i++) {
+      ctx.fillStyle = `rgba(${i % 2 ? '255,255,255' : '0,0,0'},0.05)`;
+      ctx.fillRect(0, Math.random() * h, w, 1 + Math.random() * 4);
+    }
+    // águila esquemática
+    ctx.fillStyle = '#20240e';
+    const cx = w / 2;
+    const cy = h * (big ? 0.42 : 0.45);
+    const s = Math.min(w, h) * 0.32;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - s * 0.55);
+    ctx.lineTo(cx + s * 0.18, cy - s * 0.2);
+    ctx.lineTo(cx + s * 1.1, cy - s * 0.5);
+    ctx.lineTo(cx + s * 0.8, cy - s * 0.05);
+    ctx.lineTo(cx + s * 0.35, cy + s * 0.1);
+    ctx.lineTo(cx + s * 0.2, cy + s * 0.6);
+    ctx.lineTo(cx, cy + s * 0.45);
+    ctx.lineTo(cx - s * 0.2, cy + s * 0.6);
+    ctx.lineTo(cx - s * 0.35, cy + s * 0.1);
+    ctx.lineTo(cx - s * 0.8, cy - s * 0.05);
+    ctx.lineTo(cx - s * 1.1, cy - s * 0.5);
+    ctx.lineTo(cx - s * 0.18, cy - s * 0.2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.font = `bold ${Math.floor(h * 0.12)}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText('M.E.G.', cx, h * 0.88);
+  };
+}
+
+/** Tela lima de la M.E.G. clavada en la pared. */
+function megCloth(): THREE.Group {
+  const cloth = plane(1.2, 0.9, texMat('megcloth', 256, 192, megPainter(true)), 0, 0, 0.02);
+  cloth.rotation.x = 0.04;
+  return group(cloth, box(0.03, 0.03, 0.03, mat(0x777777), -0.55, 0.42, 0.02), box(0.03, 0.03, 0.03, mat(0x777777), 0.55, 0.42, 0.02));
+}
+
+function megFlag(): THREE.Group {
+  return group(plane(0.7, 1.2, texMat('megflag', 128, 220, megPainter(false)), 0, 0, 0.02), box(0.8, 0.03, 0.04, mat(0x444444), 0, 0.6, 0.03));
+}
+
+/** Franja de pintura naranja en una columna o pared: sirve de referencia. */
+function paint(h = 3): THREE.Group {
+  return group(box(1.2, h, 0.01, mat(0xd8641e), 0, h / 2, 0.006), box(1.2, 0.08, 0.012, mat(0xf0f0e8), 0, 1.6, 0.008));
+}
+
+/** Cuadro eléctrico con piloto rojo: punto de referencia del pasillo infinito. */
+function elecPanel(): THREE.Group {
+  return group(
+    box(0.6, 0.85, 0.15, mat(0x8a8f86), 0, 0.42, 0.075),
+    box(0.55, 0.8, 0.01, mat(0x9aa096), 0, 0.42, 0.155),
+    box(0.06, 0.06, 0.02, mat(0xff2a1a, { emissive: 0xaa1100 }, 'e'), 0.18, 0.72, 0.16),
+    box(0.3, 0.1, 0.01, mat(0xe8c020), -0.08, 0.66, 0.16),
+    box(0.03, 0.12, 0.03, mat(0x222222), 0.22, 0.4, 0.17),
+    cyl(0.02, 0.02, 1.2, mat(0x333333), -0.2, 1.4, 0.06, 6),
+  );
+}
+
+function tent(): THREE.Group {
+  const canvas = mat(0x5f6b3a);
+  const s = new THREE.Shape();
+  s.moveTo(-1.1, 0);
+  s.lineTo(0, 1.5);
+  s.lineTo(1.1, 0);
+  s.lineTo(-1.1, 0);
+  const geo = new THREE.ExtrudeGeometry(s, { depth: 2.2, bevelEnabled: false });
+  geo.translate(0, 0, -1.1);
+  const g = group(new THREE.Mesh(geo, canvas));
+  // entrada oscura
+  const door = new THREE.Shape();
+  door.moveTo(-0.45, 0);
+  door.lineTo(0, 0.95);
+  door.lineTo(0.45, 0);
+  const d = new THREE.Mesh(new THREE.ShapeGeometry(door), mat(0x161810));
+  d.position.z = 1.11;
+  g.add(d, cyl(0.02, 0.02, 1.6, mat(0x333333), 0, 0.8, 1.15, 4));
+  return g;
+}
+
+/** Andamio de obra. */
+function scaffold(): THREE.Group {
+  const pipe = mat(0x9a9a92);
+  const plank = mat(0xa07e48);
+  const g = new THREE.Group();
+  for (const x of [-1.4, 0, 1.4]) for (const z of [-0.55, 0.55]) g.add(cyl(0.03, 0.03, 3.2, pipe, x, 1.6, z, 6));
+  for (const y of [0.1, 1.5, 2.9]) {
+    g.add(box(2.9, 0.05, 0.05, pipe, 0, y, -0.55), box(2.9, 0.05, 0.05, pipe, 0, y, 0.55));
+    if (y > 1) g.add(box(2.9, 0.05, 1.15, plank, 0, y + 0.05, 0));
+  }
+  const brace = cyl(0.025, 0.025, 2.0, pipe, -0.7, 0.8, 0.56, 6);
+  brace.rotation.z = 0.78;
+  g.add(brace, box(0.5, 0.3, 0.35, mat(0x6b6b66), 0.6, 3.1, 0), box(0.6, 0.12, 0.4, mat(0x8a8780), -0.8, 1.6, 0.1));
+  return g;
+}
+
+/** Columna redonda gótica con basa y capitel. */
+function roundPillar(h = 6): THREE.Group {
+  const stone = mat(0xa79c88);
+  return group(cyl(0.42, 0.42, h, stone, 0, h / 2, 0, 16), box(1.0, 0.3, 1.0, stone, 0, 0.15, 0), cyl(0.5, 0.42, 0.25, stone, 0, 0.42, 0, 16), cyl(0.6, 0.42, 0.45, stone, 0, h - 0.4, 0, 16), box(1.25, 0.2, 1.25, stone, 0, h - 0.1, 0));
+}
+
+/** Cama de enfermería. */
+function bed(): THREE.Group {
+  const metal = mat(0xb8bcbc);
+  const g = group(box(0.95, 0.12, 2.0, metal, 0, 0.5, 0), box(0.9, 0.14, 1.95, mat(0xe8e8e0), 0, 0.62, 0), box(0.6, 0.1, 0.35, mat(0xf4f4ee), 0, 0.73, -0.75), box(0.92, 0.04, 1.2, mat(0x8fa6b8), 0, 0.71, 0.3));
+  for (const z of [-0.95, 0.95]) g.add(box(0.95, z < 0 ? 0.6 : 0.35, 0.04, metal, 0, z < 0 ? 0.85 : 0.7, z));
+  for (const x of [-0.42, 0.42]) for (const z of [-0.9, 0.9]) g.add(cyl(0.02, 0.02, 0.45, metal, x, 0.22, z, 6), cyl(0.04, 0.04, 0.03, mat(0x222222), x, 0.03, z, 8));
+  return g;
+}
+
+/** Paredes acolchadas de goma (sala de goma). */
+function padding(w = 4): THREE.Group {
+  const m = texMat('padding', 128, 128, (ctx, cw, ch) => {
+    ctx.fillStyle = '#a8a292';
+    ctx.fillRect(0, 0, cw, ch);
+    for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) {
+      const g = ctx.createRadialGradient((x + 0.5) * (cw / 2), (y + 0.5) * (ch / 2), 4, (x + 0.5) * (cw / 2), (y + 0.5) * (ch / 2), cw / 2.6);
+      g.addColorStop(0, 'rgba(255,255,255,0.12)');
+      g.addColorStop(1, 'rgba(60,50,30,0.35)');
+      ctx.fillStyle = g;
+      ctx.fillRect(x * (cw / 2), y * (ch / 2), cw / 2, ch / 2);
+      ctx.fillStyle = '#6a6250';
+      ctx.beginPath();
+      ctx.arc(x * (cw / 2), y * (ch / 2), 3, 0, 7);
+      ctx.fill();
+    }
+  });
+  const mesh = plane(w, 2.6, m, 0, 1.3, 0.03);
+  const geo = mesh.geometry;
+  const uv = geo.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * (w / 0.8), uv.getY(i) * (2.6 / 0.8));
+  (m as THREE.MeshBasicMaterial).map!.wrapS = (m as THREE.MeshBasicMaterial).map!.wrapT = THREE.RepeatWrapping;
+  return group(mesh);
+}
+
+function artPainter(seed: number) {
+  return (ctx: CanvasRenderingContext2D, w: number, h: number) => {
+    const r = (k: number) => Math.abs(Math.sin(seed * 91.7 + k * 12.3)) % 1;
+    ctx.fillStyle = `hsl(${r(1) * 360}, 25%, ${20 + r(2) * 20}%)`;
+    ctx.fillRect(0, 0, w, h);
+    for (let i = 0; i < 9; i++) {
+      ctx.fillStyle = `hsla(${r(i + 3) * 360}, ${30 + r(i) * 40}%, ${30 + r(i + 9) * 40}%, 0.7)`;
+      ctx.beginPath();
+      ctx.ellipse(r(i + 4) * w, r(i + 5) * h, 6 + r(i + 6) * w * 0.3, 6 + r(i + 7) * h * 0.3, r(i) * 3, 0, 7);
+      ctx.fill();
+    }
+    // algo que parece una cara si se mira mucho rato
+    ctx.fillStyle = 'rgba(10,10,10,0.6)';
+    ctx.fillRect(w * 0.38, h * 0.38, w * 0.06, h * 0.05);
+    ctx.fillRect(w * 0.56, h * 0.38, w * 0.06, h * 0.05);
+    ctx.fillRect(w * 0.42, h * 0.6, w * 0.16, h * 0.02);
+  };
+}
+
+let paintingSeed = 0;
+function painting(): THREE.Group {
+  const k = paintingSeed++ % 4;
+  return group(box(0.9, 0.7, 0.04, mat(0x5a3a1a), 0, 0, 0.02), plane(0.78, 0.58, texMat('art' + k, 128, 96, artPainter(k + 1)), 0, 0, 0.042));
+}
+
+function floorPainting(w = 0.9, h = 0.7): THREE.Group {
+  const k = paintingSeed++ % 4;
+  const g = group(box(w, 0.04, h, mat(0x5a3a1a), 0, 0.02, 0));
+  const art = decal(w - 0.1, h - 0.1, texMat('art' + k, 128, 96, artPainter(k + 1)), 0.042);
+  g.add(art);
+  return g;
+}
+
+/** Mancha de sangre en el suelo. */
+function blood(): THREE.Group {
+  const m = texMat(
+    'blood',
+    128,
+    128,
+    (ctx, w, h) => {
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = 'rgba(90,8,6,0.85)';
+      for (let i = 0; i < 14; i++) {
+        ctx.beginPath();
+        ctx.ellipse(w / 2 + Math.sin(i * 2.4) * w * 0.25 * (i / 14), h / 2 + Math.cos(i * 1.3) * h * 0.3 * (i / 14), 4 + ((i * 7) % 18), 3 + ((i * 5) % 12), i, 0, 7);
+        ctx.fill();
+      }
+    },
+    { transparent: true, depthWrite: false },
+  );
+  return group(decal(1.1, 1.1, m));
+}
+
+/** Bombilla sola colgando de un cable. */
+function bulb(): THREE.Group {
+  const cord = cyl(0.006, 0.006, 0.5, mat(0x111111), 0, -0.25, 0, 4);
+  const b = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), new THREE.MeshBasicMaterial({ color: 0xfff0c0 }));
+  b.position.y = -0.55;
+  return group(cord, cyl(0.03, 0.03, 0.06, mat(0x333333), 0, -0.5, 0, 8), b);
+}
+
+// ---- Nivel 2 ----
+
+/** Máquina vieja de suelo a techo, llena de diales y tubos. */
+function machine(): THREE.Group {
+  const body = mat(0x4d5048);
+  const rust = mat(0x6d4a32);
+  const g = group(box(0.8, 2.5, 2.2, body, 0, 1.25, 0), box(0.85, 0.15, 2.3, rust, 0, 0.08, 0), box(0.85, 0.12, 2.3, rust, 0, 2.45, 0));
+  for (let i = 0; i < 4; i++) {
+    const d = cyl(0.09, 0.09, 0.03, mat(0xd8d2b8), 0.41, 1.5 + (i % 2) * 0.3, -0.6 + i * 0.4, 12);
+    d.rotation.z = Math.PI / 2;
+    g.add(d);
+  }
+  g.add(box(0.02, 0.5, 0.8, mat(0x22251f), 0.41, 0.8, 0.4), box(0.03, 0.08, 0.08, mat(0x5a1a12), 0.42, 1.1, -0.7));
+  for (const z of [-0.8, 0.8]) g.add(cyl(0.07, 0.07, 1.2, mat(0x7a4426), 0.2, 3.0, z, 8));
+  for (let k = 0; k < 6; k++) g.add(box(0.02, 0.04, 1.8, mat(0x2a2c27), 0.405, 0.3 + k * 0.08, 0));
+  return g;
+}
+
+/** Carrito con ruedas, con trastos encima. */
+function trolley(): THREE.Group {
+  const metal = mat(0x6b6e6a);
+  const g = group(box(1.1, 0.04, 0.6, metal, 0, 0.3, 0), box(1.1, 0.04, 0.6, metal, 0, 0.8, 0));
+  for (const x of [-0.52, 0.52]) for (const z of [-0.27, 0.27]) g.add(cyl(0.018, 0.018, 0.85, metal, x, 0.45, z, 6), cyl(0.05, 0.05, 0.04, mat(0x111111), x, 0.05, z, 8));
+  g.add(box(0.4, 0.25, 0.3, mat(0x8a2c22), -0.2, 0.95, 0), box(0.3, 0.12, 0.2, mat(0x9b7a4c), 0.25, 0.38, 0.05), cyl(0.06, 0.06, 0.2, mat(0x2c5f8a), 0.3, 0.92, -0.1, 8));
+  return g;
+}
+
+function toolbox(): THREE.Group {
+  return group(box(0.5, 0.22, 0.24, mat(0xa82020), 0, 0.11, 0), box(0.3, 0.03, 0.03, mat(0x222222), 0, 0.26, 0), box(0.12, 0.02, 0.3, mat(0x888888), 0.4, 0.01, 0.1, 0.5));
+}
+
+/** Escalera de mano tumbada en el suelo. */
+function ladder(): THREE.Group {
+  const al = mat(0xa8aaa6);
+  const g = group(box(2.2, 0.04, 0.05, al, 0, 0.03, -0.2), box(2.2, 0.04, 0.05, al, 0, 0.03, 0.2));
+  for (let x = -1; x <= 1.01; x += 0.33) g.add(box(0.03, 0.03, 0.4, al, x, 0.03, 0));
+  return g;
+}
+
+function woodpile(): THREE.Group {
+  const g = new THREE.Group();
+  for (let i = 0; i < 9; i++) g.add(box(1.6, 0.08, 0.2, mat(i % 2 ? 0x7a6040 : 0x6a5236), Math.sin(i) * 0.1, 0.04 + Math.floor(i / 3) * 0.08, -0.25 + (i % 3) * 0.24, Math.sin(i * 3) * 0.08));
+  return g;
+}
+
+/** Cables tirados por el suelo. */
+function cords(): THREE.Group {
+  const g = new THREE.Group();
+  for (let i = 0; i < 3; i++) {
+    const t = new THREE.Mesh(new THREE.TorusGeometry(0.22 + i * 0.05, 0.012, 4, 18), mat(i === 1 ? 0xc06010 : 0x151515));
+    t.rotation.x = Math.PI / 2;
+    t.position.set(i * 0.15, 0.015 + i * 0.012, Math.sin(i) * 0.1);
+    g.add(t);
+  }
+  const loose = cyl(0.012, 0.012, 1.6, mat(0x151515), 0.9, 0.012, 0.2, 4);
+  loose.rotation.set(0, 0.4, Math.PI / 2);
+  g.add(loose);
+  return g;
+}
+
+/** Cristales de un fluorescente roto. */
+function glass(): THREE.Group {
+  const m = mat(0xdde6e8, { transparent: true, opacity: 0.6 }, 'g');
+  const g = new THREE.Group();
+  for (let i = 0; i < 10; i++) g.add(box(0.05 + (i % 3) * 0.03, 0.004, 0.03 + (i % 2) * 0.03, m, Math.sin(i * 2.7) * 0.4, 0.004, Math.cos(i * 1.9) * 0.3, i));
+  const t = cyl(0.016, 0.016, 0.5, mat(0xe8e8e0), 0.2, 0.016, -0.1, 6);
+  t.rotation.z = Math.PI / 2;
+  g.add(t);
+  return g;
+}
+
+function paper(): THREE.Group {
+  const g = new THREE.Group();
+  for (let i = 0; i < 6; i++) g.add(box(0.21, 0.003, 0.29, mat(i % 2 ? 0xe8e4d8 : 0xd8d2bc), Math.sin(i * 2) * 0.5, 0.003 + i * 0.001, Math.cos(i * 3) * 0.4, i * 0.9));
+  return g;
+}
+
+function foldChair(): THREE.Group {
+  const m = mat(0x5a5f5a);
+  const g = group(box(0.42, 0.03, 0.4, m, 0, 0.45, 0), box(0.42, 0.3, 0.03, m, 0, 0.8, -0.2));
+  for (const x of [-0.19, 0.19]) {
+    const a = cyl(0.012, 0.012, 0.95, m, x, 0.47, 0, 4);
+    a.rotation.x = 0.35;
+    const b = cyl(0.012, 0.012, 0.6, m, x, 0.3, 0.02, 4);
+    b.rotation.x = -0.4;
+    g.add(a, b);
+  }
+  return g;
+}
+
+/** Mesa con un ordenador viejo de tubo. */
+function pc(): THREE.Group {
+  const g = table();
+  g.remove(g.children[g.children.length - 1]);
+  g.add(box(0.45, 0.4, 0.42, mat(0xc8c0a8), 0, 0.96, -0.1), box(0.36, 0.28, 0.01, mat(0x0c1a10, { emissive: 0x08200c }, 'e'), 0, 0.98, 0.115));
+  g.add(box(0.5, 0.03, 0.18, mat(0xc8c0a8), 0, 0.77, 0.3), box(0.4, 0.12, 0.38, mat(0xbab29a), 0.55, 0.81, -0.1));
+  return g;
+}
+
+/** Luz de emergencia violeta (la luz se dibuja como un halo). */
+function violet(): THREE.Group {
+  const cage = cyl(0.1, 0.1, 0.12, mat(0x2a2a2a), 0, -0.06, 0, 8);
+  const b = new THREE.Mesh(new THREE.SphereGeometry(0.075, 10, 8), new THREE.MeshBasicMaterial({ color: 0xb070ff }));
+  b.position.y = -0.14;
+  b.name = 'glow';
+  return group(cage, b);
+}
+
 // ---------------------------------------------------------------------------
 
 /** Objetos que se mueven o tienen textura propia: no se fusionan. */
-export const DYNAMIC_PROPS = new Set(['text', 'fog', 'hanglamp']);
+export const DYNAMIC_PROPS = new Set(['text', 'fog', 'hanglamp', 'drip', 'bulb', 'violet']);
 
 export function buildProp(p: Prop): THREE.Object3D | null {
   switch (p.type) {
@@ -372,6 +803,35 @@ export function buildProp(p: Prop): THREE.Object3D | null {
     case 'valve': return valve();
     case 'wires': return wires();
     case 'metaldoor': return metalDoor();
+    case 'arch': return arch(p.w, p.h);
+    case 'blindarch': return blindArch(p.w, p.h);
+    case 'drip': return drip();
+    case 'pipe': return longPipe(p.w);
+    case 'debris': return debris();
+    case 'megcloth': return megCloth();
+    case 'megflag': return megFlag();
+    case 'paint': return paint(p.h);
+    case 'panel': return elecPanel();
+    case 'tent': return tent();
+    case 'scaffold': return scaffold();
+    case 'roundpillar': return roundPillar(p.h);
+    case 'bed': return bed();
+    case 'padding': return padding(p.w);
+    case 'painting': return painting();
+    case 'floorpainting': return floorPainting(p.w, p.h);
+    case 'blood': return blood();
+    case 'bulb': return bulb();
+    case 'machine': return machine();
+    case 'trolley': return trolley();
+    case 'toolbox': return toolbox();
+    case 'ladder': return ladder();
+    case 'woodpile': return woodpile();
+    case 'cords': return cords();
+    case 'glass': return glass();
+    case 'paper': return paper();
+    case 'foldchair': return foldChair();
+    case 'pc': return pc();
+    case 'violet': return violet();
     case 'text': {
       const w = p.w ?? 2;
       const tex = textTexture(p.text ?? '', 'rgba(150, 20, 15, 0.85)', 'rgba(0,0,0,0)', 512, Math.round(512 / (w / 0.35)));

@@ -4,17 +4,19 @@ import { ITEM_INFO, Inventory } from './inventory';
 import { Level3D } from './level3d';
 import { ESCAPED, LEVELS, getMap } from './levels';
 import { MAX_TORCHES, lightUniforms } from './lighting';
-import { makeBattery, makeBottle, makeEnemy, makeEnergyBar, makeHumanoid, makeMedkit, makeViewTorch, type EnemyModel, type Humanoid } from './models';
+import { Anim, makeBattery, makeBottle, makeCan, makeEnemy, makeEnergyBar, makeFlareStick, makeHumanoid, makeLitFlare, makeMedkit, makeViewTorch, type EnemyModel, type Humanoid } from './models';
 import { Post } from './post';
-import type { ClientMessage, EntityState, PlayerState, Pose } from './protocol';
+import type { ClientMessage, EntityState, Flare, HostMessage, PlayerState, Pose } from './protocol';
 import { getSettings, onSettings, type Settings } from './settings';
 import type { Sound } from './sound';
-import { PLAYER_HEIGHT, STEP, ceilAt, collide, floorAt, isDarkAt, type EntityKind, type ItemKind } from './world';
+import { F_DEEP, PLAYER_HEIGHT, STEP, ceilAt, cellOf, collide, flagsAt, floorAt, inZone, isDarkAt, setShift, type EntityKind, type ItemKind } from './world';
 
 const EYE = 1.6;
 const RADIUS = 0.3;
 const WALK = 3.2;
 const SPRINT = 5.6;
+const CROUCH = 1.5;
+const CROUCH_EYE = 1.0;
 const GRAVITY = 20;
 const JUMP = 4.6;
 const RESPAWN_TIME = 4;
@@ -38,6 +40,8 @@ interface Enemy {
   target: EntityState;
 }
 
+type StateMsg = Extract<HostMessage, { t: 'state' }>;
+
 const DEATH_TEXT: Record<string, [string, string]> = {
   smiler: ['Un Smiler te ha atrapado en la oscuridad.', 'ha sido atrapado por un Smiler'],
   hound: ['Un Hound te ha despedazado.', 'ha sido despedazado por un Hound'],
@@ -46,6 +50,12 @@ const DEATH_TEXT: Record<string, [string, string]> = {
   cordura: ['Has perdido la cordura.', 'ha perdido la cordura'],
   caida: ['La caída ha sido demasiado alta.', 'se ha matado en una caída'],
   vapor: ['El vapor te ha abrasado.', 'ha muerto abrasado por el vapor'],
+  clump: ['Un Clump te ha aplastado.', 'ha sido aplastado por un Clump'],
+  duller: ['Algo salió de la pared y te arrastró dentro.', 'ha sido arrastrado dentro de una pared'],
+  figure: ['La figura ya no estaba lejos.', 'ha desaparecido en la oscuridad'],
+  pozo: ['Has caído por un agujero. Nadie ha vuelto de ahí.', 'ha caído por uno de los agujeros del Nivel 0'],
+  trabajador: ['Los trabajadores sombra no paran por nadie.', 'ha muerto en el sector en obras'],
+  cristales: ['Te has desangrado con los cristales.', 'se ha desangrado'],
 };
 
 const HIT_TEXT: Record<EntityKind, string> = {
@@ -53,6 +63,9 @@ const HIT_TEXT: Record<EntityKind, string> = {
   hound: '¡Un Hound te ha mordido!',
   faceling: '¡Un Faceling te ha golpeado!',
   skinstealer: '¡El Skin-Stealer te ha desgarrado!',
+  clump: '¡Un Clump se te ha echado encima!',
+  duller: '¡Algo te ha agarrado desde la pared!',
+  figure: 'Una figura oscura te ha tocado…',
 };
 
 export class Game {
@@ -75,6 +88,20 @@ export class Game {
   private pressed = new Set<string>();
   private inventory = new Inventory();
   private blackoutLevels: number[] = [];
+  private circuitLevels: number[] = [];
+  private closedShifts = new Set<string>();
+  private flares = new Map<number, { data: Flare; model: ReturnType<typeof makeLitFlare> }>();
+  private crouching = false;
+  private shoutCool = 0;
+  private shoutSend = false;
+  private noteKey: string | null = null;
+  private npcTalk = new Map<object, number>();
+  private bumpCool = 0;
+  private windowCool = 20;
+  private humTimer = 30;
+  private warnCool = 0;
+  private zoneNow = '';
+  private prevX = 0;
 
   private pose: Pose;
   private vy = 0;
@@ -115,7 +142,7 @@ export class Game {
     private send: (msg: ClientMessage) => void,
   ) {
     this.picked = new Set(picked);
-    this.pose = { level: 0, x: spawn.x, y: 0, z: spawn.z, ry: 0, light: false, sprint: false, dead: false };
+    this.pose = { level: 0, x: spawn.x, y: 0, z: spawn.z, ry: 0, light: false, sprint: false, crouch: false, noise: 0, shout: false, dead: false };
 
     this.renderer.setPixelRatio(PIXEL_RATIO);
     container.appendChild(this.renderer.domElement);
@@ -138,7 +165,11 @@ export class Game {
 
   // ---------------------------------------------------------------- red
 
-  onState(players: PlayerState[], entities: EntityState[], blackout: number[]) {
+  onState(msg: StateMsg) {
+    const { players, entities, blackout } = msg;
+    this.circuitLevels = msg.circuits;
+    this.applyShifts(msg.shifts);
+    this.syncFlares(msg.flares);
     this.others = players.filter((p) => p.id !== this.myId);
     this.hud.setPlayers(players, this.myId);
 
@@ -159,7 +190,7 @@ export class Game {
         this.scene.add(r.model.group);
       }
       r.target = p;
-      r.model.group.visible = p.level === this.pose.level && !p.dead;
+      r.model.group.visible = this.canSee(p);
       r.model.setLight(p.light);
     }
     for (const [id, r] of this.remotes) {
@@ -189,7 +220,7 @@ export class Game {
     }
   }
 
-  onPicked(key: string, by: string) {
+  onPicked(key: string, by: string, items?: ItemKind[], junk?: string, hurt?: number) {
     this.picked.add(key);
     this.level?.removeItem(key);
     if (by !== this.myId) return;
@@ -197,14 +228,90 @@ export class Game {
     const map = getMap(level);
     const item = map.items.find((i) => i.key === key);
     const crate = map.crates.find((c) => c.key === key);
-    const got = item ? [item.kind] : crate ? crate.contents : [];
+    const got = item ? [item.kind] : (items ?? []);
     const lost: ItemKind[] = [];
     for (const kind of got) if (!this.inventory.add(kind)) lost.push(kind);
     if (got.length) this.sound.pickup();
-    if (crate) this.hud.notice(`Caja de suministros: ${got.map((k) => ITEM_INFO[k].name).join(', ')}.`);
-    else if (item) this.hud.notice(`Has cogido: ${ITEM_INFO[item.kind].name}.`);
+    if (crate) {
+      const parts = got.map((k) => ITEM_INFO[k].name);
+      if (junk) parts.push(junk);
+      this.hud.notice(`Caja: ${parts.length ? parts.join(', ') : 'vacía'}.`);
+      if (hurt) {
+        this.health -= hurt;
+        this.damage = Math.min(1, this.damage + 0.4);
+        this.sound.hurt('cristales');
+        this.hud.notice('¡Te has cortado con los cristales!');
+        if (this.health <= 0) this.die('cristales');
+      }
+    } else if (item) this.hud.notice(`Has cogido: ${ITEM_INFO[item.kind].name}.`);
     if (lost.length) this.hud.notice(`No te caben en el inventario: ${lost.map((k) => ITEM_INFO[k].name).join(', ')}.`);
     this.refreshInventory();
+  }
+
+  /** Tras un Parpadeo, algunas cajas vuelven a estar llenas. */
+  onRestock(keys: string[]) {
+    for (const k of keys) {
+      this.picked.delete(k);
+      this.level?.restoreCrate(k);
+    }
+  }
+
+  /** Una criatura dice algo (el Skin-Stealer imitando voces). */
+  onSay(id: number, text: string) {
+    const e = this.enemies.get(id);
+    if (!e || e.target.level !== this.pose.level || !this.level) return;
+    const p = e.model.group.position;
+    const d = Math.hypot(p.x - this.pose.x, p.z - this.pose.z);
+    if (d > 16) return;
+    this.hud.say(`«${text}»`);
+    this.sound.voice(text, 0.3 * (1 - d / 18), this.panOf(p.x, p.z));
+  }
+
+  /** -1 izquierda, 1 derecha: de qué lado suena algo. */
+  private panOf(x: number, z: number): number {
+    const a = Math.atan2(x - this.pose.x, z - this.pose.z);
+    // hacia dónde mira la cámara: (-sin yaw, -cos yaw)
+    return Math.sin(a - (this.yaw + Math.PI)) * -1;
+  }
+
+  /** En el Nivel 0 no se ve a nadie (Aislamiento), salvo en la sala de encuentro. */
+  private canSee(p: PlayerState): boolean {
+    if (p.level !== this.pose.level || p.dead) return false;
+    if (!this.level?.map.def.isolation) return true;
+    const map = this.level.map;
+    return inZone(map, 'meeting', p.x, p.z) && inZone(map, 'meeting', this.pose.x, this.pose.z);
+  }
+
+  private applyShifts(list: string[]) {
+    this.closedShifts = new Set(list);
+    if (!this.level) return;
+    const map = this.level.map;
+    for (const sh of map.shifts) {
+      const closed = this.closedShifts.has(`${this.pose.level}:${sh.id}`);
+      if (closed === sh.closed) continue;
+      setShift(map, sh.id, closed);
+      this.level.setShiftVisible(sh.id, closed);
+    }
+  }
+
+  private syncFlares(list: Flare[]) {
+    for (const f of list) {
+      let fl = this.flares.get(f.id);
+      if (!fl) {
+        fl = { data: f, model: makeLitFlare() };
+        fl.model.group.position.set(f.x, f.y, f.z);
+        fl.model.group.rotation.y = f.id;
+        this.scene.add(fl.model.group);
+        this.flares.set(f.id, fl);
+      }
+      fl.data = f;
+      fl.model.group.visible = f.level === this.pose.level;
+    }
+    for (const [id, fl] of this.flares) {
+      if (list.some((f) => f.id === id)) continue;
+      this.scene.remove(fl.model.group);
+      this.flares.delete(id);
+    }
   }
 
   onHit(damage: number, kind: EntityKind) {
@@ -257,6 +364,12 @@ export class Game {
     this.camera.updateProjectionMatrix();
     this.level = new Level3D(map, this.picked);
     this.scene.add(this.level.group);
+    this.applyShifts([...this.closedShifts]);
+    for (const fl of this.flares.values()) fl.model.group.visible = fl.data.level === level;
+    this.zoneNow = '';
+    this.noteKey = null;
+    this.hud.showNote(null);
+    if (L.isolation) setTimeout(() => this.hud.notice('Aquí no puedes ver a los demás aunque estén a tu lado. Buscad la sala pequeña donde sí os veréis.'), 5500);
     this.sendPose();
   }
 
@@ -302,6 +415,8 @@ export class Game {
   private onKeyDown = (e: KeyboardEvent) => {
     if (!this.keys.has(e.code)) this.pressed.add(e.code);
     this.keys.add(e.code);
+    // Ctrl+W cerraría la pestaña: con Ctrl solo se agacha
+    if (e.code === 'ControlLeft' && this.locked()) e.preventDefault();
     const n = Number(e.key);
     if (n >= 1 && n <= this.inventory.slots.length) this.select(n - 1);
   };
@@ -360,7 +475,7 @@ export class Game {
     this.heldKind = kind;
     this.held.clear();
     if (!kind) return;
-    const model = kind === 'agua' ? makeBottle() : kind === 'pila' ? makeBattery() : kind === 'barrita' ? makeEnergyBar() : makeMedkit();
+    const model = kind === 'agua' ? makeBottle() : kind === 'pila' ? makeBattery() : kind === 'barrita' ? makeEnergyBar() : kind === 'lata' ? makeCan() : kind === 'bengala' ? makeFlareStick() : makeMedkit();
     model.scale.setScalar(kind === 'agua' ? 0.45 : 0.6);
     model.rotation.set(0.3, 0.6, kind === 'agua' ? 0 : 0.4);
     model.traverse((o) => {
@@ -377,6 +492,7 @@ export class Game {
     if (k === 'agua' && this.sanity > 97) return this.hud.notice('Ahora mismo estás tranquilo.');
     if (k === 'pila' && this.battery > 97) return this.hud.notice('La linterna ya está cargada.');
     if (k === 'vendas' && this.health > 97) return this.hud.notice('No estás herido.');
+    if (k === 'bengala' && !this.throwFlare()) return this.hud.notice('Aquí no hay sitio para lanzarla.');
     this.inventory.takeSelected();
     this.useAnim = 0.5;
     this.sound.use(k);
@@ -389,11 +505,37 @@ export class Game {
       this.stamina = 100;
       this.exhausted = false;
       this.boost = 15;
+    } else if (k === 'lata') {
+      this.health = Math.min(100, this.health + 25);
+      this.stamina = Math.min(100, this.stamina + 30);
+    } else if (k === 'bengala') {
+      // ya lanzada
     } else {
       this.health = Math.min(100, this.health + 40);
     }
     this.hud.notice(`${ITEM_INFO[k].name}: ${ITEM_INFO[k].hint.toLowerCase()}.`);
     this.refreshInventory();
+  }
+
+  /** Lanza una bengala unos metros por delante: atrae a los Smilers. */
+  private throwFlare(): boolean {
+    const map = this.level!.map;
+    let x = this.pose.x;
+    let z = this.pose.z;
+    const dx = -Math.sin(this.yaw);
+    const dz = -Math.cos(this.yaw);
+    for (let d = 0; d < 6; d += 0.25) {
+      const nx = this.pose.x + dx * d;
+      const nz = this.pose.z + dz * d;
+      const c = collide(map, nx, nz, this.pose.y, 0.15, 0.3);
+      if (Math.hypot(c.x - nx, c.z - nz) > 0.01) break;
+      x = nx;
+      z = nz;
+    }
+    if (Math.hypot(x - this.pose.x, z - this.pose.z) < 0.5) return false;
+    const y = floorAt(map, x, z);
+    this.send({ t: 'flare', level: this.pose.level, x, y: Number.isFinite(y) ? y : this.pose.y, z });
+    return true;
   }
 
   // ---------------------------------------------------------------- bucle
@@ -414,7 +556,13 @@ export class Game {
       const target = this.blackoutLevels.includes(this.pose.level) ? 1 : 0;
       const b = lightUniforms.uBlackout;
       b.value += (target - b.value) * Math.min(1, dt * (target ? 6 : 2)) * (target && Math.random() < 0.3 ? 0.2 : 1);
-      this.level.update(this.time, lightUniforms.uFlicker.value, b.value);
+      // circuito fundido (Nivel 2): los fluorescentes en serie se apagan a la vez
+      const c = lightUniforms.uCircuit;
+      const ct = this.circuitLevels.includes(this.pose.level) ? 0 : 1;
+      if (ct !== Math.round(c.value) && Math.abs(ct - c.value) > 0.5 && ct === 0) this.sound.clunk();
+      c.value += (ct - c.value) * Math.min(1, dt * (ct ? 1.5 : 8));
+      this.level.update(this.time, lightUniforms.uFlicker.value * c.value, b.value, dt, this.pose.light && this.dead <= 0 ? this.camera.position : null);
+      for (const fl of this.flares.values()) fl.model.update(this.time, fl.data.left);
     }
     this.pressed.clear();
     this.updateTorches();
@@ -436,9 +584,18 @@ export class Game {
       uTorchPower.value[0] = this.torchPower;
       n = 1;
     }
+    // bengalas: luz roja en todas direcciones (potencia > 2)
+    for (const fl of this.flares.values()) {
+      if (n >= MAX_TORCHES) break;
+      if (fl.data.level !== this.pose.level) continue;
+      const g = fl.model.group.position;
+      uTorchPos.value[n].set(g.x, g.y + 0.25, g.z);
+      uTorchPower.value[n] = 2 + Math.min(1, fl.data.left / 3) * (0.85 + Math.random() * 0.3);
+      n++;
+    }
     for (const r of this.remotes.values()) {
       if (n >= MAX_TORCHES) break;
-      if (!r.target.light || r.target.level !== this.pose.level || r.target.dead) continue;
+      if (!r.target.light || !r.model.group.visible) continue;
       const g = r.model.group.position;
       const ry = r.model.group.rotation.y;
       uTorchPos.value[n].set(g.x, g.y + 1.35, g.z);
@@ -480,6 +637,7 @@ export class Game {
       this.stamina = 100;
       this.exhausted = false;
       this.pose.dead = false;
+      this.camera.rotation.z = 0;
       this.enterLevel(this.pose.level);
     }
   }
@@ -502,12 +660,29 @@ export class Game {
     const map = this.level!.map;
     const L = map.def;
     const k = this.keys;
+    this.prevX = this.pose.x;
+
+    // con una nota abierta no te mueves; E (o moverse) la cierra
+    if (this.noteKey) {
+      if (this.pressed.has('KeyE') || this.pressed.has('Escape') || ['KeyW', 'KeyA', 'KeyS', 'KeyD'].some((c) => this.pressed.has(c))) {
+        this.noteKey = null;
+        this.hud.showNote(null);
+        this.pressed.delete('KeyE');
+      }
+    }
+
+    // ---- agacharse ----
+    const wantCrouch = k.has('KeyC') || k.has('ControlLeft');
+    // no puedes levantarte si el techo es bajo
+    const ceilHere = ceilAt(map, this.pose.x, this.pose.z);
+    this.crouching = wantCrouch || (this.crouching && ceilHere - this.pose.y < PLAYER_HEIGHT);
+    this.pose.crouch = this.crouching;
 
     // ---- movimiento horizontal ----
-    const fwd = (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0) - (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0);
-    const side = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
+    const fwd = this.noteKey ? 0 : (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0) - (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0);
+    const side = this.noteKey ? 0 : (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
     const moving = fwd !== 0 || side !== 0;
-    const wantSprint = moving && (k.has('ShiftLeft') || k.has('ShiftRight'));
+    const wantSprint = moving && !this.crouching && (k.has('ShiftLeft') || k.has('ShiftRight'));
     const sprinting = wantSprint && !this.exhausted && this.stamina > 0;
     this.boost = Math.max(0, this.boost - dt);
     if (sprinting && this.boost <= 0) this.stamina -= 22 * dt;
@@ -517,28 +692,48 @@ export class Game {
     if (this.stamina <= 0.5) this.exhausted = true;
     if (this.exhausted && this.stamina >= 50) this.exhausted = false;
     this.pose.sprint = sprinting;
+    // fluido hasta los tobillos: cuesta andar y hace ruido
+    const deep = (flagsAt(map, cellOf(this.pose.x), cellOf(this.pose.z)) & F_DEEP) !== 0;
 
     if (moving) {
       const len = Math.hypot(fwd, side);
-      const speed = (sprinting ? SPRINT : WALK) * (this.onGround ? 1 : 0.85) * dt;
+      const base = this.crouching ? CROUCH : sprinting ? SPRINT : WALK;
+      const speed = base * (this.onGround ? 1 : 0.85) * (deep ? 0.6 : 1) * dt;
       const sin = Math.sin(this.yaw);
       const cos = Math.cos(this.yaw);
       const dx = ((-sin * fwd + cos * side) / len) * speed;
       const dz = ((-cos * fwd - sin * side) / len) * speed;
-      const p = collide(map, this.pose.x + dx, this.pose.z + dz, this.pose.y, RADIUS);
+      const p = collide(map, this.pose.x + dx, this.pose.z + dz, this.pose.y, RADIUS, this.crouching ? 1.1 : PLAYER_HEIGHT);
       const moved = Math.hypot(p.x - this.pose.x, p.z - this.pose.z);
       this.pose.x = p.x;
       this.pose.z = p.z;
       if (this.onGround) {
-        this.bob += moved * 2.4;
+        this.bob += moved * (this.crouching ? 1.6 : 2.4);
         this.stepDist += moved;
-        if (this.stepDist > (sprinting ? 1.6 : 1.3)) {
+        if (this.stepDist > (sprinting ? 1.6 : this.crouching ? 0.9 : 1.3)) {
           this.stepDist = 0;
-          this.sound.step(this.pose.level);
+          if (deep) this.sound.splash();
+          else this.sound.step(this.pose.level, this.crouching);
         }
       }
     }
     this.pose.ry = this.yaw;
+
+    // ---- ruido: lo que oyen los Clumps, los Hounds y los Smilers ----
+    this.shoutCool = Math.max(0, this.shoutCool - dt);
+    if (this.pressed.has('KeyG') && this.shoutCool <= 0) {
+      this.shoutCool = 3;
+      this.shoutSend = true;
+      this.sound.shout();
+      this.hud.say('¡EH! ¡FUERA!', 1.5);
+    }
+    let noise = !moving ? 0 : this.crouching ? 0.15 : sprinting ? 1.25 : 0.5;
+    if (deep && moving) noise += 0.4;
+    if (this.shoutCool > 2) noise = 1.6;
+    this.pose.noise = noise;
+
+    // ---- zonas que se repiten (pasillos sin fin, Habitaciones Rojas) ----
+    this.updateLoops(map);
 
     // ---- vertical: escalones, saltos y caídas ----
     const g = floorAt(map, this.pose.x, this.pose.z);
@@ -565,8 +760,9 @@ export class Game {
     this.onGround = this.pose.y <= g + 0.001;
     const ceil = ceilAt(map, this.pose.x, this.pose.z);
     if (this.pose.y + PLAYER_HEIGHT > ceil && this.vy > 0) this.vy = 0;
-    if (this.onGround && this.pressed.has('Space')) this.vy = JUMP;
-    if (this.pose.y < VOID_Y) return this.fallThrough();
+    if (this.onGround && this.pressed.has('Space') && !this.crouching) this.vy = JUMP;
+    // en el Nivel 0 nadie ha sobrevivido a los agujeros
+    if (this.pose.y < VOID_Y) return L.isolation ? this.die('pozo') : this.fallThrough();
 
     // ---- linterna ----
     if (this.pressed.has('KeyF')) {
@@ -581,30 +777,50 @@ export class Game {
     }
 
     // ---- objetos ----
-    if (this.pressed.has('Use') || this.pressed.has('KeyQ')) this.useItem();
+    if (!this.noteKey && (this.pressed.has('Use') || this.pressed.has('KeyQ'))) this.useItem();
     this.useAnim = Math.max(0, this.useAnim - dt);
 
     // ---- criaturas cerca ----
     let smiler = 0;
     let hound = 0;
     let stealer = 0;
+    this.warnCool = Math.max(0, this.warnCool - dt);
     for (const e of this.enemies.values()) {
       if (e.target.level !== this.pose.level) continue;
       const pos = e.model.group.position;
       const d = Math.hypot(pos.x - this.pose.x, pos.z - this.pose.z);
       const near = Math.max(0, 1 - d / 22);
-      if (e.target.kind === 'smiler') smiler = Math.max(smiler, near);
-      if (e.target.kind === 'hound') hound = Math.max(hound, near * (e.target.anim >= 2 ? 1 : 0.4));
-      if (e.target.kind === 'skinstealer') stealer = Math.max(stealer, near);
+      const kind = e.target.kind;
+      if (kind === 'smiler') smiler = Math.max(smiler, near);
+      if (kind === 'hound') hound = Math.max(hound, near * (e.target.anim >= 2 ? 1 : 0.4));
+      if (kind === 'skinstealer' && e.target.anim !== Anim.Disguise) stealer = Math.max(stealer, near);
+      // un Duller a punto de salir: arañazos dentro de la pared
+      if (kind === 'duller' && e.target.anim === Anim.Warn && d < 8 && this.warnCool <= 0) {
+        this.warnCool = 0.8;
+        this.sound.scratch(0.45 * (1 - d / 9), this.panOf(pos.x, pos.z));
+        this.hud.say('Algo araña dentro de la pared, justo a tu lado…', 1.5);
+      }
+      if (kind === 'clump' && e.target.anim === Anim.Run && d < 14 && this.warnCool <= 0) {
+        this.warnCool = 0.6;
+        this.sound.gurgle(0.4 * (1 - d / 15), this.panOf(pos.x, pos.z));
+      }
     }
     const threat = Math.max(smiler, hound, stealer);
 
+    // ---- zonas: Habitaciones Rojas, el Vacío, zonas seguras ----
+    const zone = inZone(map, 'void', this.pose.x, this.pose.z) ? 'void' : inZone(map, 'red', this.pose.x, this.pose.z) ? 'red' : inZone(map, 'safe', this.pose.x, this.pose.z) ? 'safe' : inZone(map, 'meeting', this.pose.x, this.pose.z) ? 'meeting' : inZone(map, 'whisper', this.pose.x, this.pose.z) ? 'whisper' : '';
+    if (zone !== this.zoneNow) this.enterZone(zone);
+
     // ---- cordura y salud ----
     const dark = isDarkAt(map, this.pose.x, this.pose.z) || lightUniforms.uBlackout.value > 0.5;
-    const company = this.others.some((p) => p.level === this.pose.level && !p.dead && Math.hypot(p.x - this.pose.x, p.z - this.pose.z) < 8);
+    const company = this.others.some((p) => this.canSee(p) && Math.hypot(p.x - this.pose.x, p.z - this.pose.z) < 8);
     let drain = L.sanityDrain * (dark && !this.pose.light ? 3 : dark ? 1.8 : 1) + threat * 3;
+    if (zone === 'red') drain *= 2.2;
+    if (zone === 'void') drain = 2.5;
+    if (zone === 'whisper') drain *= 1.6;
     if (company) drain *= 0.5;
-    this.sanity = Math.max(0, this.sanity - drain * dt);
+    if (zone === 'safe') drain = -1.5;
+    this.sanity = THREE.MathUtils.clamp(this.sanity - drain * dt, 0, 100);
     if (this.sanity === 0) {
       // sin cordura, el cuerpo empieza a fallar
       this.health -= 4 * dt;
@@ -620,6 +836,8 @@ export class Game {
       }
       if (this.health <= 0) return this.die('vapor');
     }
+    if (this.updateNpcs(dt)) return;
+    this.updateScares(dt, map);
 
     // ---- glitches que se pueden atravesar ----
     for (const gl of map.glitches) {
@@ -635,9 +853,10 @@ export class Game {
 
     // ---- cámara y manos ----
     const insanity = Math.max(0, 1 - this.sanity / 40);
-    const bobY = moving && this.onGround ? Math.sin(this.bob) * 0.04 : 0;
-    const targetEye = this.pose.y + EYE;
-    this.eyeY = targetEye > this.eyeY ? this.eyeY + (targetEye - this.eyeY) * Math.min(1, dt * 14) : targetEye;
+    const bobY = moving && this.onGround ? Math.sin(this.bob) * (this.crouching ? 0.02 : 0.04) : 0;
+    const targetEye = this.pose.y + (this.crouching ? CROUCH_EYE : EYE);
+    this.eyeY = targetEye > this.eyeY ? this.eyeY + (targetEye - this.eyeY) * Math.min(1, dt * 10) : Math.max(targetEye, this.eyeY - dt * 6);
+    if (this.pose.y + EYE - this.eyeY > 2) this.eyeY = targetEye;
     const sx = (Math.random() - 0.5) * this.shake * 0.1;
     this.camera.position.set(this.pose.x + sx, this.eyeY + bobY, this.pose.z);
     // con poca cordura la cámara se inclina un poco y el zoom respira, sin tocar hacia dónde miras
@@ -657,12 +876,134 @@ export class Game {
       this.hudTimer = 0.1;
       this.hud.bars(this.health, this.sanity, this.stamina, this.battery, this.exhausted);
     }
-    this.sound.update(lightUniforms.uFlicker.value * (1 - lightUniforms.uBlackout.value), smiler, hound, stealer, insanity, dark);
+    this.sound.update(lightUniforms.uFlicker.value * lightUniforms.uCircuit.value * (1 - lightUniforms.uBlackout.value), smiler, hound, stealer, insanity, dark, dt);
+    this.sound.setWhir(this.machineNear(map));
 
     this.sendAccum += dt;
     if (this.sendAccum >= 0.05) {
       this.sendAccum = 0;
       this.sendPose();
+    }
+  }
+
+  /** Cercanía (0-1) de la máquina o depósito más próximo. */
+  private machineNear(map: ReturnType<typeof getMap>): number {
+    let best = 0;
+    for (const p of map.props) {
+      if (p.type !== 'machine' && p.type !== 'tank') continue;
+      const d = Math.hypot(p.x - this.pose.x, p.z - this.pose.z);
+      best = Math.max(best, 1 - d / 12);
+    }
+    return best;
+  }
+
+  /** Pasillos que se repiten: al salir por un extremo apareces en el otro. */
+  private updateLoops(map: ReturnType<typeof getMap>) {
+    for (const l of map.loops) {
+      if (this.pose.z < l.z0 || this.pose.z > l.z1 || this.pose.x < l.x0 - 1 || this.pose.x > l.x1 + 1) continue;
+      const len = l.x1 - l.x0;
+      // mirar fijamente la referencia rompe la ilusión
+      if (l.landmark) {
+        const a = Math.atan2(l.landmark.x - this.pose.x, l.landmark.z - this.pose.z);
+        const look = Math.atan2(-Math.sin(this.yaw), -Math.cos(this.yaw));
+        const diff = Math.abs(Math.atan2(Math.sin(a - look), Math.cos(a - look)));
+        if (diff < 0.35 && Math.abs(this.pitch) < 0.5) continue;
+      }
+      const forward = l.oneWay ?? 0;
+      if (this.prevX <= l.x1 && this.pose.x > l.x1 && forward >= 0) {
+        this.pose.x -= len;
+        this.loopTeleport(-len);
+      } else if (this.prevX >= l.x0 && this.pose.x < l.x0 && forward <= 0) {
+        this.pose.x += len;
+        this.loopTeleport(len);
+      }
+    }
+  }
+
+  private loopTeleport(dx: number) {
+    this.camera.position.x += dx;
+    this.prevX += dx;
+    if (Math.random() < 0.3) this.sound.humSpike();
+  }
+
+  private enterZone(zone: string) {
+    const prev = this.zoneNow;
+    this.zoneNow = zone;
+    const L = this.level!.map.def;
+    const fog = this.scene.fog as THREE.Fog;
+    if (zone === 'void') {
+      fog.color.set(0x000000);
+      fog.near = 0.5;
+      fog.far = 9;
+      (this.scene.background as THREE.Color).set(0x000000);
+      this.hud.notice('No hay nada. Absolutamente nada.');
+    } else if (prev === 'void') {
+      fog.color.set(L.fog.color);
+      fog.near = L.fog.near;
+      fog.far = L.fog.far;
+      (this.scene.background as THREE.Color).set(L.fog.color);
+    }
+    if (zone === 'red' && prev !== 'red') this.hud.notice('El papel de las paredes se despega. Debajo, todo es rojo.');
+    if (zone === 'safe') this.hud.notice('Zona segura: aquí no entran las entidades.');
+    if (zone === 'meeting') this.hud.notice('Por fin: aquí sí podéis veros.');
+  }
+
+  /** Personajes de la M.E.G. y trabajadores sombra. Devuelve true si mueres. */
+  private updateNpcs(dt: number): boolean {
+    this.bumpCool = Math.max(0, this.bumpCool - dt);
+    for (const n of this.level!.npcs) {
+      if (n.def.kind !== 'worker') continue;
+      const d = Math.hypot(n.x - this.pose.x, n.z - this.pose.z);
+      if (d < 0.75 && this.bumpCool <= 0) {
+        this.bumpCool = 1.5;
+        this.health -= 12;
+        this.damage = Math.min(1, this.damage + 0.4);
+        this.shake = 0.3;
+        // empujón
+        const k = 0.6 / Math.max(d, 0.1);
+        const p = collide(this.level!.map, this.pose.x + (this.pose.x - n.x) * k, this.pose.z + (this.pose.z - n.z) * k, this.pose.y, RADIUS);
+        this.pose.x = p.x;
+        this.pose.z = p.z;
+        this.sound.hurt('worker');
+        this.hud.notice('Un trabajador sombra te ha arrollado sin mirarte.');
+        if (this.health <= 0) {
+          this.die('trabajador');
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Sustos: caras en las ventanas, subidas del zumbido. */
+  private updateScares(dt: number, map: ReturnType<typeof getMap>) {
+    this.windowCool -= dt;
+    for (const w of this.level!.windows) {
+      if (w.face.visible) {
+        if ((w.face.userData.left -= dt) <= 0) w.face.visible = false;
+        continue;
+      }
+      if (this.windowCool > 0) continue;
+      const d = Math.hypot(w.x - this.pose.x, w.z - this.pose.z);
+      if (d > 7 || d < 1.5) continue;
+      const a = Math.atan2(w.x - this.pose.x, w.z - this.pose.z);
+      const look = Math.atan2(-Math.sin(this.yaw), -Math.cos(this.yaw));
+      if (Math.abs(Math.atan2(Math.sin(a - look), Math.cos(a - look))) > 0.4) continue;
+      if (Math.random() > dt * 0.5) continue;
+      w.face.visible = true;
+      w.face.userData.left = 0.35;
+      this.windowCool = 45;
+      this.sound.sting();
+      this.sanity = Math.max(0, this.sanity - 12);
+      this.shake = 0.25;
+    }
+    // Nivel 0: el zumbido sube de golpe de vez en cuando
+    if (map.def.isolation) {
+      this.humTimer -= dt;
+      if (this.humTimer <= 0) {
+        this.humTimer = 40 + Math.random() * 60;
+        this.sound.humSpike();
+      }
     }
   }
 
@@ -678,16 +1019,29 @@ export class Game {
   private updateInteraction() {
     const map = this.level!.map;
     const near = (o: { x: number; y: number; z: number }, r: number) => Math.hypot(o.x - this.pose.x, o.z - this.pose.z) < r && Math.abs(o.y - this.pose.y) < 1.4;
+    // solo lo que tienes delante
+    const ahead = (o: { x: number; z: number }) => {
+      const a = Math.atan2(o.x - this.pose.x, o.z - this.pose.z);
+      const look = Math.atan2(-Math.sin(this.yaw), -Math.cos(this.yaw));
+      return Math.abs(Math.atan2(Math.sin(a - look), Math.cos(a - look))) < 1.1 || Math.hypot(o.x - this.pose.x, o.z - this.pose.z) < 0.6;
+    };
     const item = map.items.find((i) => !this.picked.has(i.key) && near(i, 1.4));
-    const crate = map.crates.find((c) => !this.picked.has(c.key) && near(c, 1.5));
+    const crate = map.crates.find((c) => !this.picked.has(c.key) && near({ ...c, y: c.y + (c.shelf ? 1.2 : 0) }, 1.5));
     const exit = map.exits.find((e) => near(e, 1.5));
+    const door = map.doors.find((d) => (d.locked || d.to) && near(d, 1.4) && ahead(d));
+    const note = map.notes.find((n) => near(n, 1.4) && ahead(n));
+    const npc = this.level!.npcs.find((n) => Math.hypot(n.x - this.pose.x, n.z - this.pose.z) < 1.8 && ahead(n));
     const last = this.pose.level === LEVELS.length - 1;
     let prompt: string | null = null;
-    if (exit) prompt = last ? '[E] Abrir la puerta… ¿será la última?' : `[E] ${exit.label}`;
-    else if (crate) prompt = '[E] Abrir la caja de suministros';
+    if (this.noteKey) prompt = null;
+    else if (exit) prompt = last ? '[E] Abrir la puerta… ¿qué habrá más abajo?' : `[E] ${exit.label}`;
+    else if (crate) prompt = '[E] Abrir la caja';
     else if (item) prompt = this.inventory.fits(item.kind) ? `[E] Coger ${ITEM_INFO[item.kind].name.toLowerCase()}` : 'Inventario lleno';
+    else if (note) prompt = `[E] Leer: ${note.title}`;
+    else if (npc) prompt = npc.def.kind === 'meg' ? '[E] Hablar con la patrulla de la M.E.G.' : 'Un trabajador sombra. No te mira.';
+    else if (door) prompt = door.locked ? '[E] Probar la puerta' : `[E] ${door.label ?? 'Cruzar la puerta'}`;
     this.hud.setPrompt(prompt);
-    if (!this.pressed.has('KeyE')) return;
+    if (!this.pressed.has('KeyE') || this.noteKey) return;
     if (exit) {
       this.hud.setPrompt(null);
       this.sound.door();
@@ -697,6 +1051,36 @@ export class Game {
       this.send({ t: 'pickup', key: crate.key });
     } else if (item && this.inventory.fits(item.kind)) {
       this.send({ t: 'pickup', key: item.key });
+    } else if (note) {
+      this.noteKey = note.key;
+      this.hud.showNote(note.title, note.text);
+      this.sound.click();
+    } else if (npc) {
+      if (npc.def.kind === 'meg') {
+        const i = this.npcTalk.get(npc) ?? 0;
+        this.npcTalk.set(npc, i + 1);
+        const line = npc.def.lines[i % npc.def.lines.length];
+        this.hud.say(`M.E.G.: «${line}»`, 6);
+        this.sound.voice(line, 0.2);
+        // dan un poco de calma
+        this.sanity = Math.min(100, this.sanity + 5);
+      } else {
+        this.hud.say(npc.def.lines[0] ?? '…', 3);
+      }
+    } else if (door) {
+      if (door.locked) {
+        this.sound.rattle();
+        this.hud.notice(door.window ? 'Cerrada. Por el ventanuco solo se ve negro.' : 'Está cerrada con llave.');
+      } else if (door.to) {
+        this.sound.door();
+        this.pose.x = door.to.x;
+        this.pose.z = door.to.z;
+        this.pose.y = floorAt(map, this.pose.x, this.pose.z);
+        this.eyeY = this.pose.y + EYE;
+        this.yaw = door.to.ry + Math.PI;
+        this.prevX = this.pose.x;
+        this.sendPose();
+      }
     }
   }
 
@@ -729,6 +1113,8 @@ export class Game {
   }
 
   private sendPose() {
+    this.pose.shout = this.shoutSend;
+    this.shoutSend = false;
     this.send({ t: 'pose', pose: { ...this.pose } });
   }
 

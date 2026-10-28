@@ -13,6 +13,8 @@ export const F_PIT = 4; // agujero sin fondo
 export const F_STAIRS = 8; // la rampa se dibuja como escalera
 export const F_NOLAMP = 16; // zona a oscuras: no se ponen fluorescentes
 export const F_WET = 32; // charco
+export const F_RED = 64; // Habitación Roja
+export const F_DEEP = 128; // fluido hasta los tobillos (cuesta andar)
 
 export type Theme = 'lobby' | 'habitable' | 'pipes';
 
@@ -29,11 +31,13 @@ export interface LevelDef {
   sanityDrain: number;
   staminaRegen: number; // multiplicador (el calor del Nivel 2 cansa)
   fog: { color: number; near: number; far: number };
-  blackouts: boolean; // apagones periódicos
+  blackouts: boolean; // apagones periódicos (el "Parpadeo" del Nivel 1)
+  circuits?: boolean; // tramos de luces que se funden (Nivel 2)
+  isolation?: boolean; // no se ve a los demás (Nivel 0)
 }
 
-export type ItemKind = 'agua' | 'pila' | 'barrita' | 'vendas';
-export type EntityKind = 'smiler' | 'hound' | 'faceling' | 'skinstealer';
+export type ItemKind = 'agua' | 'pila' | 'barrita' | 'vendas' | 'lata' | 'bengala';
+export type EntityKind = 'figure' | 'smiler' | 'hound' | 'faceling' | 'skinstealer' | 'clump' | 'duller';
 
 export interface Item {
   key: string;
@@ -48,7 +52,87 @@ export interface Crate {
   y: number;
   z: number;
   ry: number;
-  contents: ItemKind[];
+  pool: 'comida' | 'medico' | 'herramientas' | 'mixto'; // qué suele contener
+  shelf?: boolean; // está en una estantería (se dibuja más alta)
+}
+
+/** Nota que se puede leer. */
+export interface Note {
+  key: string;
+  x: number;
+  y: number;
+  z: number;
+  ry: number;
+  title: string;
+  text: string;
+  wall: boolean; // pegada a la pared (si no, en el suelo o en una mesa)
+  h: number; // altura sobre el suelo
+}
+
+/** Puerta: cerrada con llave, o que lleva a otro sitio del mapa. */
+export interface Door {
+  key: string;
+  x: number;
+  y: number;
+  z: number;
+  ry: number; // hacia dónde mira la puerta (su cara "de este lado")
+  look: 'steel' | 'double' | 'wood' | 'white';
+  locked: boolean;
+  to?: { x: number; z: number; ry: number }; // destino al cruzarla
+  window?: boolean;
+  sign?: string; // cartel encima (p. ej. SALIDA en verde)
+  label?: string; // texto al interactuar
+}
+
+/** Bloque de pared que aparece o desaparece cuando nadie lo mira. */
+export interface Shift {
+  id: number;
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  closed: boolean; // estado inicial
+  wall: number;
+  pair?: number; // bloque con el que se turna (uno abierto, el otro cerrado)
+}
+
+/** Zona que se repite: al salir por un extremo se aparece por el otro. */
+export interface Loop {
+  x0: number;
+  x1: number;
+  z0: number;
+  z1: number;
+  axis: 'x' | 'z';
+  oneWay?: 1 | -1; // solo se repite al avanzar en ese sentido
+  landmark?: { x: number; z: number }; // si la miras mientras andas, no se repite
+}
+
+/** Personaje que no ataca (patrulla de la M.E.G., trabajadores sombra). */
+export interface Npc {
+  kind: 'meg' | 'worker';
+  x: number;
+  z: number;
+  ry: number;
+  lines: string[];
+  path?: [number, number][];
+}
+
+/** Zona marcada para efectos (sala de encuentro, zona segura, etc.). */
+export interface Zone {
+  kind: 'meeting' | 'safe' | 'void' | 'red' | 'whisper';
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+}
+
+/** Panel de pared en diagonal (giros de 45°). */
+export interface Diag {
+  x: number;
+  z: number;
+  ry: number;
+  w: number;
+  wall: number;
 }
 export interface Exit {
   x: number;
@@ -61,6 +145,8 @@ export interface Lair {
   kind: EntityKind;
   x: number;
   z: number;
+  /** Frases que dice (Skin-Stealer disfrazado). */
+  lines?: string[];
 }
 export interface Lamp {
   x: number;
@@ -120,6 +206,19 @@ export interface LevelMap {
   props: Prop[];
   glitches: Glitch[];
   vents: Vent[];
+  notes: Note[];
+  doors: Door[];
+  shifts: Shift[];
+  loops: Loop[];
+  npcs: Npc[];
+  zones: Zone[];
+  diags: Diag[];
+  /** Ventanas peligrosas al final de algunos túneles. */
+  windows: { x: number; y: number; z: number; ry: number }[];
+  /** Puntos donde viven bichos ambientales (polillas, ratas). */
+  critters: { kind: 'moth' | 'rat'; x: number; z: number }[];
+  /** Bloque de "cambio periférico" al que pertenece cada casilla (-1 = ninguno). */
+  shiftCell: Int16Array;
   /** Luz por casilla: [fija, parpadeante] intercalados. */
   light: Float32Array;
   /** 1 si la casilla está a oscuras. */
@@ -347,6 +446,16 @@ export class Builder {
       props: [],
       glitches: [],
       vents: [],
+      notes: [],
+      doors: [],
+      shifts: [],
+      loops: [],
+      npcs: [],
+      zones: [],
+      diags: [],
+      windows: [],
+      critters: [],
+      shiftCell: new Int16Array(n).fill(-1),
       light: new Float32Array(n * 2),
       dark: new Uint8Array(n),
     };
@@ -475,9 +584,104 @@ export class Builder {
     return this;
   }
 
-  crate(x: number, z: number, ry: number, contents: ItemKind[]): this {
-    this.map.crates.push({ key: `${this.map.level}:c${this.map.crates.length}`, x, y: NaN, z, ry, contents });
-    return this.block(x - 0.45, z - 0.45, 0.9, 0.9);
+  crate(x: number, z: number, ry: number, pool: Crate['pool'] = 'mixto', shelf = false): this {
+    this.map.crates.push({ key: `${this.map.level}:c${this.map.crates.length}`, x, y: NaN, z, ry, pool, shelf });
+    return shelf ? this : this.block(x - 0.45, z - 0.45, 0.9, 0.9);
+  }
+
+  /** Nota legible. */
+  note(x: number, z: number, ry: number, title: string, text: string, wall = true, y?: number): this {
+    this.map.notes.push({ key: `${this.map.level}:n${this.map.notes.length}`, x, y: NaN, z, ry, title, text, wall, h: y ?? (wall ? 1.45 : 0.01) });
+    return this;
+  }
+
+  /** Puerta. Si `to` existe, al cruzarla se aparece allí. */
+  door(x: number, z: number, ry: number, o: Partial<Omit<Door, 'key' | 'x' | 'y' | 'z' | 'ry'>> = {}): this {
+    this.map.doors.push({ key: `${this.map.level}:d${this.map.doors.length}`, x, y: NaN, z, ry, look: 'steel', locked: !o.to, ...o });
+    return this;
+  }
+
+  /** Bloque que aparece y desaparece cuando nadie lo mira ("cambio periférico"). */
+  shift(x: number, z: number, w: number, d: number, closed: boolean, wall = 0, pairWithPrevious = false): this {
+    const id = this.map.shifts.length;
+    this.map.shifts.push({ id, x, z, w, d, closed, wall });
+    if (pairWithPrevious && id > 0) {
+      this.map.shifts[id].pair = id - 1;
+      this.map.shifts[id - 1].pair = id;
+    }
+    return this;
+  }
+
+  loop(l: Loop): this {
+    this.map.loops.push(l);
+    return this;
+  }
+
+  npc(n: Npc): this {
+    this.map.npcs.push(n);
+    return this.block(n.x - 0.25, n.z - 0.25, 0.5, 0.5);
+  }
+
+  zone(kind: Zone['kind'], x: number, z: number, w: number, d: number): this {
+    this.map.zones.push({ kind, x, z, w, d });
+    return this;
+  }
+
+  /** Zona roja: suelo y paredes que viran al rojo. */
+  red(x: number, z: number, w: number, d: number): this {
+    this.each(x, z, w, d, (i) => (this.map.flags[i] |= F_RED));
+    return this;
+  }
+
+  /** Suelo hundido con fluido hasta los tobillos. */
+  deep(x: number, z: number, w: number, d: number, drop = 0.15): this {
+    this.each(x, z, w, d, (i) => {
+      if (this.map.flags[i] & (F_SOLID | F_PIT)) return;
+      this.map.flags[i] |= F_DEEP;
+      this.map.floor[i] -= drop;
+    });
+    return this;
+  }
+
+  /**
+   * Hueco en una pared con forma de arco: casillas abiertas con el techo más
+   * bajo y una moldura curva encima.
+   */
+  arch(x: number, z: number, w: number, d: number, top = 2.2, ry = 0): this {
+    const m = this.map;
+    this.each(x, z, w, d, (i) => {
+      m.flags[i] &= ~F_SOLID;
+      m.ceil[i] = m.floor[i] + top;
+    });
+    return this.prop('arch', x + w / 2, z + d / 2, ry, { w: Math.max(w, d), h: top });
+  }
+
+  /** Panel diagonal que corta una esquina (los túneles giran a 45°). */
+  diag(x: number, z: number, ry: number, w: number, wall = 0): this {
+    const m = this.map;
+    m.diags.push({ x, z, ry, w, wall });
+    // lo que queda detrás del panel no se puede pisar
+    const nx = -Math.sin(ry);
+    const nz = -Math.cos(ry);
+    for (let t = -w / 2; t <= w / 2; t += CELL / 2) {
+      for (let k = 0.1; k < w / 2; k += CELL / 2) {
+        const px = x + Math.cos(ry) * t + nx * k;
+        const pz = z - Math.sin(ry) * t + nz * k;
+        const i = cellOf(pz) * m.w + cellOf(px);
+        if (i >= 0 && i < m.flags.length && !(m.flags[i] & F_SOLID)) m.flags[i] |= F_BLOCK;
+      }
+    }
+    return this;
+  }
+
+  window(x: number, z: number, ry: number): this {
+    this.map.windows.push({ x, y: NaN, z, ry });
+    return this;
+  }
+
+  critter(kind: 'moth' | 'rat', x: number, z: number): this {
+    this.map.critters.push({ kind, x, z });
+    return this;
   }
 
   /** Puerta de salida contra una pared; ry = hacia dónde mira la puerta. */
@@ -486,8 +690,8 @@ export class Builder {
     return this;
   }
 
-  lair(kind: EntityKind, x: number, z: number): this {
-    this.map.lairs.push({ kind, x, z });
+  lair(kind: EntityKind, x: number, z: number, lines?: string[]): this {
+    this.map.lairs.push({ kind, x, z, lines });
     return this;
   }
 
@@ -518,11 +722,20 @@ export class Builder {
 
   build(): LevelMap {
     const m = this.map;
-    const fix = (o: { x: number; y: number; z: number }) => {
-      if (Number.isNaN(o.y)) o.y = floorAt(m, o.x, o.z);
+    const fix = (o: { x: number; y: number; z: number; ry?: number }) => {
+      if (!Number.isNaN(o.y)) return;
+      // lo que está pegado a una pared toma la altura del suelo de delante
+      let x = o.x;
+      let z = o.z;
+      if (flagsAt(m, cellOf(x), cellOf(z)) & F_SOLID && o.ry !== undefined) {
+        x += Math.sin(o.ry) * 0.4;
+        z += Math.cos(o.ry) * 0.4;
+      }
+      const y = floorAt(m, x, z);
+      o.y = Number.isFinite(y) ? y : 0;
     };
     m.spawn.y = floorAt(m, m.spawn.x, m.spawn.z);
-    for (const list of [m.items, m.crates, m.exits, m.props, m.vents] as { x: number; y: number; z: number }[][]) list.forEach(fix);
+    for (const list of [m.items, m.crates, m.exits, m.props, m.vents, m.doors, m.notes, m.windows] as { x: number; y: number; z: number }[][]) list.forEach(fix);
     for (const g of m.glitches) if (Number.isNaN(g.y)) g.y = floorAt(m, g.x, g.z) + g.h / 2 + 0.1;
     for (const l of this.lampCandidates) {
       const cx = cellOf(l.x);
@@ -533,7 +746,15 @@ export class Builder {
       l.y = m.ceil[cz * m.w + cx];
       m.lamps.push(l);
     }
+    // bloques de cambio periférico: casillas abiertas en la geometría fija
+    for (const sh of m.shifts) {
+      this.each(sh.x, sh.z, sh.w, sh.d, (i) => {
+        m.shiftCell[i] = sh.id;
+        m.flags[i] &= ~F_SOLID;
+      });
+    }
     bakeLight(m);
+    for (const sh of m.shifts) setShift(m, sh.id, sh.closed);
     for (let i = 0; i < m.w * m.h; i++) {
       if (m.flags[i] & F_SOLID) continue;
       if (m.light[i * 2] + m.light[i * 2 + 1] < 0.12) m.dark[i] = 1;
@@ -572,7 +793,7 @@ function bakeLight(m: LevelMap) {
     for (let j = 1; j < m.h - 1; j++) {
       for (let i = 1; i < m.w - 1; i++) {
         const idx = j * m.w + i;
-        if (!(m.flags[idx] & F_SOLID)) continue;
+        if (!(m.flags[idx] & (F_SOLID | F_PIT))) continue;
         for (const ch of [0, 1]) {
           let best = src[idx * 2 + ch];
           for (const [dx, dz] of NEIGHBORS) best = Math.max(best, src[((j + dz) * m.w + i + dx) * 2 + ch] * 0.92);
@@ -581,4 +802,21 @@ function bakeLight(m: LevelMap) {
       }
     }
   }
+}
+
+/** Abre o cierra un bloque de cambio periférico. */
+export function setShift(map: LevelMap, id: number, closed: boolean) {
+  const sh = map.shifts[id];
+  if (!sh) return;
+  sh.closed = closed;
+  for (let i = 0; i < map.shiftCell.length; i++) {
+    if (map.shiftCell[i] !== id) continue;
+    if (closed) map.flags[i] |= F_SOLID;
+    else map.flags[i] &= ~F_SOLID;
+  }
+}
+
+/** ¿Está el punto dentro de alguna zona de ese tipo? */
+export function inZone(map: LevelMap, kind: Zone['kind'], x: number, z: number): boolean {
+  return map.zones.some((zn) => zn.kind === kind && x >= zn.x && x <= zn.x + zn.w && z >= zn.z && z <= zn.z + zn.d);
 }

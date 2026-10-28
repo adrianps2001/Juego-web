@@ -155,7 +155,7 @@ export function makeHumanoid(color: number, name: string): Humanoid {
 // ---------- enemigos ----------
 
 /** Estado de animación que manda el anfitrión. */
-export const Anim = { Idle: 0, Walk: 1, Run: 2, Attack: 3, Flee: 4, Growl: 5 } as const;
+export const Anim = { Idle: 0, Walk: 1, Run: 2, Attack: 3, Flee: 4, Growl: 5, Disguise: 6, Hidden: 8, Warn: 9 } as const;
 
 export interface EnemyModel {
   group: THREE.Group;
@@ -374,90 +374,250 @@ export function makeFaceling(seed: number): EnemyModel {
   };
 }
 
-/** Skin-Stealer: criatura altísima y esquelética envuelta en jirones de piel humana. */
+/**
+ * Skin-Stealer: humanoide alto, de piel amarillo pálido y ojos blancos
+ * hundidos. Disfrazado parece una persona encogida que llora.
+ */
 export function makeSkinStealer(seed: number): EnemyModel {
-  const hide = litMaterial({ color: 0x4a2a22 }, 0.1);
-  const bone = litMaterial({ color: 0x6b4d3e }, 0.1);
-  const skin = litMaterial({ color: 0xc9a48a, side: THREE.DoubleSide }, 0.1);
+  const pale = litMaterial({ color: 0xd8cf96 }, 0.1);
+  const paleDark = litMaterial({ color: 0xb8ad78 }, 0.1);
+  const skin = litMaterial({ color: 0xd2a58a, side: THREE.DoubleSide }, 0.1);
+  const cloth = litMaterial({ color: 0x5c5048 }, 0.1);
+  const hairMat = litMaterial({ color: 0x2a1d14, side: THREE.DoubleSide }, 0.1);
   const group = new THREE.Group();
-  const body = new THREE.Group();
-  group.add(body);
+
+  // ---- disfraz: alguien de rodillas, encogido, tapándose la cara ----
+  const disguise = new THREE.Group();
+  const back = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.45, 4, 10), cloth);
+  back.position.set(0, 0.62, 0.05);
+  back.rotation.x = 0.55;
+  const dHead = new THREE.Mesh(new THREE.SphereGeometry(0.13, 14, 10), skin);
+  dHead.position.set(0, 0.92, -0.22);
+  const hair = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.7), hairMat);
+  hair.position.copy(dHead.position).add(new THREE.Vector3(0, 0.02, 0.02));
+  hair.rotation.x = -0.5;
+  for (let i = 0; i < 6; i++) {
+    const strand = new THREE.Mesh(new THREE.PlaneGeometry(0.06, 0.35), hairMat);
+    const a = (i / 6) * Math.PI - Math.PI / 2;
+    strand.position.set(Math.sin(a) * 0.12, 0.75, -0.18 + Math.cos(a) * 0.06);
+    disguise.add(strand);
+  }
+  const legs = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.35, 4, 8), cloth);
+  legs.rotation.x = Math.PI / 2;
+  legs.position.set(0, 0.18, 0.05);
+  const armL = new THREE.Mesh(new THREE.CapsuleGeometry(0.05, 0.38, 4, 8), skin);
+  armL.position.set(-0.12, 0.8, -0.28);
+  armL.rotation.set(1.1, 0, 0.5);
+  const armR = armL.clone();
+  armR.position.x = 0.12;
+  armR.rotation.z = -0.5;
+  disguise.add(back, dHead, hair, legs, armL, armR);
+
+  // ---- forma real ----
+  const real = new THREE.Group();
   const spine = new THREE.Group();
-  spine.position.y = 1.35;
-  body.add(spine);
-  const chest = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.7, 4, 10), hide);
+  spine.position.y = 1.3;
+  real.add(spine);
+  const chest = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.75, 4, 10), pale);
   chest.position.y = 0.4;
   spine.add(chest);
-  for (let i = 0; i < 5; i++) {
-    const rib = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.015, 4, 12, Math.PI), bone);
-    rib.position.set(0, 0.2 + i * 0.1, -0.02);
-    rib.rotation.set(Math.PI / 2, 0, Math.PI);
-    spine.add(rib);
-  }
-  // jirones de piel colgando
+  // piel humana colgando a jirones (el disfraz que se quita)
   for (let i = 0; i < 6; i++) {
-    const flap = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.5 + (i % 3) * 0.15), skin);
+    const flap = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.45 + (i % 3) * 0.15), skin);
     const a = (i / 6) * Math.PI * 2;
-    flap.position.set(Math.cos(a) * 0.19, 0.45, Math.sin(a) * 0.19);
+    flap.position.set(Math.cos(a) * 0.19, 0.25, Math.sin(a) * 0.19);
     flap.rotation.y = -a + Math.PI / 2;
     spine.add(flap);
   }
   const head = new THREE.Group();
   head.position.y = 1.0;
-  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 10), hide);
-  skull.scale.set(0.85, 1.35, 1);
-  const mask = new THREE.Mesh(new THREE.SphereGeometry(0.135, 14, 10, Math.PI * 0.6, Math.PI * 0.8, 0.3, 1.6), skin);
-  mask.scale.set(0.9, 1.3, 1.05);
-  mask.rotation.y = Math.PI;
-  const eyes = glowEyes(0xffd27a, 0.05, 0.016);
-  eyes.position.set(0, 0.04, -0.13);
-  head.add(skull, mask, eyes);
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 10), pale);
+  skull.scale.set(0.85, 1.3, 1);
+  // ojos blancos y hundidos
+  const sockets = new THREE.Group();
+  for (const sx of [-1, 1]) {
+    const pit = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 6), litMaterial({ color: 0x3a3320 }, 0.1));
+    pit.position.set(sx * 0.05, 0.03, -0.12);
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.02, 8, 6), new THREE.MeshBasicMaterial({ color: 0xf0f0e8 }));
+    eye.position.set(sx * 0.05, 0.03, -0.135);
+    sockets.add(pit, eye);
+  }
+  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.02, 0.02), litMaterial({ color: 0x2a1010 }, 0.1));
+  mouth.position.set(0, -0.08, -0.13);
+  head.add(skull, sockets, mouth);
   spine.add(head);
-  const legs: THREE.Group[] = [];
+  const legsR: THREE.Group[] = [];
   for (const x of [-0.12, 0.12]) {
-    const upper = segment(0.75, 0.04, 0.06, hide);
-    upper.position.set(x, 1.4, 0);
-    const lower = segment(0.75, 0.03, 0.045, bone);
-    lower.position.y = -0.75;
+    const upper = segment(0.68, 0.045, 0.065, pale);
+    upper.position.set(x, 1.36, 0);
+    const lower = segment(0.68, 0.035, 0.05, paleDark);
+    lower.position.y = -0.68;
     upper.add(lower);
-    body.add(upper);
-    legs.push(upper);
+    real.add(upper);
+    legsR.push(upper);
   }
   const arms: THREE.Group[] = [];
   for (const x of [-0.24, 0.24]) {
-    const upper = segment(0.7, 0.035, 0.05, hide);
+    const upper = segment(0.62, 0.04, 0.055, pale);
     upper.position.set(x, 0.8, 0);
-    const lower = segment(0.75, 0.025, 0.035, bone);
-    lower.position.y = -0.7;
+    const lower = segment(0.66, 0.03, 0.04, paleDark);
+    lower.position.y = -0.62;
     upper.add(lower);
-    // dedos largos
     for (let f = -1; f <= 1; f++) {
-      const finger = segment(0.22, 0.006, 0.01, bone);
-      finger.position.set(f * 0.02, -0.75, 0);
-      finger.rotation.x = 0.2;
-      lower.add(finger);
+      const claw = segment(0.18, 0.004, 0.012, litMaterial({ color: 0x2a2416 }, 0.1));
+      claw.position.set(f * 0.022, -0.66, 0);
+      claw.rotation.x = 0.25;
+      lower.add(claw);
     }
     spine.add(upper);
     arms.push(upper);
   }
+  group.add(disguise, real);
   let cycle = seed;
   return {
     group,
-    eye: 2.35,
+    eye: 2.3,
     animate(dt, time, anim) {
+      const disguised = anim === Anim.Disguise;
+      disguise.visible = disguised;
+      real.visible = !disguised;
+      if (disguised) {
+        // sollozos
+        back.position.y = 0.62 + Math.max(0, Math.sin(time * 9)) * 0.015;
+        dHead.position.y = 0.92 + Math.max(0, Math.sin(time * 9)) * 0.012;
+        return;
+      }
       const moving = anim === Anim.Walk || anim === Anim.Run;
-      cycle += dt * (anim === Anim.Run ? 8 : moving ? 3 : 0);
-      const sw = moving ? Math.sin(cycle) * 0.5 : 0;
-      legs[0].rotation.x = sw;
-      legs[1].rotation.x = -sw;
-      arms[0].rotation.x = anim === Anim.Attack ? 1.6 : -sw * 0.7 + 0.1;
-      arms[1].rotation.x = anim === Anim.Attack ? 1.6 : sw * 0.7 + 0.1;
-      spine.rotation.x = 0.25 + (anim === Anim.Run ? 0.25 : 0); // jorobado
-      // sacudidas bruscas de cabeza
-      head.rotation.z = Math.sin(time * 0.6 + seed) * 0.2 + (Math.random() < 0.02 ? (Math.random() - 0.5) * 0.8 : 0);
-      head.rotation.y = anim === Anim.Idle ? Math.sin(time * 0.3) * 0.5 : 0;
+      cycle += dt * (anim === Anim.Run ? 9 : moving ? 3 : 0);
+      const sw = moving ? Math.sin(cycle) * 0.55 : 0;
+      legsR[0].rotation.x = sw;
+      legsR[1].rotation.x = -sw;
+      arms[0].rotation.x = anim === Anim.Attack ? 1.7 : -sw * 0.7 + 0.2;
+      arms[1].rotation.x = anim === Anim.Attack ? 1.7 : sw * 0.7 + 0.2;
+      spine.rotation.x = 0.2 + (anim === Anim.Run ? 0.3 : 0);
+      head.rotation.z = Math.sin(time * 0.6 + seed) * 0.15 + (Math.random() < 0.02 ? (Math.random() - 0.5) * 0.8 : 0);
     },
   };
+}
+
+/** Figura oscura (Nivel 0): una silueta negra sin rasgos que te observa. */
+export function makeFigure(): EnemyModel {
+  const shadow = new THREE.MeshBasicMaterial({ color: 0x050403, transparent: true, opacity: 0.88, depthWrite: false });
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 1.1, 4, 10), shadow);
+  body.position.y = 1.0;
+  body.scale.set(1, 1, 0.6);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), shadow);
+  head.position.y = 1.85;
+  head.scale.y = 1.15;
+  const parts: THREE.Mesh[] = [body, head];
+  for (const x of [-0.27, 0.27]) {
+    const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.05, 0.8, 4, 8), shadow);
+    arm.position.set(x, 1.05, 0);
+    parts.push(arm);
+  }
+  for (const x of [-0.1, 0.1]) {
+    const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.75, 4, 8), shadow);
+    leg.position.set(x, 0.42, 0);
+    parts.push(leg);
+  }
+  group.add(...parts);
+  return {
+    group,
+    eye: 1.85,
+    animate(_dt, time) {
+      // contorno inestable, como si no estuviera del todo ahí
+      shadow.opacity = 0.7 + Math.sin(time * 7) * 0.1 + (Math.random() < 0.05 ? -0.4 : 0);
+      group.scale.x = 1 + Math.sin(time * 3.1) * 0.03;
+    },
+  };
+}
+
+/** Clump: una maraña de brazos y piernas unidos que corre a toda velocidad. */
+export function makeClump(seed: number): EnemyModel {
+  const flesh = litMaterial({ color: 0xc49a86 }, 0.1);
+  const bruise = litMaterial({ color: 0x8a6656 }, 0.1);
+  const group = new THREE.Group();
+  const core = new THREE.Group();
+  core.position.y = 0.55;
+  group.add(core);
+  const blob = new THREE.Mesh(new THREE.SphereGeometry(0.35, 14, 10), bruise);
+  blob.scale.set(1.2, 0.8, 1);
+  core.add(blob);
+  const limbs: { g: THREE.Group; a: number; b: number }[] = [];
+  for (let i = 0; i < 14; i++) {
+    const g = new THREE.Group();
+    const len = 0.45 + hashf(seed, i) * 0.35;
+    const seg = segment(len, 0.05, 0.065, i % 3 ? flesh : bruise);
+    const lower = segment(len * 0.9, 0.035, 0.05, flesh);
+    lower.position.y = -len;
+    seg.add(lower);
+    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 5), flesh);
+    hand.position.y = -len * 0.9;
+    lower.add(hand);
+    g.add(seg);
+    const a = (i / 14) * Math.PI * 2;
+    const b = (hashf(seed, i + 30) - 0.5) * 1.6;
+    g.rotation.set(0, a, 0);
+    seg.rotation.z = 1.2 + b * 0.3;
+    core.add(g);
+    limbs.push({ g, a, b });
+  }
+  let cycle = seed;
+  return {
+    group,
+    eye: 0.6,
+    animate(dt, time, anim) {
+      const run = anim === Anim.Run;
+      cycle += dt * (run ? 16 : anim === Anim.Walk ? 6 : 1.5);
+      limbs.forEach((l, i) => {
+        const seg = l.g.children[0];
+        seg.rotation.x = Math.sin(cycle + i * 1.3) * (run ? 0.8 : 0.25);
+        seg.rotation.z = 1.2 + l.b * 0.3 + Math.cos(cycle * 0.7 + i) * (run ? 0.4 : 0.1);
+      });
+      core.position.y = 0.55 + (run ? Math.abs(Math.sin(cycle * 0.5)) * 0.12 : Math.sin(time * 2) * 0.02);
+      core.rotation.y = run ? Math.sin(cycle * 0.3) * 0.2 : 0;
+    },
+  };
+}
+
+/** Duller: humanoide gris y apagado que sale de las paredes. */
+export function makeDuller(): EnemyModel {
+  const grey = litMaterial({ color: 0x77736c }, 0.1);
+  const group = new THREE.Group();
+  const body = new THREE.Group();
+  group.add(body);
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.6, 4, 10), grey);
+  torso.position.y = 1.25;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), grey);
+  head.position.y = 1.8;
+  head.scale.set(0.9, 1.2, 0.9);
+  const eyes = glowEyes(0x222222, 0.05, 0.02);
+  eyes.position.set(0, 1.83, -0.13);
+  const arms: THREE.Group[] = [];
+  for (const x of [-0.27, 0.27]) {
+    const arm = segment(1.0, 0.04, 0.06, grey);
+    arm.position.set(x, 1.55, 0);
+    body.add(arm);
+    arms.push(arm);
+  }
+  body.add(torso, head, eyes);
+  return {
+    group,
+    eye: 1.8,
+    animate(_dt, time, anim) {
+      const out = anim === Anim.Attack || anim === Anim.Flee;
+      body.visible = out;
+      if (!out) return;
+      for (const a of arms) a.rotation.x = 1.4 + Math.sin(time * 14) * 0.15;
+      body.position.z = -0.2;
+    },
+  };
+}
+
+function hashf(a: number, b: number): number {
+  const x = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+  return x - Math.floor(x);
 }
 
 export function makeEnemy(kind: string, seed: number): EnemyModel {
@@ -468,9 +628,122 @@ export function makeEnemy(kind: string, seed: number): EnemyModel {
       return makeFaceling(seed);
     case 'skinstealer':
       return makeSkinStealer(seed);
+    case 'figure':
+      return makeFigure();
+    case 'clump':
+      return makeClump(seed);
+    case 'duller':
+      return makeDuller();
     default:
       return makeSmiler(seed);
   }
+}
+
+// ---------- personajes que no atacan ----------
+
+export interface NpcModel {
+  group: THREE.Group;
+  animate: (dt: number, time: number, moving: boolean) => void;
+}
+
+/** Miembro de una patrulla de la M.E.G.: uniforme amarillo lima con el águila. */
+export function makeMeg(): NpcModel {
+  const h = makeHumanoid(0xb8d23a, 'M.E.G.');
+  const patch = new THREE.Mesh(new THREE.CircleGeometry(0.07, 12), litMaterial({ map: textTexture('◆', '#2a2a2a', '#e8e0c0', 64, 64) }, 0.1));
+  patch.position.set(0.12, 1.32, -0.14);
+  patch.rotation.y = Math.PI;
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.17, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), litMaterial({ color: 0x5e6b2e }, 0.1));
+  helmet.position.y = 1.64;
+  h.group.add(patch, helmet);
+  h.setLight(false);
+  return { group: h.group, animate: (dt, _t, moving) => h.animate(dt, moving ? 1.4 : 0) };
+}
+
+/** Trabajador de sombra (sector en obras): mono de trabajo y un martillo. */
+export function makeWorker(seed: number): NpcModel {
+  const dark = litMaterial({ color: 0x141414 }, 0.1);
+  const overall = litMaterial({ color: 0x2a3550 }, 0.1);
+  const group = new THREE.Group();
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.55, 4, 10), overall);
+  torso.position.y = 1.2;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), dark);
+  head.position.y = 1.7;
+  const legs: THREE.Group[] = [];
+  for (const x of [-0.11, 0.11]) {
+    const l = segment(0.85, 0.07, 0.085, overall);
+    l.position.set(x, 0.88, 0);
+    group.add(l);
+    legs.push(l);
+  }
+  const armL = segment(0.62, 0.05, 0.06, dark);
+  armL.position.set(-0.28, 1.45, 0);
+  const armR = segment(0.62, 0.05, 0.06, dark);
+  armR.position.set(0.28, 1.45, 0);
+  const hammer = new THREE.Group();
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.35, 6), litMaterial({ color: 0x6b4a2a }, 0.1));
+  const headH = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.05, 0.05), litMaterial({ color: 0x555555 }, 0.1));
+  headH.position.y = 0.17;
+  hammer.add(handle, headH);
+  hammer.position.y = -0.62;
+  hammer.rotation.x = Math.PI / 2;
+  armR.add(hammer);
+  group.add(torso, head, armL, armR);
+  let cycle = seed;
+  return {
+    group,
+    animate(dt, time, moving) {
+      cycle += dt * (moving ? 3 : 0);
+      const sw = moving ? Math.sin(cycle) * 0.35 : 0;
+      legs[0].rotation.x = sw;
+      legs[1].rotation.x = -sw;
+      // martillea sin parar
+      armR.rotation.x = moving ? -sw : 1.2 + Math.max(0, Math.sin(time * 5 + seed)) * 0.9;
+      armL.rotation.x = moving ? sw : 0.6;
+    },
+  };
+}
+
+// ---------- bichos ambientales ----------
+
+/** Deathmoth pequeña (las del Nivel 2 son más pequeñas). */
+export function makeMoth(): { group: THREE.Group; flap: (t: number) => void } {
+  const wingMat = litMaterial({ color: 0x8a7a62, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }, 0.05);
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.03, 0.12, 4, 6), litMaterial({ color: 0x4a3f30 }, 0.05));
+  body.rotation.x = Math.PI / 2;
+  const wings: THREE.Mesh[] = [];
+  for (const s of [-1, 1]) {
+    const g = new THREE.CircleGeometry(0.16, 8);
+    g.translate(s * 0.16, 0, 0);
+    const w = new THREE.Mesh(g, wingMat);
+    w.rotation.x = Math.PI / 2;
+    wings.push(w);
+  }
+  group.add(body, ...wings);
+  return {
+    group,
+    flap(t) {
+      wings[0].rotation.y = Math.sin(t * 30) * 0.9;
+      wings[1].rotation.y = -Math.sin(t * 30) * 0.9;
+    },
+  };
+}
+
+/** Death Rat: rata pelada. */
+export function makeRat(): THREE.Group {
+  const skin = litMaterial({ color: 0x9c7d74 }, 0.05);
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.05, 0.12, 4, 8), skin);
+  body.rotation.x = Math.PI / 2;
+  body.position.y = 0.05;
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.09, 8), skin);
+  head.rotation.x = -Math.PI / 2;
+  head.position.set(0, 0.05, -0.14);
+  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.012, 0.22, 4), skin);
+  tail.rotation.x = Math.PI / 2 - 0.2;
+  tail.position.set(0, 0.03, 0.18);
+  group.add(body, head, tail);
+  return group;
 }
 
 // ---------- objetos ----------
@@ -544,6 +817,47 @@ export function makeEnergyBar(): THREE.Group {
   const g = new THREE.Group();
   g.add(bar, end(-0.087), end(0.087));
   return g;
+}
+
+/** Lata de conserva. */
+export function makeCan(): THREE.Group {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.11, 14), litMaterial({ map: textTexture('CONSERVA', '#f2ead0', '#7a2b1c', 128, 32), emissive: 0x100800 }, 0.05));
+  body.position.y = 0.055;
+  const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.046, 0.046, 0.008, 14), litMaterial({ color: 0xb8b8b0, emissive: 0x111111 }, 0.05));
+  rim.position.y = 0.11;
+  g.add(body, rim);
+  return g;
+}
+
+/** Bengala (apagada). */
+export function makeFlareStick(): THREE.Group {
+  const g = new THREE.Group();
+  const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.22, 10), litMaterial({ color: 0xb2241a, emissive: 0x1a0000 }, 0.05));
+  stick.rotation.z = Math.PI / 2;
+  stick.position.y = 0.02;
+  const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.04, 10), litMaterial({ color: 0xdddddd }, 0.05));
+  cap.rotation.z = Math.PI / 2;
+  cap.position.set(0.12, 0.02, 0);
+  g.add(stick, cap);
+  return g;
+}
+
+/** Bengala encendida en el suelo: chisporrotea en rojo. */
+export function makeLitFlare(): { group: THREE.Group; update: (t: number, left: number) => void } {
+  const g = makeFlareStick();
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: smoke(), color: new THREE.Color(3, 0.6, 0.4), blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+  glow.scale.setScalar(0.6);
+  glow.position.set(-0.12, 0.05, 0);
+  g.add(glow);
+  return {
+    group: g,
+    update(t, left) {
+      const k = Math.min(1, left / 3);
+      glow.scale.setScalar((0.5 + Math.random() * 0.25) * k);
+      (glow.material as THREE.SpriteMaterial).opacity = 0.7 + Math.sin(t * 40) * 0.2;
+    },
+  };
 }
 
 /** Botiquín con vendas. */

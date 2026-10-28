@@ -4,43 +4,47 @@ Juego de terror cooperativo en 3D, en primera persona, inspirado en
 [los Backrooms](https://backrooms-wiki.wikidot.com/). Se juega en el navegador
 con hasta 4 jugadores conectados directamente entre sí (P2P).
 
-Has hecho *noclip* fuera de la realidad y has acabado en un laberinto de
-pasillos amarillos, moqueta húmeda y fluorescentes que zumban. Hay que
-atravesar tres niveles y encontrar la salida de cada uno:
+Has hecho *noclip* fuera de la realidad. Los tres primeros niveles siguen el
+lore de la wiki de los Backrooms:
 
 | Nivel | Nombre | Qué hay |
 |---|---|---|
-| 0 | El Vestíbulo | Salas irregulares de papel amarillo, una sala de columnas con zona hundida, un pasillo de techo bajo, una sala altísima con escaleras que acaban en el techo y una puerta en lo alto de la pared, una gran zona a oscuras, **Las Caídas** (suelo a distintas alturas con agujeros que te dejan caer al Nivel 1), oficinas abandonadas con cubículos, máquina expendedora y dispensador de agua, paredes que fallan (una se puede atravesar) y la escalera de salida. |
-| 1 | Zona Habitable | Almacén de hormigón con columnas, estanterías, palés, bidones y una carretilla; muelle de carga elevado con rampa y escaleras; **cajas de suministros**; el puesto de la M.E.G.; un sector a oscuras; un sótano inundado; niebla y **apagones** periódicos. |
-| 2 | Tuberías | Túneles estrechos, calurosos (la energía se recupera más despacio) y llenos de tuberías, en dos alturas unidas por escaleras y un salto sin vuelta; sala de calderas y **escapes de vapor** que queman. |
+| 0 | El Umbral | Salas de papel amarillo y moqueta húmeda que **cambian cuando nadie mira** (cambio periférico). **Aislamiento**: no ves a tus compañeros salvo en una sala pequeña. Sala de columnas enorme, **agujeros sin fondo** (caer es morir), zona de arcos con moqueta empapada, **zona de apagón** con fluido hasta los tobillos y figuras que te acechan, y las **Habitaciones Rojas**, que se cierran en bucle. Se sale atravesando una **pared que parpadea**. |
+| 1 | La Zona Habitable | Sector **Aquila** (columnas, tuberías que gotean, escombros, marca de la M.E.G.), **Base Alpha** de la M.E.G. con patrullas que te hablan (zona segura), un **pasillo que no acaba** (mira el panel del fondo), sector en obras con **trabajadores sombra**, sector **Gild** de estanterías, sector **gótico** con el Círculo de Ariadna, y los **pasillos** tras la puerta de SALIDA verde: oficina, sala de ladrillo, enfermería, sala de goma y sala de cuadros. **Parpadeos**: apagones totales tras los que reaparecen cajas. |
+| 2 | Pipe Dreams | Túneles estrechos de hormigón y ladrillo que giran a 45°, con tuberías y máquinas muertas, en dos alturas. Fluorescentes **en serie** (si uno falla se apaga todo el tramo), luces violetas de emergencia, puertas de acero cerradas, una que da a un pasillo que vuelve sobre sí mismo y otra que da **al Vacío**. Ventanas al final de los túneles en las que mejor no mirar. Campamento abandonado, polillas y ratas. |
 
 ## Criaturas
 
-| Criatura | Dónde | Cómo se comporta |
+| Criatura | Cómo se comporta | Qué hacer |
 |---|---|---|
-| **Smiler** | Zonas oscuras de todos los niveles | Solo se mueve por la oscuridad (o por todas partes durante un apagón). Si le apuntas con la linterna se queda quieto. Su ataque es muy fuerte, y después se desvanece. |
-| **Hound** | Niveles 1 y 2 | Te detecta si te ve o si te oye correr. Si huyes, te persigue más rápido de lo que andas; si le **plantas cara** (mirarle sin correr), gruñe y acaba retirándose. |
-| **Faceling** | Nivel 1 | Humanoide sin cara que pasea sin molestar… salvo que le deslumbres con la linterna. |
-| **Skin-Stealer** | Nivel 2 | Solo avanza cuando nadie le mira. Si apartas la vista, se acerca muy rápido. |
+| **Figura oscura** (N0) | Te acecha desde lejos y se acerca cuando no miras. | Mírala: desaparece. |
+| **Smiler** (N1, N2) | Le atraen la luz y el ruido. Si corres o gritas cerca, ataca. | Apaga la linterna, mírale y aléjate despacio. Lanza una **bengala** para atraerlo lejos. |
+| **Hound** (N1, N2) | Hostil en cuanto te ve o te oye. | Mírale a los ojos y **grita** (`G`): huye un rato. |
+| **Skin-Stealer** (N1) | Parece alguien que llora y pide ayuda. Imita voces. | No te acerques ni le des la espalda; aléjate con calma. |
+| **Duller** (N1) | Espera dentro de las paredes. | Si oyes arañar, apártate de la pared. |
+| **Clump** (N1, N2) | Ciego: caza por el sonido. | **Agáchate** (`C`) y no hagas ruido. |
+| **Faceling** (N2) | Pasea en grupo; se enfada con la luz o si te pegas a él. | Linterna apagada y distancia. |
 
 ## Supervivencia
 
-- **Salud**: la quitan las criaturas, las caídas altas y el vapor. Las
-  **vendas** la recuperan. Si llega a cero, despiertas al principio del nivel.
-- **Cordura**: baja con el tiempo, más rápido a oscuras o cerca de criaturas, y
-  la mitad de rápido con un compañero cerca. El **agua de almendras** la
-  recupera. Sin cordura, la salud empieza a bajar.
-- **Energía**: correr la gasta. Si la vacías, **no puedes volver a correr hasta
-  que se recupere la mitad**. La **barrita energética** la llena del todo.
-- **Linterna**: gasta **pilas**.
-- **Inventario**: 6 huecos (cada uno apila hasta 5 objetos iguales). Los objetos
-  se guardan al cogerlos y se usan cuando tú quieras.
+- **Salud**: la quitan las criaturas, las caídas, el vapor y los cristales de
+  algunas cajas. **Vendas** y **latas de conserva** la recuperan.
+- **Cordura**: baja con el tiempo, mucho más a oscuras, en las Habitaciones
+  Rojas o en el Vacío; sube en las zonas seguras. El **agua de almendras** la
+  recupera.
+- **Energía**: correr la gasta; si la vacías no puedes volver a correr hasta
+  recuperar la mitad. **Barrita** y **lata** la reponen.
+- **Ruido**: correr, gritar o chapotear te delata; agachado casi no haces ruido.
+- **Linterna**: gasta **pilas**, y atrae a los Smilers.
+- **Inventario**: 6 huecos (hasta 5 objetos iguales en cada uno).
+- **Notas**: hay notas de otros exploradores con pistas (`E` para leerlas).
 
 ## Controles
 
-`WASD` moverse · `Shift` correr · `Espacio` saltar · ratón mirar · `F`
-linterna · `E` coger objetos, abrir cajas y puertas · `1`-`6` o rueda: elegir
-objeto · clic izquierdo (o `Q`): usarlo · `Esc` pausa.
+`WASD` moverse · `Shift` correr · `C`/`Ctrl` agacharse · `G` gritar ·
+`Espacio` saltar · ratón mirar · `F` linterna · `E` coger, abrir, leer y
+hablar · `1`-`6` o rueda: elegir objeto · clic izquierdo (o `Q`): usarlo (la
+bengala se lanza) · `Esc` pausa.
 
 ## Configuración
 
@@ -65,11 +69,15 @@ constructor en metros (cada casilla mide 0,5 m). Algunos ejemplos:
 b.open(20, 2, 26, 20, { ceil: 3.2 });            // sala de 26 × 20 m con techo a 3,2 m
 b.open(27, 8, 12, 8, { floor: -0.75 });          // zona hundida
 b.ramp(27, 6.5, 12, 1.5, 3, -0.75, 0, true);     // escalera que sube hacia el norte
-b.pit(46, 46, 4, 3);                             // agujero (cae al nivel siguiente)
+b.pit(46, 46, 4, 3);                             // agujero
 b.prop('desk', 12, 46, Math.PI, { solid: [1.6, 0.8] });
-b.crate(44, 6, 0.3, ['agua', 'barrita']);        // caja de suministros
+b.crate(44, 6, 0.3, 'comida');                   // caja (comida, medico, herramientas o mixto)
 b.lair('hound', 48, 72);                         // guarida de una criatura
 b.glitch(19.95, 33, -Math.PI / 2, 1.6, 2.2, true); // pared que se puede atravesar
+b.note(2.05, 5, Math.PI / 2, 'Título', 'Texto'); // nota en la pared
+b.door(46, 4.05, 0, { to: { x: 106, z: 8, ry: Math.PI } }); // puerta que lleva a otro sitio
+b.shift(26, 12, 2, 0.5, true);                   // pared que aparece y desaparece
+b.zone('safe', 72, 2, 26, 22);                   // zona segura (también red, void, meeting)
 ```
 
 Los parámetros de cada nivel (luces, niebla, cansancio, apagones…) están en
@@ -79,13 +87,17 @@ Los parámetros de cada nivel (luces, niebla, cansancio, apagones…) están en
 
 - **Three.js** para el 3D, con iluminación precalculada (un mapa de luz que
   tiene en cuenta las sombras de las paredes) y postprocesado (grano de
-  película y distorsión cuando pierdes la cordura). No se usan luces
+  película y distorsión cuando pierdes la cordura). Un segundo mapa suavizado
+  guarda la humedad y el rojo de cada zona, y una variación de color a gran
+  escala que disimula la repetición de las texturas. No se usan luces
   de Three.js: las linternas (la tuya y las de tus compañeros) se calculan en
   el mismo shader que el mapa de luz, que es mucho más ligero.
 - **PeerJS (WebRTC)** para el online. El jugador que crea la sala es el
-  anfitrión: mueve a los Smilers y reenvía el estado a los demás.
+  anfitrión: mueve a las criaturas, decide los apagones y los cambios del
+  laberinto, y reenvía el estado a los demás.
 - **TypeScript + Vite**. Todas las texturas y sonidos se generan por código; no
-  hay archivos de recursos.
+  hay archivos de recursos. Las texturas usan ruido periódico, así que se
+  repiten sin que se note el corte.
 
 ## Desarrollo
 
@@ -142,3 +154,9 @@ src/
 ├── hud.ts        # interfaz
 └── main.ts       # menú
 ```
+
+## Créditos
+
+El lore (niveles, entidades, la M.E.G., las notas) está basado en la
+[Backrooms Wiki](https://backrooms-wiki.wikidot.com/), cuyo contenido se
+publica bajo licencia [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/).

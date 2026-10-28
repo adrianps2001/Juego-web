@@ -21,6 +21,9 @@ export class Hud {
   private fps = $('fps');
   private lastPlayers = '';
   private lastPrompt: string | null = null;
+  private subtitle = $('subtitle');
+  private subTimer = 0;
+  private note = $('note');
 
   show(visible: boolean) {
     $('hud').hidden = !visible;
@@ -70,6 +73,25 @@ export class Hud {
     if (text) this.prompt.textContent = text;
   }
 
+  /** Frase dicha por alguien (o algo) cerca. */
+  say(text: string, seconds = 4) {
+    this.subtitle.textContent = text;
+    this.subtitle.hidden = false;
+    window.clearTimeout(this.subTimer);
+    this.subTimer = window.setTimeout(() => (this.subtitle.hidden = true), seconds * 1000);
+  }
+
+  showNote(title: string | null, text = '') {
+    this.note.hidden = !title;
+    if (!title) return;
+    $('note-title').textContent = title;
+    $('note-text').textContent = text;
+  }
+
+  get noteOpen() {
+    return !this.note.hidden;
+  }
+
   showFps(visible: boolean) {
     this.fps.hidden = !visible;
   }
@@ -107,7 +129,7 @@ export class Hud {
         const dot = document.createElement('span');
         dot.className = 'dot';
         dot.style.background = '#' + p.color.toString(16).padStart(6, '0');
-        const where = p.level === ESCAPED ? 'ha escapado' : LEVELS[p.level].name;
+        const where = p.level === ESCAPED ? 'Nivel 3' : LEVELS[p.level].name;
         li.append(dot, `${p.name}${p.id === myId ? ' (tú)' : ''} — ${where}`);
         return li;
       }),
@@ -170,6 +192,32 @@ function itemIcon(kind: ItemKind): string {
     g.font = 'bold 9px sans-serif';
     g.textAlign = 'center';
     g.fillText('ENERGÍA', 0, 3);
+    g.restore();
+  } else if (kind === 'lata') {
+    g.fillStyle = '#7a2b1c';
+    g.fillRect(18, 16, 28, 36);
+    g.fillStyle = '#bbb';
+    g.beginPath();
+    g.ellipse(32, 16, 14, 4, 0, 0, 7);
+    g.fill();
+    g.fillStyle = '#f2ead0';
+    g.fillRect(18, 28, 28, 10);
+    g.fillStyle = '#7a2b1c';
+    g.font = 'bold 7px sans-serif';
+    g.textAlign = 'center';
+    g.fillText('CONSERVA', 32, 36);
+  } else if (kind === 'bengala') {
+    g.save();
+    g.translate(32, 32);
+    g.rotate(-0.7);
+    g.fillStyle = '#b2241a';
+    g.fillRect(-24, -6, 40, 12);
+    g.fillStyle = '#ddd';
+    g.fillRect(16, -6, 8, 12);
+    g.fillStyle = '#ffcf6a';
+    g.beginPath();
+    g.arc(-26, 0, 5, 0, 7);
+    g.fill();
     g.restore();
   } else {
     g.fillStyle = '#e8e4dc';

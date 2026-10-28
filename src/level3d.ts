@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { lightUniforms, litMaterial, useLevelLight } from './lighting';
-import { makeBattery, makeBottle, makeEnergyBar, makeExitDoor, makeMedkit } from './models';
+import { makeBattery, makeBottle, makeCan, makeEnergyBar, makeExitDoor, makeFlareStick, makeMedkit, makeMeg, makeMoth, makeRat, makeWorker, type NpcModel } from './models';
 import { DYNAMIC_PROPS, buildProp, disposePropMaterials, makeCrate, mat } from './props';
-import { canvasTexture, themeTextures, upperHalf } from './textures';
-import { CELL, F_PIT, F_SOLID, F_STAIRS, F_WET, hash, type LevelMap } from './world';
+import { canvasTexture, paperTexture, textTexture, themeTextures } from './textures';
+import { CELL, F_PIT, F_SOLID, F_STAIRS, collide, floorAt, hash, type Door, type ItemKind, type LevelMap, type Npc } from './world';
 
 const PIT_DEPTH = 8;
 // el nivel se trocea en bloques para que no se dibuje lo que queda fuera de la vista
@@ -77,6 +77,14 @@ export class Level3D {
   private steam: { x: number; y: number; z: number; period: number; phase: number; sprites: THREE.Sprite[] }[] = [];
   private disposables: { dispose: () => void }[] = [];
   private upperOf = new Map<THREE.Material, THREE.Material>();
+  private shiftMeshes = new Map<number, THREE.Object3D>();
+  private glows: { sprite: THREE.Sprite; base: number; seed: number }[] = [];
+  private moths: { obj: THREE.Group; flap: (t: number) => void; hx: number; hy: number; hz: number; seed: number }[] = [];
+  private rats: { obj: THREE.Group; x: number; z: number; tx: number; tz: number; wait: number; seed: number }[] = [];
+  /** Personajes que no atacan: se mueven aquí, en cada cliente. */
+  readonly npcs: { def: Npc; model: NpcModel; x: number; y: number; z: number; ry: number; leg: number; pause: number }[] = [];
+  /** Ventanas peligrosas: a veces se asoma algo. */
+  readonly windows: { x: number; y: number; z: number; ry: number; face: THREE.Object3D }[] = [];
 
   constructor(
     readonly map: LevelMap,
@@ -84,16 +92,13 @@ export class Level3D {
   ) {
     const L = map.def;
     const tex = themeTextures(L.theme);
-    this.disposables.push(useLevelLight(map), ...tex.walls, ...tex.floors, ...tex.ceils);
-    const wallMats = tex.walls.map((t) => litMaterial({ map: t }, 0.3));
-    // para las paredes más altas que la textura: la parte de arriba, sin zócalo
-    const uppers = tex.walls.map(upperHalf);
-    this.disposables.push(...uppers);
-    this.upperOf = new Map(wallMats.map((m, k) => [m, litMaterial({ map: uppers[k] }, 0.3)]));
-    const floorMats = tex.floors.map((t) => litMaterial({ map: t }, 0));
-    const ceilMats = tex.ceils.map((t) => litMaterial({ map: t }, 0));
-    const wetMat = litMaterial({ color: 0x1a2530, transparent: true, opacity: 0.55, depthWrite: false }, 0);
-    const pitMat = litMaterial({ color: 0x3a3428 }, 0.3);
+    this.disposables.push(...useLevelLight(map), ...tex.walls, ...tex.wallUppers, ...tex.floors, ...tex.ceils);
+    const wallMats = tex.walls.map((t) => litMaterial({ map: t }, 0.3, true));
+    // para las paredes más altas que la textura: la versión sin zócalo, que se repite hacia arriba
+    this.upperOf = new Map(wallMats.map((m, k) => [m, litMaterial({ map: tex.wallUppers[k] }, 0.3, true)]));
+    const floorMats = tex.floors.map((t) => litMaterial({ map: t }, 0, true));
+    const ceilMats = tex.ceils.map((t) => litMaterial({ map: t }, 0, true));
+    const pitMat = litMaterial({ color: 0x3a3428 }, 0.3, true);
     const sink = new QuadSink();
     // fondo negro de los agujeros
     const voidMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
@@ -106,8 +111,10 @@ export class Level3D {
       const y = -PIT_DEPTH;
       sink.quad(voidMat, [x0, y, z0], [x0, y, z0 + CELL], [x0 + CELL, y, z0 + CELL], [x0 + CELL, y, z0], [0, 1, 0], [[0, 0], [0, 1], [1, 1], [1, 0]]);
     }
-    this.buildGrid(sink, wallMats, floorMats, ceilMats, wetMat, pitMat, tex.wallScale, tex.wallHeight, tex.floorScale, tex.ceilScale);
+    this.buildGrid(sink, wallMats, floorMats, ceilMats, pitMat, tex.wallScale, tex.wallHeight, tex.floorScale, tex.ceilScale);
     for (const m of sink.meshes()) this.group.add(m);
+    this.buildShifts(wallMats, tex.wallScale, tex.wallHeight);
+    this.buildDiags(wallMats, tex.wallScale, tex.wallHeight);
 
 
     // fluorescentes
@@ -126,6 +133,8 @@ export class Level3D {
       if (DYNAMIC_PROPS.has(p.type)) {
         this.group.add(obj);
         this.animated.push({ obj, kind: p.type, seed: hash(p.x * 10, p.z * 10) * 100 });
+        if (p.type === 'violet') this.addGlow(obj, 0xa060ff, 1.4, 0.9);
+        if (p.type === 'bulb') this.addGlow(obj, 0xffe0a0, 1.0, 0.7, -0.55);
       } else statics.add(obj);
     }
     if (L.theme === 'pipes') this.buildPipes(statics);
@@ -135,7 +144,7 @@ export class Level3D {
     // objetos que se pueden coger, cajas y salidas
     for (const item of map.items) {
       if (picked.has(item.key)) continue;
-      const obj = item.kind === 'agua' ? makeBottle() : item.kind === 'pila' ? makeBattery() : item.kind === 'barrita' ? makeEnergyBar() : makeMedkit();
+      const obj = itemModel(item.kind);
       obj.position.set(item.x, item.y, item.z);
       obj.rotation.y = hash(item.x * 10, item.z * 10) * Math.PI * 2;
       this.items.set(item.key, obj);
@@ -143,7 +152,7 @@ export class Level3D {
     }
     for (const c of map.crates) {
       const obj = makeCrate(picked.has(c.key));
-      obj.position.set(c.x, c.y, c.z);
+      obj.position.set(c.x, c.y + (c.shelf ? 1.21 : 0), c.z);
       obj.rotation.y = c.ry;
       this.crates.set(c.key, obj);
       this.group.add(obj);
@@ -162,6 +171,57 @@ export class Level3D {
       mesh.position.set(g.x, g.y, g.z);
       mesh.rotation.y = g.ry;
       this.group.add(mesh);
+    }
+
+    // puertas, notas, ventanas, personajes y bichos
+    for (const d of map.doors) {
+      const obj = makeDoor(d);
+      obj.position.set(d.x, d.y, d.z);
+      obj.rotation.y = d.ry;
+      this.group.add(obj);
+      if (d.sign) this.addGlow(obj, 0x30ff60, 1.6, 0.5, 2.45, 0.25);
+    }
+    for (const n of map.notes) {
+      const tex = noteTexture(n.title);
+      const paper = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 0.3), litMaterial({ map: tex }, 0.2));
+      paper.position.set(n.x + Math.sin(n.ry) * 0.012, n.y + n.h, n.z + Math.cos(n.ry) * 0.012);
+      paper.rotation.y = n.ry;
+      paper.rotation.z = (hash(n.x, n.z) - 0.5) * 0.25;
+      if (!n.wall) {
+        paper.rotation.set(-Math.PI / 2, 0, n.ry);
+      }
+      this.disposables.push(tex);
+      this.group.add(paper);
+    }
+    for (const w of map.windows) {
+      const obj = makeWindow();
+      obj.position.set(w.x, w.y, w.z);
+      obj.rotation.y = w.ry;
+      this.group.add(obj);
+      this.windows.push({ ...w, face: obj.getObjectByName('face')! });
+    }
+    for (const n of map.npcs) {
+      const model = n.kind === 'meg' ? makeMeg() : makeWorker(hash(n.x, n.z) * 10);
+      const y = floorAt(map, n.x, n.z);
+      model.group.position.set(n.x, y, n.z);
+      model.group.rotation.y = n.ry;
+      this.group.add(model.group);
+      this.npcs.push({ def: n, model, x: n.x, y, z: n.z, ry: n.ry, leg: 0, pause: 0 });
+    }
+    for (const c of map.critters) {
+      const seed = hash(c.x, c.z, 7) * 100;
+      if (c.kind === 'moth') {
+        for (let k = 0; k < 3; k++) {
+          const m = makeMoth();
+          const ceil = map.ceil[Math.floor(c.z / CELL) * map.w + Math.floor(c.x / CELL)];
+          this.group.add(m.group);
+          this.moths.push({ obj: m.group, flap: m.flap, hx: c.x, hy: ceil - 0.6, hz: c.z, seed: seed + k * 3.1 });
+        }
+      } else {
+        const r = makeRat();
+        this.group.add(r);
+        this.rats.push({ obj: r, x: c.x, z: c.z, tx: c.x, tz: c.z, wait: 0, seed });
+      }
     }
 
     // escapes de vapor
@@ -187,7 +247,6 @@ export class Level3D {
     wallMats: THREE.Material[],
     floorMats: THREE.Material[],
     ceilMats: THREE.Material[],
-    wetMat: THREE.Material,
     pitMat: THREE.Material,
     wallScale: number,
     wallHeight: number,
@@ -196,7 +255,8 @@ export class Level3D {
   ) {
     const m = this.map;
     const C = CELL;
-    const open = (i: number) => !(m.flags[i] & F_SOLID);
+    // los bloques de cambio periférico se dibujan aparte (aparecen y desaparecen)
+    const open = (i: number) => !(m.flags[i] & F_SOLID) || m.shiftCell[i] >= 0;
 
     /** Altura del suelo de la casilla i en el punto (x, z) de su borde. */
     const fy = (i: number, x: number, z: number) => {
@@ -245,7 +305,7 @@ export class Level3D {
           const fm = floorMats[m.floorMat[i]] ?? floorMats[0];
           if (m.flags[i] & F_STAIRS) {
             this.stairs(sink, fm, wallMats[0], i, x0, z0, floorTex);
-          } else if (m.rampDir[i] < 0 && !(m.flags[i] & F_WET)) {
+          } else if (m.rampDir[i] < 0) {
             const y = m.floor[i];
             addRun(`f|${cz}|${y}|${mid(fm)}|${Math.floor(x0 / TILE)}`, x0, x1, (a, b) =>
               sink.quad(fm, [a, y, z0], [a, y, z1], [b, y, z1], [b, y, z0], [0, 1, 0], [floorTex(a, z0), floorTex(a, z1), floorTex(b, z1), floorTex(b, z0)]),
@@ -257,10 +317,6 @@ export class Level3D {
             const d = [x1, fy(i, x1, z0), z0];
             const n = slopeNormal(m.rampDir[i], m.rampRise[i]);
             sink.quad(fm, a, b, c, d, n, [floorTex(x0, z0), floorTex(x0, z1), floorTex(x1, z1), floorTex(x1, z0)]);
-            if (m.flags[i] & F_WET) {
-              const e = 0.008;
-              sink.quad(wetMat, [x0, a[1] + e, z0], [x0, b[1] + e, z1], [x1, c[1] + e, z1], [x1, d[1] + e, z0], n, [[0, 0], [0, 1], [1, 1], [1, 0]]);
-            }
           }
         }
 
@@ -298,7 +354,7 @@ export class Level3D {
               // por encima de la altura de la textura: parte superior repetida, sin zócalo
               const u0 = Math.max(b0, split);
               const u1 = Math.max(b1, split);
-              const uv = (along: number, y: number) => [along / wallScale, (y - split) / (wallHeight / 2)];
+              const uv = (along: number, y: number) => [along / wallScale, (y - split) / wallHeight];
               sink.quad(upper, [e0[0], u0, e0[1]], [e1[0], u1, e1[1]], [e1[0], t1, e1[1]], [e0[0], t0, e0[1]], n, [uv(along0, u0), uv(along1, u1), uv(along1, t1), uv(along0, t0)]);
               if (Math.min(b0, b1) >= split) return;
               t0 = Math.min(t0, split);
@@ -394,6 +450,93 @@ export class Level3D {
       const n = dir === 0 ? [down, 0, 0] : dir === 1 ? [-down, 0, 0] : dir === 2 ? [0, 0, down] : [0, 0, -down];
       sink.quad(riser, [rx0, lower, rz0], [rx1, lower, rz1], [rx1, top, rz1], [rx0, top, rz0], n, [[0, 0], [1, 0], [1, 0.08], [0, 0.08]]);
     }
+  }
+
+  /** Paño de pared vertical entre dos puntos (con la parte alta sin zócalo). */
+  private panel(sink: QuadSink, mt: THREE.Material, p0: [number, number], p1: [number, number], base: number, top: number, n: number[], wallScale: number, wallHeight: number, along0: number) {
+    const along1 = along0 + Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+    const split = base + wallHeight;
+    const upper = this.upperOf.get(mt);
+    const q = (m: THREE.Material, b: number, t: number, ref: number) => {
+      const uv = (al: number, y: number) => [al / wallScale, (y - ref) / wallHeight];
+      sink.quad(m, [p0[0], b, p0[1]], [p1[0], b, p1[1]], [p1[0], t, p1[1]], [p0[0], t, p0[1]], n, [uv(along0, b), uv(along1, b), uv(along1, t), uv(along0, t)]);
+    };
+    if (upper && top > split + 0.01) {
+      q(upper, split, top, split);
+      q(mt, base, split, base);
+    } else q(mt, base, top, base);
+  }
+
+  /** Bloques de "cambio periférico": paredes que se encienden y apagan. */
+  private buildShifts(wallMats: THREE.Material[], wallScale: number, wallHeight: number) {
+    const m = this.map;
+    for (const sh of m.shifts) {
+      const sink = new QuadSink();
+      const mt = wallMats[sh.wall] ?? wallMats[0];
+      for (let i = 0; i < m.shiftCell.length; i++) {
+        if (m.shiftCell[i] !== sh.id) continue;
+        const cx = i % m.w;
+        const cz = (i - cx) / m.w;
+        const x0 = cx * CELL;
+        const z0 = cz * CELL;
+        for (const [dx, dz] of DIRS) {
+          const nx = cx + dx;
+          const nz = cz + dz;
+          if (nx < 0 || nz < 0 || nx >= m.w || nz >= m.h) continue;
+          const j = nz * m.w + nx;
+          if (m.shiftCell[j] === sh.id) continue;
+          if (m.flags[j] & F_SOLID && m.shiftCell[j] < 0) continue;
+          // cara que mira hacia la vecina
+          let p0: [number, number];
+          let p1: [number, number];
+          if (dx === 1) [p0, p1] = [[x0 + CELL, z0], [x0 + CELL, z0 + CELL]];
+          else if (dx === -1) [p0, p1] = [[x0, z0 + CELL], [x0, z0]];
+          else if (dz === 1) [p0, p1] = [[x0 + CELL, z0 + CELL], [x0, z0 + CELL]];
+          else [p0, p1] = [[x0, z0], [x0 + CELL, z0]];
+          const base = Math.min(m.floor[i], m.floor[j]);
+          const along = dx !== 0 ? Math.min(p0[1], p1[1]) : Math.min(p0[0], p1[0]);
+          const [a, b] = (dx !== 0 ? p0[1] < p1[1] : p0[0] < p1[0]) ? [p0, p1] : [p1, p0];
+          this.panel(sink, mt, a, b, base, Math.max(m.ceil[i], m.ceil[j]), [dx, 0, dz], wallScale, wallHeight, along);
+        }
+      }
+      const g = new THREE.Group();
+      for (const mesh of sink.meshes()) g.add(mesh);
+      g.visible = sh.closed;
+      this.shiftMeshes.set(sh.id, g);
+      this.group.add(g);
+    }
+  }
+
+  /** Muestra u oculta los bloques de cambio periférico. */
+  setShiftVisible(id: number, closed: boolean) {
+    const g = this.shiftMeshes.get(id);
+    if (g) g.visible = closed;
+  }
+
+  /** Paneles en diagonal de los giros de 45° del Nivel 2. */
+  private buildDiags(wallMats: THREE.Material[], wallScale: number, wallHeight: number) {
+    const m = this.map;
+    const sink = new QuadSink();
+    for (const d of m.diags) {
+      const tx = Math.cos(d.ry);
+      const tz = -Math.sin(d.ry);
+      const p0: [number, number] = [d.x - (tx * d.w) / 2, d.z - (tz * d.w) / 2];
+      const p1: [number, number] = [d.x + (tx * d.w) / 2, d.z + (tz * d.w) / 2];
+      const i = Math.floor(d.z / CELL) * m.w + Math.floor(d.x / CELL);
+      const base = floorAt(m, d.x + Math.sin(d.ry) * 0.3, d.z + Math.cos(d.ry) * 0.3);
+      const top = m.ceil[i] ?? base + 2.6;
+      this.panel(sink, wallMats[d.wall] ?? wallMats[0], p0, p1, Number.isFinite(base) ? base : 0, top, [Math.sin(d.ry), 0, Math.cos(d.ry)], wallScale, wallHeight, d.x + d.z);
+    }
+    for (const mesh of sink.meshes()) this.group.add(mesh);
+  }
+
+  /** Halo de luz alrededor de una bombilla o un cartel. */
+  private addGlow(parent: THREE.Object3D, color: number, size: number, base: number, y = -0.14, z = 0) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: steamTexture(), color, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: base, fog: false }));
+    s.scale.setScalar(size);
+    s.position.set(0, y, z);
+    parent.add(s);
+    this.glows.push({ sprite: s, base, seed: Math.random() * 10 });
   }
 
   // ---------------------------------------------------------------- luces
@@ -579,8 +722,9 @@ export class Level3D {
 
   // ---------------------------------------------------------------- por fotograma
 
-  update(time: number, flicker: number, blackout: number) {
+  update(time: number, flicker: number, blackout: number, dt = 0.016, torch: THREE.Vector3 | null = null) {
     const on = 1 - blackout;
+    for (const g of this.glows) (g.sprite.material as THREE.SpriteMaterial).opacity = g.base * (0.85 + 0.15 * Math.sin(time * 3 + g.seed));
     this.steadyPanels.color.copy(this.glow).multiplyScalar(Math.max(0.03, on));
     this.flickerPanels.color.copy(this.glow).multiplyScalar(Math.max(0.03, flicker * on));
     this.glitchMat.uniforms.uTime.value = time;
@@ -590,7 +734,20 @@ export class Level3D {
     for (const a of this.animated) {
       if (a.kind === 'hanglamp') a.obj.rotation.z = Math.sin(time * 0.7 + a.seed) * 0.05;
       if (a.kind === 'fog') a.obj.children.forEach((s, k) => (s.position.x += Math.sin(time * 0.1 + k + a.seed) * 0.003));
+      if (a.kind === 'bulb') a.obj.rotation.z = Math.sin(time * 0.9 + a.seed) * 0.04;
+      if (a.kind === 'drip') {
+        // una gota cada pocos segundos, cae hasta el suelo
+        const drop = a.obj.getObjectByName('drop')!;
+        const period = 1.6 + (a.seed % 1.3);
+        const t = (time + a.seed) % period;
+        const floor = floorAt(this.map, a.obj.position.x, a.obj.position.z);
+        const fall = 4.9 * t * t;
+        drop.visible = a.obj.position.y - 0.1 - fall > floor;
+        drop.position.y = -0.1 - fall;
+      }
     }
+    this.updateCritters(time, dt, torch);
+    this.updateNpcs(time, dt);
     for (const v of this.steam) {
       const t = (time + v.phase) % v.period;
       const active = t < 2.5;
@@ -603,6 +760,92 @@ export class Level3D {
         s.position.set(v.x + Math.sin(k * 2.3) * spread * 0.4, v.y + 0.25 + life * 1.8, v.z + Math.cos(k * 1.7) * spread * 0.4);
         s.scale.setScalar(0.3 + life * 1.4);
       });
+    }
+  }
+
+  private updateCritters(time: number, dt: number, torch: THREE.Vector3 | null) {
+    for (const m of this.moths) {
+      // revolotean bajo el techo; si hay una linterna cerca, van hacia ella
+      let hx = m.hx;
+      let hy = m.hy;
+      let hz = m.hz;
+      if (torch && Math.hypot(torch.x - m.hx, torch.z - m.hz) < 8) {
+        hx = torch.x;
+        hy = torch.y + 0.3;
+        hz = torch.z;
+      }
+      const t = time * 1.3 + m.seed;
+      const tx = hx + Math.sin(t) * 0.8 + Math.sin(t * 2.7) * 0.3;
+      const ty = hy + Math.sin(t * 1.9) * 0.25;
+      const tz = hz + Math.cos(t * 1.1) * 0.8;
+      const k = Math.min(1, dt * 1.5);
+      const o = m.obj;
+      const px = o.position.x;
+      const pz = o.position.z;
+      if (px === 0 && pz === 0) o.position.set(tx, ty, tz);
+      o.position.x += (tx - o.position.x) * k;
+      o.position.y += (ty - o.position.y) * k;
+      o.position.z += (tz - o.position.z) * k;
+      o.rotation.y = Math.atan2(o.position.x - px, o.position.z - pz);
+      m.flap(time + m.seed);
+    }
+    for (const r of this.rats) {
+      const dx = r.tx - r.x;
+      const dz = r.tz - r.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 0.05) {
+        r.wait -= dt;
+        if (r.wait <= 0) {
+          const a = hash(r.seed, time) * Math.PI * 2;
+          const len = 1 + hash(time, r.seed) * 3;
+          const nx = r.x + Math.cos(a) * len;
+          const nz = r.z + Math.sin(a) * len;
+          const c = collide(this.map, nx, nz, floorAt(this.map, r.x, r.z), 0.15, 0.2);
+          if (Math.hypot(c.x - nx, c.z - nz) < 0.01) {
+            r.tx = nx;
+            r.tz = nz;
+          }
+          r.wait = 0.5 + hash(r.seed, time, 3) * 4;
+        }
+      } else {
+        const step = Math.min(d, dt * 2.4);
+        r.x += (dx / d) * step;
+        r.z += (dz / d) * step;
+        r.obj.rotation.y = Math.atan2(-dx, -dz);
+      }
+      const y = floorAt(this.map, r.x, r.z);
+      r.obj.position.set(r.x, Number.isFinite(y) ? y : 0, r.z);
+    }
+  }
+
+  private updateNpcs(time: number, dt: number) {
+    for (const n of this.npcs) {
+      const path = n.def.path;
+      let moving = false;
+      if (path && path.length > 1) {
+        if (n.pause > 0) n.pause -= dt;
+        else {
+          const [tx, tz] = path[n.leg % path.length];
+          const dx = tx - n.x;
+          const dz = tz - n.z;
+          const d = Math.hypot(dx, dz);
+          if (d < 0.1) {
+            n.leg++;
+            n.pause = 1.5 + hash(n.leg, n.def.x) * 3;
+          } else {
+            const step = Math.min(d, dt * 1.1);
+            n.x += (dx / d) * step;
+            n.z += (dz / d) * step;
+            n.ry = Math.atan2(dx, dz);
+            moving = true;
+          }
+        }
+      }
+      const y = floorAt(this.map, n.x, n.z);
+      if (Number.isFinite(y)) n.y = y;
+      n.model.group.position.set(n.x, n.y, n.z);
+      n.model.group.rotation.y = n.ry;
+      n.model.animate(dt, time, moving);
     }
   }
 
@@ -625,6 +868,14 @@ export class Level3D {
     }
   }
 
+  /** La caja vuelve a estar cerrada (y llena). */
+  restoreCrate(key: string) {
+    const crate = this.crates.get(key);
+    const lid = crate?.getObjectByName('lid');
+    lid?.position.set(0, 0.63, 0);
+    lid?.rotation.set(0, 0, 0);
+  }
+
   dispose() {
     this.group.traverse((o) => {
       if (o instanceof THREE.Mesh || o instanceof THREE.Sprite) {
@@ -637,6 +888,130 @@ export class Level3D {
     for (const d of this.disposables) d.dispose();
     lightUniforms.uBlackout.value = 0;
   }
+}
+
+function itemModel(kind: ItemKind): THREE.Group {
+  switch (kind) {
+    case 'agua': return makeBottle();
+    case 'pila': return makeBattery();
+    case 'barrita': return makeEnergyBar();
+    case 'lata': return makeCan();
+    case 'bengala': return makeFlareStick();
+    default: return makeMedkit();
+  }
+}
+
+/** Puerta según su aspecto. Las de paso libre se dibujan abiertas. */
+function makeDoor(d: Door): THREE.Group {
+  const colors = { steel: 0x4f5450, white: 0xcfcfc6, wood: 0x7a5a3a, double: 0xb8bab2 } as const;
+  const leafMat = litMaterial({ color: colors[d.look] }, 0.3);
+  const frameMat = litMaterial({ color: d.look === 'wood' ? 0x4a3420 : 0x2f322f }, 0.3);
+  const metal = litMaterial({ color: 0xa0a09a }, 0.3);
+  const g = new THREE.Group();
+  const w = d.look === 'double' ? 1.8 : 1.0;
+  const h = 2.1;
+  const add = (geo: THREE.BufferGeometry, m: THREE.Material, x: number, y: number, z: number) => {
+    const mesh = new THREE.Mesh(geo, m);
+    mesh.position.set(x, y, z);
+    g.add(mesh);
+    return mesh;
+  };
+  add(new THREE.BoxGeometry(0.1, h + 0.1, 0.12), frameMat, -w / 2 - 0.05, (h + 0.1) / 2, 0.02);
+  add(new THREE.BoxGeometry(0.1, h + 0.1, 0.12), frameMat, w / 2 + 0.05, (h + 0.1) / 2, 0.02);
+  add(new THREE.BoxGeometry(w + 0.2, 0.1, 0.12), frameMat, 0, h + 0.05, 0.02);
+  const passage = !d.locked && !d.to;
+  const leaves = d.look === 'double' ? [-1, 1] : [1];
+  for (const side of leaves) {
+    const lw = w / leaves.length;
+    const leaf = new THREE.Group();
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(lw, h, 0.05), leafMat);
+    slab.position.set((-side * lw) / 2, h / 2, 0);
+    leaf.add(slab);
+    // barra antipánico o manilla
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(lw * (d.look === 'double' ? 0.7 : 0.25), 0.05, 0.05), metal);
+    bar.position.set(-side * (d.look === 'double' ? lw / 2 : lw * 0.8), 1.0, 0.05);
+    leaf.add(bar);
+    if (d.window || d.look === 'double') {
+      const glass = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.4), new THREE.MeshBasicMaterial({ color: 0x050607 }));
+      glass.position.set((-side * lw) / 2, 1.6, 0.027);
+      leaf.add(glass);
+    }
+    // bisagra en el lado del marco
+    leaf.position.set((side * w) / 2, 0, 0.0);
+    if (passage) leaf.rotation.y = side * 1.25;
+    g.add(leaf);
+  }
+  if (d.sign) {
+    add(new THREE.BoxGeometry(0.7, 0.22, 0.08), litMaterial({ color: 0x222222 }, 0.3), 0, h + 0.35, 0.05);
+    const sign = add(new THREE.PlaneGeometry(0.64, 0.17), new THREE.MeshBasicMaterial({ map: textTexture(d.sign, '#9dffab', '#063010', 256, 64), color: new THREE.Color(2, 2, 2), fog: false }), 0, h + 0.35, 0.092);
+    sign.name = 'sign';
+  }
+  return g;
+}
+
+/** Ventana oscura: a veces se asoma una cara (se muestra desde el juego). */
+function makeWindow(): THREE.Group {
+  const g = new THREE.Group();
+  const frame = litMaterial({ color: 0x3a3a34 }, 0.3);
+  for (const [w, h, x, y] of [[1.1, 0.08, 0, 1.0], [1.1, 0.08, 0, 1.9], [0.08, 0.98, -0.55, 1.45], [0.08, 0.98, 0.55, 1.45], [0.04, 0.9, 0, 1.45]]) {
+    const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.08), frame);
+    b.position.set(x, y, 0.03);
+    g.add(b);
+  }
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(1.02, 0.84), new THREE.MeshBasicMaterial({ color: 0x020304 }));
+  glass.position.set(0, 1.45, 0.01);
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), new THREE.MeshBasicMaterial({ map: windowFace(), transparent: true, fog: false }));
+  face.position.set(0.22, 1.5, 0.015);
+  face.name = 'face';
+  face.visible = false;
+  g.add(glass, face);
+  return g;
+}
+
+let faceTex: THREE.Texture | null = null;
+function windowFace(): THREE.Texture {
+  faceTex ??= canvasTexture(
+    128,
+    128,
+    (ctx, w, h) => {
+      ctx.clearRect(0, 0, w, h);
+      const g = ctx.createRadialGradient(w / 2, h / 2, 4, w / 2, h / 2, w / 2);
+      g.addColorStop(0, 'rgba(210,205,190,0.9)');
+      g.addColorStop(0.7, 'rgba(120,115,105,0.5)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.ellipse(w / 2, h / 2, w * 0.3, h * 0.42, 0, 0, 7);
+      ctx.fill();
+      ctx.fillStyle = '#000';
+      for (const x of [0.4, 0.6]) {
+        ctx.beginPath();
+        ctx.ellipse(x * w, 0.42 * h, 7, 10, 0, 0, 7);
+        ctx.fill();
+      }
+      ctx.beginPath();
+      ctx.ellipse(0.5 * w, 0.7 * h, 12, 5, 0, 0, 7);
+      ctx.fill();
+    },
+    false,
+  );
+  return faceTex;
+}
+
+/** Papel de una nota: el título y unas líneas garabateadas. */
+function noteTexture(title: string): THREE.Texture {
+  const words = title.split(' ');
+  const lines: string[] = [];
+  let cur = '';
+  for (const w of words) {
+    if ((cur + ' ' + w).length > 18) {
+      lines.push(cur);
+      cur = w;
+    } else cur = cur ? cur + ' ' + w : w;
+  }
+  lines.push(cur);
+  for (let k = 0; k < 7; k++) lines.push('~ '.repeat(3 + ((k * 5) % 6)));
+  return paperTexture(lines, { w: 192, h: 240, font: '15px "Comic Sans MS", cursive' });
 }
 
 function slopeNormal(dir: number, rise: number): number[] {

@@ -27,7 +27,8 @@
       <button id="menu-settings" class="secondary">Configuración</button>
       <ul class="controls">
         <li><b>WASD</b> moverse · <b>Shift</b> correr</li>
-        <li><b>Espacio</b> saltar · <b>F</b> linterna · <b>E</b> coger / abrir</li>
+        <li><b>Espacio</b> saltar · <b>C</b> agacharse · <b>G</b> gritar · <b>F</b> linterna</li>
+        <li><b>E</b> coger, abrir, leer notas y hablar</li>
         <li><b>1-6</b> o rueda: elegir objeto · <b>clic</b> usarlo · <b>Esc</b> pausa</li>
       </ul>
     </div>
@@ -51,6 +52,14 @@
         <div id="hotbar"></div>
       </div>
       <div id="prompt" hidden></div>
+      <div id="subtitle" hidden></div>
+      <div id="note" class="overlay" hidden>
+        <div class="paper">
+          <h3 id="note-title"></h3>
+          <p id="note-text"></p>
+          <p class="dim">[E] cerrar</p>
+        </div>
+      </div>
       <div id="crosshair"></div>
       <div id="title-card"></div>
       <div id="fps" hidden></div>
@@ -72,8 +81,8 @@
       </div>
       <div id="escaped" class="overlay" hidden>
         <div>
-          <h2>Has escapado de los Backrooms</h2>
-          <p>Por ahora.</p>
+          <h2>Has llegado al Nivel 3</h2>
+          <p>Más allá de esta puerta siguen los Backrooms… el Nivel 3 llegará pronto.</p>
           <button id="reenter">Volver a hacer noclip</button>
         </div>
       </div>

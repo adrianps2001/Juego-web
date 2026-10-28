@@ -8,6 +8,8 @@ export const ITEM_INFO: Record<ItemKind, { name: string; hint: string }> = {
   pila: { name: 'Pilas', hint: 'Recarga la linterna' },
   barrita: { name: 'Barrita energética', hint: 'Recupera toda la energía' },
   vendas: { name: 'Vendas', hint: 'Cura heridas' },
+  lata: { name: 'Lata de conserva', hint: 'Cura un poco y da energía' },
+  bengala: { name: 'Bengala', hint: 'Se lanza y atrae a los Smilers' },
 };
 
 export interface Slot {

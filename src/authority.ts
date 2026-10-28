@@ -6,10 +6,26 @@ import {
   TICK_MS,
   type ClientMessage,
   type EntityState,
+  type Flare,
   type HostMessage,
   type PlayerState,
 } from './protocol';
-import { cellOf, center, distanceField, floorAt, lineOfSight, walkable, type EntityKind, type LevelMap } from './world';
+import {
+  CELL,
+  F_SOLID,
+  cellOf,
+  center,
+  distanceField,
+  floorAt,
+  inZone,
+  lineOfSight,
+  setShift,
+  walkable,
+  type Crate,
+  type EntityKind,
+  type ItemKind,
+  type LevelMap,
+} from './world';
 
 export interface Outbox {
   sendTo: (id: string, msg: HostMessage) => void;
@@ -18,13 +34,17 @@ export interface Outbox {
 
 const PATH_EVERY = 0.2; // segundos entre recálculos de caminos
 const PATH_CELLS = 90; // alcance de la búsqueda de caminos (casillas de 0,5 m)
+const FLARE_TIME = 25;
 
-// cómo es cada criatura
+// cómo es cada criatura (según la Backrooms Wiki)
 const SPEC: Record<EntityKind, { eye: number; wake: number; walk: number; run: number; reach: number; damage: number; cooldown: number }> = {
-  smiler: { eye: 1.6, wake: 28, walk: 1.5, run: 2.6, reach: 0.9, damage: 60, cooldown: 25 },
+  figure: { eye: 1.7, wake: 30, walk: 0.8, run: 0.8, reach: 0, damage: 0, cooldown: 40 },
+  smiler: { eye: 1.6, wake: 30, walk: 1.6, run: 4.3, reach: 0.9, damage: 55, cooldown: 25 },
   hound: { eye: 0.85, wake: 45, walk: 1.4, run: 4.6, reach: 1.15, damage: 22, cooldown: 1.2 },
   faceling: { eye: 1.95, wake: 60, walk: 1.0, run: 3.6, reach: 1.0, damage: 15, cooldown: 1.5 },
-  skinstealer: { eye: 2.35, wake: 35, walk: 1.5, run: 4.2, reach: 1.2, damage: 45, cooldown: 6 },
+  skinstealer: { eye: 1.6, wake: 40, walk: 0.9, run: 4.2, reach: 1.2, damage: 45, cooldown: 3 },
+  clump: { eye: 0.6, wake: 40, walk: 1.5, run: 6.2, reach: 1.0, damage: 35, cooldown: 2 },
+  duller: { eye: 1.6, wake: 20, walk: 0, run: 0, reach: 1.3, damage: 30, cooldown: 25 },
 };
 
 interface Lair {
@@ -32,44 +52,52 @@ interface Lair {
   kind: EntityKind;
   x: number;
   z: number;
+  lines?: string[];
   entity: number | null;
   cooldown: number;
 }
 
 interface Entity extends EntityState {
   lair: Lair;
-  mode: 'idle' | 'wander' | 'chase' | 'stare' | 'flee';
+  mode: 'idle' | 'wander' | 'stalk' | 'chase' | 'stare' | 'flee' | 'listen' | 'warn' | 'disguised';
   timer: number; // tiempo en el modo actual
   attackCd: number;
   target: string | null;
   goal: { x: number; z: number } | null;
   anger: number;
   stare: number;
+  close: number; // tiempo que llevas demasiado cerca (Skin-Stealer)
+  sayCd: number;
 }
 
 interface Player extends PlayerState {
   speed: number;
-  lastX: number;
-  lastZ: number;
   lastT: number;
+  shoutTimer: number;
 }
 
 /**
  * Lógica de la partida que solo ejecuta el anfitrión: quién está en la sala,
- * qué objetos se han recogido, dónde están los enemigos y qué hacen.
+ * qué objetos se han recogido, cómo cambia el laberinto y qué hacen las
+ * criaturas.
  */
 export class Authority {
   private players = new Map<string, Player>();
   private entities: Entity[] = [];
   private lairs: Lair[] = [];
   private picked = new Set<string>();
-  private nextEntity = 1;
+  private flares: Flare[] = [];
+  private nextId = 1;
   private timer: number;
   private pathClock = 0;
   private fields = new Map<string, Int16Array>();
-  private blackout = LEVELS.map(() => 0); // segundos de apagón que quedan
-  private nextBlackout = LEVELS.map(() => 60 + Math.random() * 60);
-  private allDark = new Map<number, Uint8Array>();
+  private blackout = LEVELS.map(() => 0); // segundos de Parpadeo que quedan
+  private nextBlackout = LEVELS.map(() => 70 + Math.random() * 60);
+  private circuit = LEVELS.map(() => 0); // segundos con el circuito fundido
+  private nextCircuit = LEVELS.map(() => 30 + Math.random() * 40);
+  private shiftClock = LEVELS.map(() => 6);
+  private loopEmpty = LEVELS.map(() => 0);
+  private masks = new Map<string, Uint8Array>();
 
   constructor(private out: Outbox) {
     LEVELS.forEach((_, level) => {
@@ -94,11 +122,13 @@ export class Authority {
       ry: 0,
       light: false,
       sprint: false,
+      crouch: false,
+      noise: 0,
+      shout: false,
       dead: false,
       speed: 0,
-      lastX: 0,
-      lastZ: 0,
       lastT: performance.now(),
+      shoutTimer: 0,
     };
     this.players.set(id, p);
     this.out.sendTo(id, { t: 'welcome', id, color: p.color, picked: [...this.picked], x: p.x, z: p.z });
@@ -125,18 +155,25 @@ export class Authority {
         Object.assign(p, msg.pose);
         p.speed = msg.pose.level === prev ? p.speed * 0.6 + Math.min(v, 10) * 0.4 : 0;
         p.lastT = now;
+        if (msg.pose.shout) p.shoutTimer = 1;
         if (p.level !== prev) {
-          if (p.level === ESCAPED) this.notice(`¡${p.name} ha escapado de los Backrooms!`);
+          if (p.level === ESCAPED) this.notice(`${p.name} ha encontrado la salida al Nivel 3`);
           else if (p.level > prev) this.notice(`${p.name} ha llegado al ${LEVELS[p.level].name}: ${LEVELS[p.level].title}`);
           else this.notice(`${p.name} ha vuelto a caer en los Backrooms`);
         }
         break;
       }
-      case 'pickup':
-        if (!this.picked.has(msg.key)) {
-          this.picked.add(msg.key);
-          this.out.broadcast({ t: 'picked', key: msg.key, by: id });
-        }
+      case 'pickup': {
+        if (this.picked.has(msg.key)) break;
+        this.picked.add(msg.key);
+        const level = Number(msg.key.split(':')[0]);
+        const crate = getMap(level)?.crates.find((c) => c.key === msg.key);
+        if (crate) this.out.broadcast({ t: 'picked', key: msg.key, by: id, ...openCrate(crate) });
+        else this.out.broadcast({ t: 'picked', key: msg.key, by: id });
+        break;
+      }
+      case 'flare':
+        this.flares.push({ id: this.nextId++, level: msg.level, x: msg.x, y: msg.y, z: msg.z, left: FLARE_TIME });
         break;
       case 'died':
         this.notice(`${p.name} ${msg.reason}`);
@@ -156,7 +193,10 @@ export class Authority {
 
   private tick(dt: number) {
     const alive = [...this.players.values()].filter((p) => p.level < ESCAPED && !p.dead);
-    this.updateBlackouts(dt, alive);
+    for (const p of this.players.values()) p.shoutTimer = Math.max(0, p.shoutTimer - dt);
+    this.updateEvents(dt, alive);
+    this.updateShifts(dt, alive);
+    this.flares = this.flares.filter((f) => (f.left -= dt) > 0);
     this.pathClock -= dt;
     if (this.pathClock <= 0) {
       this.pathClock = PATH_EVERY;
@@ -166,45 +206,116 @@ export class Authority {
     for (const e of [...this.entities]) this.think(e, alive, dt);
     this.out.broadcast({
       t: 'state',
-      players: [...this.players.values()].map(({ speed: _s, lastX: _x, lastZ: _z, lastT: _t, ...rest }) => rest),
+      players: [...this.players.values()].map(({ speed: _s, lastT: _t, shoutTimer: _h, ...rest }) => rest),
       entities: this.entities.map(({ id, kind, level, x, z, ry, anim }) => ({ id, kind, level, x: round(x), z: round(z), ry: round(ry), anim })),
       blackout: this.blackout.map((b, i) => (b > 0 ? i : -1)).filter((i) => i >= 0),
+      circuits: this.circuit.map((b, i) => (b > 0 ? i : -1)).filter((i) => i >= 0),
+      shifts: LEVELS.flatMap((_, level) => getMap(level).shifts.filter((s) => s.closed).map((s) => `${level}:${s.id}`)),
+      flares: this.flares.map((f) => ({ ...f, left: round(f.left) })),
     });
   }
 
-  private updateBlackouts(dt: number, alive: Player[]) {
+  /** Parpadeo (Nivel 1) y circuitos fundidos (Nivel 2). */
+  private updateEvents(dt: number, alive: Player[]) {
     LEVELS.forEach((L, level) => {
-      if (!L.blackouts || !alive.some((p) => p.level === level)) return;
-      if (this.blackout[level] > 0) {
-        this.blackout[level] -= dt;
-        if (this.blackout[level] <= 0) this.nextBlackout[level] = 70 + Math.random() * 80;
-        return;
+      const here = alive.some((p) => p.level === level);
+      if (L.blackouts && here) {
+        if (this.blackout[level] > 0) {
+          this.blackout[level] -= dt;
+          if (this.blackout[level] <= 0) {
+            this.nextBlackout[level] = 70 + Math.random() * 80;
+            this.restock(level); // tras un Parpadeo aparecen cajas nuevas
+          }
+        } else if ((this.nextBlackout[level] -= dt) <= 0) {
+          this.blackout[level] = 18 + Math.random() * 10;
+          this.fields.clear();
+        }
       }
-      this.nextBlackout[level] -= dt;
-      if (this.nextBlackout[level] <= 0) {
-        this.blackout[level] = 16 + Math.random() * 8;
-        this.fields.clear();
+      if (L.circuits && here) {
+        if (this.circuit[level] > 0) {
+          this.circuit[level] -= dt;
+          if (this.circuit[level] <= 0) this.nextCircuit[level] = 40 + Math.random() * 50;
+        } else if ((this.nextCircuit[level] -= dt) <= 0) {
+          this.circuit[level] = 15 + Math.random() * 20;
+          this.fields.clear();
+        }
       }
     });
   }
 
-  /** Casillas por las que puede ir un Smiler (en un apagón, todas). */
-  private darkMask(map: LevelMap): Uint8Array {
-    if (this.blackout[map.level] <= 0) return map.dark;
-    let all = this.allDark.get(map.level);
-    if (!all) {
-      all = new Uint8Array(map.w * map.h).fill(1);
-      this.allDark.set(map.level, all);
-    }
-    return all;
+  private restock(level: number) {
+    const keys = getMap(level)
+      .crates.map((c) => c.key)
+      .filter((k) => this.picked.has(k) && Math.random() < 0.6);
+    for (const k of keys) this.picked.delete(k);
+    if (keys.length) this.out.broadcast({ t: 'restock', keys });
   }
 
-  /** Campo de distancias hacia un jugador (cacheado unos instantes). */
-  private field(map: LevelMap, p: Player, darkOnly: boolean): Int16Array {
-    const key = `${p.id}|${map.level}|${darkOnly}`;
+  /** Cambio periférico: el laberinto cambia donde nadie mira. */
+  private updateShifts(dt: number, alive: Player[]) {
+    LEVELS.forEach((_, level) => {
+      const map = getMap(level);
+      if (!map.shifts.length) return;
+      const here = alive.filter((p) => p.level === level);
+      const seen = (x: number, z: number) =>
+        here.some((p) => Math.hypot(p.x - x, p.z - z) < 35 && lineOfSight(map, p.x, p.y + 1.6, p.z, x, floorAt(map, x, z) + 1, z));
+      // la entrada de las Habitaciones Rojas se cierra cuando alguien está dentro
+      for (const loop of map.loops) {
+        if (loop.oneWay) continue;
+        const inside = here.some((p) => p.x > loop.x0 - 2 && p.x < loop.x1 + 2 && p.z > loop.z0 && p.z < loop.z1);
+        this.loopEmpty[level] = inside ? 0 : this.loopEmpty[level] + dt;
+        for (const sh of map.shifts) {
+          if (sh.pair !== undefined) continue;
+          const cx = sh.x + sh.w / 2;
+          const cz = sh.z + sh.d / 2;
+          if (inside && !sh.closed && !seen(cx, cz)) setShift(map, sh.id, true);
+          if (!inside && sh.closed && this.loopEmpty[level] > 30) setShift(map, sh.id, false);
+        }
+      }
+      this.shiftClock[level] -= dt;
+      if (this.shiftClock[level] > 0 || !here.length) return;
+      this.shiftClock[level] = 6 + Math.random() * 6;
+      const pairs = map.shifts.filter((s) => s.pair !== undefined && s.pair > s.id);
+      const sh = pairs[Math.floor(Math.random() * pairs.length)];
+      if (!sh) return;
+      const other = map.shifts[sh.pair!];
+      const blocked = (s: typeof sh) => {
+        const cx = s.x + s.w / 2;
+        const cz = s.z + s.d / 2;
+        // no cerrar encima de nadie
+        return seen(cx, cz) || here.some((p) => Math.abs(p.x - cx) < s.w / 2 + 0.6 && Math.abs(p.z - cz) < s.d / 2 + 0.6);
+      };
+      if (blocked(sh) || blocked(other)) return;
+      setShift(map, sh.id, !sh.closed);
+      setShift(map, other.id, !other.closed);
+      this.fields.clear();
+    });
+  }
+
+  /** Casillas por las que puede ir un Smiler: lo oscuro (en un Parpadeo, todo). */
+  private darkMask(map: LevelMap): Uint8Array {
+    const level = map.level;
+    if (this.blackout[level] > 0) return this.mask(`all${level}`, map, () => 1);
+    if (this.circuit[level] > 0) return this.mask(`circ${level}`, map, (i) => (map.light[i * 2] < 0.12 ? 1 : 0));
+    return map.dark;
+  }
+
+  private mask(key: string, map: LevelMap, fn: (i: number) => number): Uint8Array {
+    let m = this.masks.get(key);
+    if (!m) {
+      m = new Uint8Array(map.w * map.h);
+      for (let i = 0; i < m.length; i++) m[i] = fn(i);
+      this.masks.set(key, m);
+    }
+    return m;
+  }
+
+  /** Campo de distancias hacia un punto (cacheado unos instantes). */
+  private field(map: LevelMap, x: number, z: number, darkOnly: boolean): Int16Array {
+    const key = `${map.level}|${cellOf(x)}|${cellOf(z)}|${darkOnly}`;
     let f = this.fields.get(key);
     if (!f) {
-      f = distanceField(map, cellOf(p.x), cellOf(p.z), PATH_CELLS, darkOnly, this.darkMask(map));
+      f = distanceField(map, cellOf(x), cellOf(z), PATH_CELLS, darkOnly, this.darkMask(map));
       this.fields.set(key, f);
     }
     return f;
@@ -219,23 +330,26 @@ export class Authority {
       if (!dists.length) continue;
       const near = Math.min(...dists);
       const spec = SPEC[lair.kind];
-      if (near > spec.wake || near < (lair.kind === 'faceling' ? 0 : 7)) continue;
+      const minDist = lair.kind === 'faceling' || lair.kind === 'duller' || lair.kind === 'skinstealer' ? 0 : lair.kind === 'figure' ? 12 : 7;
+      if (near > spec.wake || near < minDist) continue;
       const e: Entity = {
-        id: this.nextEntity++,
+        id: this.nextId++,
         kind: lair.kind,
         level: lair.level,
         x: lair.x,
         z: lair.z,
         ry: Math.random() * Math.PI * 2,
-        anim: Anim.Idle,
+        anim: lair.kind === 'skinstealer' ? Anim.Disguise : lair.kind === 'duller' ? Anim.Hidden : Anim.Idle,
         lair,
-        mode: 'idle',
+        mode: lair.kind === 'skinstealer' ? 'disguised' : 'idle',
         timer: 0,
         attackCd: 0,
         target: null,
         goal: null,
         anger: 0,
         stare: 0,
+        close: 0,
+        sayCd: 2,
       };
       lair.entity = e.id;
       this.entities.push(e);
@@ -259,15 +373,18 @@ export class Authority {
 
   private think(e: Entity, alive: Player[], dt: number) {
     const map = getMap(e.level);
-    const here = alive.filter((p) => p.level === e.level);
+    // en las zonas seguras (la Base Alpha) no persiguen a nadie
+    const here = alive.filter((p) => p.level === e.level && !inZone(map, 'safe', p.x, p.z));
     e.timer += dt;
     e.attackCd -= dt;
-    const nearest = closest(e, here);
+    const nearest = closest(e, alive.filter((p) => p.level === e.level));
     if (!nearest || nearest.d > SPEC[e.kind].wake + 20) {
       this.despawn(e, 5);
       return;
     }
     switch (e.kind) {
+      case 'figure':
+        return this.figure(e, here, map, dt);
       case 'smiler':
         return this.smiler(e, here, map, dt);
       case 'hound':
@@ -276,86 +393,166 @@ export class Authority {
         return this.faceling(e, here, map, dt);
       case 'skinstealer':
         return this.skinStealer(e, here, map, dt);
+      case 'clump':
+        return this.clump(e, here, map, dt);
+      case 'duller':
+        return this.duller(e, here, map, dt);
     }
   }
 
-  /** Acecha en la oscuridad. Se queda quieto si le apuntan con una linterna. */
+  /** Figura oscura (Nivel 0): te observa de lejos y se esfuma si la miras o te acercas. */
+  private figure(e: Entity, here: Player[], map: LevelMap, dt: number) {
+    const near = closest(e, here);
+    if (!near) return;
+    e.ry = turn(e.ry, faceTo(e, near.p), dt * 3);
+    e.anim = Anim.Idle;
+    const watched = here.some((p) => facingDot(p, e) > 0.97 && this.sees(e, p, map) && e.timer > 1.2);
+    if (near.d < 9 || watched) {
+      this.despawn(e, SPEC.figure.cooldown);
+      return;
+    }
+    // si nadie la mira, se acerca despacio (sin pasar de 10 m)
+    const unseen = here.every((p) => facingDot(p, e) < 0.4);
+    if (unseen && near.d > 10) {
+      e.anim = Anim.Walk;
+      this.follow(e, this.field(map, near.p.x, near.p.z, false), near.p, map, SPEC.figure.walk, dt);
+    }
+  }
+
+  /**
+   * Smiler: vive en lo oscuro y le atrae la luz. Si le miras y te alejas
+   * despacio, no ataca; si corres o haces ruido, se lanza. Si apagas la luz
+   * y no haces ruido, te pierde. Una bengala lo distrae.
+   */
   private smiler(e: Entity, here: Player[], map: LevelMap, dt: number) {
     const spec = SPEC.smiler;
-    let best: { p: Player; d: number; f: Int16Array } | null = null;
-    for (const p of here) {
-      const f = this.field(map, p, true);
-      const d = f[cellOf(e.z) * map.w + cellOf(e.x)];
-      if (d >= 0 && (!best || d < best.d)) best = { p, d, f };
+    const mask = this.darkMask(map);
+    // una bengala cerca: va hacia ella y se queda mirándola
+    const flare = this.flares.find((f) => f.level === e.level && Math.hypot(f.x - e.x, f.z - e.z) < 22);
+    if (flare) {
+      e.target = null;
+      e.mode = 'stalk';
+      const d = Math.hypot(flare.x - e.x, flare.z - e.z);
+      e.anim = d > 2 ? Anim.Walk : Anim.Idle;
+      if (d > 2) this.follow(e, this.field(map, flare.x, flare.z, false), flare, map, spec.walk * 1.5, dt, mask);
+      return;
     }
-    if (!best) {
+    let target = here.find((p) => p.id === e.target) ?? null;
+    if (!target) {
+      for (const p of here) {
+        const d = Math.hypot(p.x - e.x, p.z - e.z);
+        const lit = p.light && d < 25 && this.sees(e, p, map);
+        const loud = p.noise > 1 && d < 20;
+        if (lit || loud) {
+          target = p;
+          e.target = p.id;
+          e.mode = 'stalk';
+          e.timer = 0;
+          break;
+        }
+      }
+    }
+    if (!target) {
+      // vuelve a su sitio
       e.anim = Anim.Idle;
-      if (e.timer > 8) this.despawn(e, 4);
+      if (Math.hypot(e.x - e.lair.x, e.z - e.lair.z) > 0.5) {
+        e.anim = Anim.Walk;
+        this.follow(e, this.field(map, e.lair.x, e.lair.z, false), e.lair, map, spec.walk, dt, mask);
+      } else if (e.timer > 20) this.despawn(e, 3);
       return;
     }
-    e.timer = 0;
-    if (here.some((p) => this.lights(p, e, map, 14, 0.93))) {
+    const d = Math.hypot(target.x - e.x, target.z - e.z);
+    // ¿pánico? correr o hacer ruido cerca lo hace atacar
+    if (e.mode !== 'chase' && ((target.sprint && d < 15) || (target.noise > 1 && d < 20))) {
+      e.mode = 'chase';
+      e.timer = 0;
+    }
+    if (e.mode === 'chase') {
+      if (d < spec.reach && e.attackCd <= 0) {
+        this.hit(e, target);
+        this.despawn(e, spec.cooldown); // tras atacar se desvanece
+        return;
+      }
+      e.anim = Anim.Run;
+      const ok = this.follow(e, this.field(map, target.x, target.z, true), target, map, spec.run, dt, mask);
+      if (!ok || e.timer > 12) this.forget(e);
+      return;
+    }
+    // acecho: si apagas la luz y no haces ruido, te pierde
+    if (!target.light && target.noise < 0.5) {
+      e.close += dt;
+      if (e.close > 4) {
+        e.close = 0;
+        this.forget(e);
+        return;
+      }
+    } else e.close = 0;
+    // le mantienes la mirada: se queda quieto, sonriendo
+    const eyeContact = facingDot(target, e) > 0.9 && this.sees(e, target, map);
+    e.ry = turn(e.ry, faceTo(e, target), dt * 4);
+    if (eyeContact || d < 3) {
       e.anim = Anim.Idle;
       return;
     }
-    const dist = Math.hypot(best.p.x - e.x, best.p.z - e.z);
-    if (dist < spec.reach && e.attackCd <= 0) {
-      this.hit(e, best.p);
-      this.despawn(e, spec.cooldown); // tras atacar se desvanece
-      return;
-    }
-    e.anim = Anim.Run;
-    this.follow(e, best.f, best.p, map, spec.run * (this.blackout[e.level] > 0 ? 1.3 : 1), dt, this.darkMask(map));
+    e.anim = Anim.Walk;
+    this.follow(e, this.field(map, target.x, target.z, true), target, map, spec.walk, dt, mask);
   }
 
-  /** Persigue a quien huye; si le plantas cara, gruñe y acaba retirándose. */
+  private forget(e: Entity) {
+    e.target = null;
+    e.mode = 'idle';
+    e.timer = 0;
+  }
+
+  /** Hound: te ataca al verte u oírte. Mirarle le frena un rato; gritar le espanta. */
   private hound(e: Entity, here: Player[], map: LevelMap, dt: number) {
     const spec = SPEC.hound;
     let target = here.find((p) => p.id === e.target) ?? null;
+    // un grito cerca le hace huir
+    const shouter = here.find((p) => p.shoutTimer > 0 && Math.hypot(p.x - e.x, p.z - e.z) < 12);
+    if (shouter && e.mode !== 'flee') {
+      this.setMode(e, 'flee');
+      e.target = shouter.id;
+    }
+    if (e.mode === 'flee') {
+      e.anim = Anim.Flee;
+      if (target) this.away(e, target, map, 4.2, dt);
+      if (e.timer > 5) this.setMode(e, 'wander');
+      return;
+    }
     if (!target || e.mode === 'wander' || e.mode === 'idle') {
-      // ¿ve u oye a alguien?
       target = null;
       for (const p of here) {
         const d = Math.hypot(p.x - e.x, p.z - e.z);
         const sees = d < 18 && this.sees(e, p, map);
-        const hears = p.sprint && d < 22;
+        const hears = d < p.noise * 22;
         if (sees || hears || d < 4) {
           target = p;
           break;
         }
       }
-      if (target && e.mode !== 'flee') {
+      if (target) {
+        this.setMode(e, 'chase');
         e.target = target.id;
-        e.mode = 'chase';
-        e.timer = 0;
       }
-    }
-
-    if (e.mode === 'flee') {
-      e.anim = Anim.Flee;
-      const from = target ?? closest(e, here)?.p;
-      if (from) this.away(e, from, map, 4, dt);
-      if (e.timer > 4) this.setMode(e, 'wander');
-      return;
     }
     if (e.mode === 'chase' || e.mode === 'stare') {
       if (!target) return this.setMode(e, 'wander');
       const d = Math.hypot(target.x - e.x, target.z - e.z);
-      const facing = facingDot(target, e) > 0.85 && this.sees(e, target, map);
-      // plantar cara: mirarle sin correr y sin moverse mucho
-      if (d < 7 && facing && !target.sprint && target.speed < 1.6) {
-        if (e.mode !== 'stare') this.setMode(e, 'stare');
+      const staredAt = facingDot(target, e) > 0.85 && this.sees(e, target, map) && !target.sprint;
+      // mirarle a los ojos le frena... pero no aguanta mucho
+      if (d < 8 && staredAt && e.stare < 3.5) {
+        if (e.mode !== 'stare') e.mode = 'stare';
         e.stare += dt;
         e.anim = Anim.Growl;
         e.ry = faceTo(e, target);
-        if (e.stare > 2.5) {
-          e.stare = 0;
-          this.setMode(e, 'flee');
-        }
         return;
       }
-      if (e.mode === 'stare') this.setMode(e, 'chase');
-      e.stare = Math.max(0, e.stare - dt);
+      if (e.mode === 'stare') {
+        e.mode = 'chase';
+        e.timer = 0;
+      }
+      if (!staredAt) e.stare = Math.max(0, e.stare - dt * 0.5);
       if (d < spec.reach) {
         e.ry = faceTo(e, target);
         if (e.attackCd <= 0) this.hit(e, target);
@@ -363,18 +560,18 @@ export class Authority {
         return;
       }
       if (d > 32 || e.timer > 40) return this.setMode(e, 'wander');
-      const f = this.field(map, target, false);
       e.anim = Anim.Run;
-      if (!this.follow(e, f, target, map, spec.run, dt)) this.setMode(e, 'wander');
+      if (!this.follow(e, this.field(map, target.x, target.z, false), target, map, spec.run, dt)) this.setMode(e, 'wander');
       return;
     }
+    e.stare = 0;
     this.wander(e, map, spec.walk, 10, dt);
   }
 
-  /** Pasea sin hacer nada... salvo que le deslumbren con la linterna. */
+  /** Faceling: pasea en grupo sin molestar, salvo que le deslumbres o le agobies. */
   private faceling(e: Entity, here: Player[], map: LevelMap, dt: number) {
     const spec = SPEC.faceling;
-    const glaring = here.find((p) => this.lights(p, e, map, 6, 0.93));
+    const glaring = here.find((p) => this.lights(p, e, map, 6, 0.93) || Math.hypot(p.x - e.x, p.z - e.z) < 1.2);
     e.anger = glaring ? e.anger + dt : Math.max(0, e.anger - dt * 0.3);
     if (e.anger > 3 && e.mode !== 'chase') {
       this.setMode(e, 'chase');
@@ -382,7 +579,7 @@ export class Authority {
     }
     if (e.mode === 'chase') {
       const target = here.find((p) => p.id === e.target);
-      if (!target || e.timer > 15) {
+      if (!target || e.timer > 12) {
         e.anger = 0;
         return this.setMode(e, 'wander');
       }
@@ -393,52 +590,145 @@ export class Authority {
         return;
       }
       e.anim = Anim.Run;
-      this.follow(e, this.field(map, target, false), target, map, spec.run, dt);
+      this.follow(e, this.field(map, target.x, target.z, false), target, map, spec.run, dt);
       return;
     }
-    // si alguien está cerca, se para a "mirarle"
     const near = closest(e, here);
     if (near && near.d < 5 && this.sees(e, near.p, map)) {
       e.anim = Anim.Idle;
       e.ry = turn(e.ry, faceTo(e, near.p), dt * 1.5);
       return;
     }
-    this.wander(e, map, spec.walk, 14, dt);
+    this.wander(e, map, spec.walk, 12, dt);
   }
 
-  /** Solo se mueve cuando nadie le mira. */
+  /**
+   * Skin-Stealer (Nivel 1): parece una persona sola que pide ayuda. Si te
+   * quedas cerca, le das la espalda o corres, se quita el disfraz y ataca.
+   * Si te alejas con calma, no pasa nada.
+   */
   private skinStealer(e: Entity, here: Player[], map: LevelMap, dt: number) {
     const spec = SPEC.skinstealer;
-    const watched = here.some((p) => {
-      const d = Math.hypot(p.x - e.x, p.z - e.z);
-      return d < 30 && facingDot(p, e) > 0.55 && this.sees(e, p, map);
-    });
+    const near = closest(e, here);
+    if (e.mode === 'disguised') {
+      e.anim = Anim.Disguise;
+      if (!near) return;
+      e.ry = turn(e.ry, faceTo(e, near.p), dt * 2);
+      // habla para atraerte
+      e.sayCd -= dt;
+      const lines = e.lair.lines ?? ['¿Hola?'];
+      if (near.d < 9 && e.sayCd <= 0) {
+        e.sayCd = 4 + Math.random() * 3;
+        this.out.broadcast({ t: 'say', id: e.id, text: lines[Math.floor(Math.random() * lines.length)] });
+      }
+      const tooClose = near.d < 2.4;
+      const turnedBack = near.d < 4 && facingDot(near.p, e) < 0;
+      e.close = tooClose || turnedBack ? e.close + dt : Math.max(0, e.close - dt);
+      if (e.close > (tooClose ? 2.5 : 1.2) || (near.p.sprint && near.d < 10)) {
+        this.out.broadcast({ t: 'say', id: e.id, text: 'Hola.' });
+        this.setMode(e, 'chase');
+        e.target = near.p.id;
+      }
+      return;
+    }
     if (e.mode === 'flee') {
-      const from = closest(e, here);
-      if (from) this.away(e, from.p, map, spec.run, dt);
       e.anim = Anim.Run;
-      if (e.timer > 5) this.setMode(e, 'idle');
+      if (near) this.away(e, near.p, map, spec.run, dt);
+      if (e.timer > 6) {
+        this.setMode(e, 'disguised');
+        e.close = 0;
+      }
       return;
     }
-    if (watched) {
-      e.anim = Anim.Idle; // se queda congelado... hasta que apartas la vista
+    const target = here.find((p) => p.id === e.target);
+    if (!target || e.timer > 20) {
+      this.setMode(e, 'disguised');
       return;
     }
-    let best: { p: Player; d: number; f: Int16Array } | null = null;
-    for (const p of here) {
-      const f = this.field(map, p, false);
-      const d = f[cellOf(e.z) * map.w + cellOf(e.x)];
-      if (d >= 0 && (!best || d < best.d)) best = { p, d, f };
-    }
-    if (!best) return this.wander(e, map, spec.walk, 8, dt);
-    const d = Math.hypot(best.p.x - e.x, best.p.z - e.z);
+    const d = Math.hypot(target.x - e.x, target.z - e.z);
     if (d < spec.reach && e.attackCd <= 0) {
-      this.hit(e, best.p);
+      this.hit(e, target);
       this.setMode(e, 'flee');
       return;
     }
     e.anim = Anim.Run;
-    this.follow(e, best.f, best.p, map, spec.run, dt);
+    this.follow(e, this.field(map, target.x, target.z, false), target, map, spec.run, dt);
+  }
+
+  /** Clump: no ve. Se lanza hacia donde oye ruido y espera escuchando. */
+  private clump(e: Entity, here: Player[], map: LevelMap, dt: number) {
+    const spec = SPEC.clump;
+    // ¿oye a alguien?
+    for (const p of here) {
+      const d = Math.hypot(p.x - e.x, p.z - e.z);
+      if (d < p.noise * 18 || d < 2.2) {
+        e.goal = { x: p.x, z: p.z };
+        e.target = p.id;
+        if (e.mode !== 'chase') this.setModeKeepGoal(e, 'chase');
+      }
+    }
+    const target = here.find((p) => p.id === e.target);
+    if (target && Math.hypot(target.x - e.x, target.z - e.z) < spec.reach && e.attackCd <= 0) this.hit(e, target);
+    if (e.mode === 'chase' && e.goal) {
+      const d = Math.hypot(e.goal.x - e.x, e.goal.z - e.z);
+      e.anim = Anim.Run;
+      if (d < 0.6 || e.timer > 4) {
+        this.setModeKeepGoal(e, 'listen');
+        return;
+      }
+      if (!this.follow(e, this.field(map, e.goal.x, e.goal.z, false), e.goal, map, spec.run, dt)) this.setModeKeepGoal(e, 'listen');
+      return;
+    }
+    if (e.mode === 'listen') {
+      e.anim = Anim.Idle;
+      if (e.timer > 2.5) this.setMode(e, 'wander');
+      return;
+    }
+    // sin nada que oír, vuelve a su esquina
+    if (Math.hypot(e.x - e.lair.x, e.z - e.lair.z) > 0.5) {
+      e.anim = Anim.Walk;
+      this.follow(e, this.field(map, e.lair.x, e.lair.z, false), e.lair, map, spec.walk, dt);
+    } else e.anim = Anim.Idle;
+  }
+
+  /**
+   * Duller (Nivel 1): espera dentro de las paredes. Si estás pegado a una
+   * cerca de él, se oye arañar; si sigues ahí, sale y te agarra.
+   */
+  private duller(e: Entity, here: Player[], map: LevelMap, _dt: number) {
+    const spec = SPEC.duller;
+    const nearWall = (p: Player) => wallDistance(map, p.x, p.z) < 1.1;
+    const victim = here.find((p) => Math.hypot(p.x - e.lair.x, p.z - e.lair.z) < 5 && nearWall(p));
+    if (e.mode === 'warn') {
+      e.anim = Anim.Warn;
+      if (!victim) {
+        this.setMode(e, 'idle');
+        e.anim = Anim.Hidden;
+        e.lair.cooldown = 6;
+        return;
+      }
+      if (e.timer > 2) {
+        // sale de la pared justo al lado
+        const w = nearestWall(map, victim.x, victim.z);
+        e.x = w.x;
+        e.z = w.z;
+        e.ry = faceTo(e, victim);
+        this.hit(e, victim);
+        this.setMode(e, 'flee');
+      }
+      return;
+    }
+    if (e.mode === 'flee') {
+      e.anim = Anim.Attack;
+      if (e.timer > 1.2) this.despawn(e, spec.cooldown);
+      return;
+    }
+    e.anim = Anim.Hidden;
+    if (victim) {
+      this.setMode(e, 'warn');
+      e.x = e.lair.x;
+      e.z = e.lair.z;
+    }
   }
 
   // ------------------------------------------------------------------ utilidades
@@ -447,7 +737,12 @@ export class Authority {
     e.mode = mode;
     e.timer = 0;
     e.goal = null;
-    if (mode === 'wander' || mode === 'idle') e.target = null;
+    if (mode === 'wander' || mode === 'idle' || mode === 'disguised') e.target = null;
+  }
+
+  private setModeKeepGoal(e: Entity, mode: Entity['mode']) {
+    e.mode = mode;
+    e.timer = 0;
   }
 
   /** ¿Ve la criatura al jugador? */
@@ -463,8 +758,8 @@ export class Authority {
     return d < range && facingDot(p, e) > cos && this.sees(e, p, map);
   }
 
-  /** Avanza hacia el jugador siguiendo el campo de distancias. */
-  private follow(e: Entity, field: Int16Array, p: Player, map: LevelMap, speed: number, dt: number, mask?: Uint8Array): boolean {
+  /** Avanza hacia un punto siguiendo el campo de distancias. */
+  private follow(e: Entity, field: Int16Array, p: { x: number; z: number }, map: LevelMap, speed: number, dt: number, mask?: Uint8Array): boolean {
     const ex = cellOf(e.x);
     const ez = cellOf(e.z);
     const d = field[ez * map.w + ex];
@@ -490,7 +785,7 @@ export class Authority {
 
   /** Se aleja del jugador (hacia la casilla vecina más lejana). */
   private away(e: Entity, p: Player, map: LevelMap, speed: number, dt: number) {
-    const field = this.field(map, p, false);
+    const field = this.field(map, p.x, p.z, false);
     const ex = cellOf(e.x);
     const ez = cellOf(e.z);
     let best = field[ez * map.w + ex];
@@ -514,12 +809,11 @@ export class Authority {
       e.timer = 0;
       e.anim = Anim.Idle;
       if (Math.random() < 0.02) {
-        // elige un sitio alcanzable cerca de la guarida
         for (let k = 0; k < 10; k++) {
           const gx = e.lair.x + (Math.random() - 0.5) * radius * 2;
           const gz = e.lair.z + (Math.random() - 0.5) * radius * 2;
           const i = cellOf(gz) * map.w + cellOf(gx);
-          if (i >= 0 && i < map.w * map.h && walkable(map, i) && Math.abs(map.floor[i] - floorAt(map, e.x, e.z)) < 0.6) {
+          if (i >= 0 && i < map.w * map.h && walkable(map, i) && !inZone(map, 'safe', gx, gz) && Math.abs(map.floor[i] - floorAt(map, e.x, e.z)) < 0.6) {
             e.goal = { x: gx, z: gz };
             break;
           }
@@ -533,7 +827,7 @@ export class Authority {
     if (Math.abs(e.x + e.z - before) < 1e-4) e.goal = null; // atascado
   }
 
-  /** Mueve en línea recta respetando paredes, desniveles y (si se da) la máscara. */
+  /** Mueve en línea recta respetando paredes, desniveles, zonas seguras y (si se da) la máscara. */
   private step(e: Entity, tx: number, tz: number, speed: number, dt: number, map: LevelMap, mask?: Uint8Array) {
     const dx = tx - e.x;
     const dz = tz - e.z;
@@ -544,12 +838,59 @@ export class Authority {
     const nz = e.z + (dz / d) * s;
     e.ry = turn(e.ry, Math.atan2(-dx, -dz), dt * 8);
     const i = cellOf(nz) * map.w + cellOf(nx);
-    if (!walkable(map, i)) return; // pared, obstáculo o agujero
+    if (!walkable(map, i)) return;
     if (Math.abs(floorAt(map, nx, nz) - floorAt(map, e.x, e.z)) > 0.6) return;
     if (mask && !mask[i]) return;
+    if (inZone(map, 'safe', nx, nz)) return;
     e.x = nx;
     e.z = nz;
   }
+}
+
+/** Contenido de una caja de suministros (al abrirla). Puede haber sorpresas. */
+function openCrate(c: Crate): { items: ItemKind[]; junk?: string; hurt?: number } {
+  const pools: Record<Crate['pool'], [ItemKind, number][]> = {
+    comida: [['agua', 0.55], ['lata', 0.6], ['barrita', 0.35]],
+    medico: [['vendas', 0.75], ['agua', 0.4]],
+    herramientas: [['pila', 0.65], ['bengala', 0.45]],
+    mixto: [['agua', 0.3], ['lata', 0.25], ['pila', 0.3], ['vendas', 0.2], ['bengala', 0.15], ['barrita', 0.2]],
+  };
+  const items: ItemKind[] = [];
+  for (const [kind, chance] of pools[c.pool]) if (Math.random() < chance) items.push(kind);
+  const r = Math.random();
+  if (r < (c.pool === 'herramientas' || c.pool === 'mixto' ? 0.15 : 0.06)) return { items, junk: 'cristales rotos', hurt: 10 };
+  if (!items.length || r > 0.75) {
+    const junk = ['unos juguetes de hojalata', 'un ovillo de lana', 'un montón de ratones muertos', 'trozos de madera', 'una libreta en blanco', 'tazas desparejadas'];
+    return { items, junk: junk[Math.floor(Math.random() * junk.length)] };
+  }
+  return { items };
+}
+
+/** Distancia del punto a la pared más cercana (búsqueda en la rejilla). */
+function wallDistance(map: LevelMap, x: number, z: number): number {
+  return Math.hypot(nearestWall(map, x, z).x - x, nearestWall(map, x, z).z - z);
+}
+
+function nearestWall(map: LevelMap, x: number, z: number): { x: number; z: number } {
+  const cx = cellOf(x);
+  const cz = cellOf(z);
+  let best = { x, z: z + 99 };
+  let bd = Infinity;
+  for (let j = cz - 4; j <= cz + 4; j++) {
+    for (let i = cx - 4; i <= cx + 4; i++) {
+      if (i < 0 || j < 0 || i >= map.w || j >= map.h || !(map.flags[j * map.w + i] & F_SOLID)) continue;
+      // punto más cercano de esa casilla, separado un poco hacia fuera
+      const px = Math.min(Math.max(x, i * CELL), (i + 1) * CELL);
+      const pz = Math.min(Math.max(z, j * CELL), (j + 1) * CELL);
+      const d = Math.hypot(px - x, pz - z);
+      if (d < bd) {
+        bd = d;
+        const k = d > 0.01 ? 0.35 / d : 0;
+        best = { x: px + (x - px) * k, z: pz + (z - pz) * k };
+      }
+    }
+  }
+  return best;
 }
 
 function closest(e: { x: number; z: number }, list: Player[]): { p: Player; d: number } | null {
@@ -579,4 +920,3 @@ function turn(from: number, to: number, k: number): number {
 }
 
 const round = (v: number) => Math.round(v * 100) / 100;
-
