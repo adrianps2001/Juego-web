@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { litMaterial } from './lighting';
-import { labelTexture, smilerTexture, textTexture } from './textures';
+import { canvasTexture, labelTexture, smilerTexture, textTexture } from './textures';
 
 // ---------- jugadores ----------
 
@@ -152,54 +152,325 @@ export function makeHumanoid(color: number, name: string): Humanoid {
   };
 }
 
-// ---------- Smiler ----------
+// ---------- enemigos ----------
 
-const smilerFace = smilerTexture();
+/** Estado de animación que manda el anfitrión. */
+export const Anim = { Idle: 0, Walk: 1, Run: 2, Attack: 3, Flee: 4, Growl: 5 } as const;
 
-export interface SmilerModel {
+export interface EnemyModel {
   group: THREE.Group;
-  animate: (time: number) => void;
+  /** Altura de los ojos (para saber si se le está mirando). */
+  eye: number;
+  animate: (dt: number, time: number, anim: number) => void;
 }
 
-/** Una silueta de sombra con la sonrisa y los ojos brillando. */
-export function makeSmiler(seed: number): SmilerModel {
+const smilerFace = smilerTexture();
+let smokeTex: THREE.Texture | null = null;
+function smoke(): THREE.Texture {
+  smokeTex ??= canvasTexture(
+    64,
+    64,
+    (ctx, w, h) => {
+      const g = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
+      g.addColorStop(0, 'rgba(255,255,255,1)');
+      g.addColorStop(0.5, 'rgba(255,255,255,0.5)');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+    },
+    false,
+  );
+  return smokeTex;
+}
+
+/** Smiler: una masa de sombra que se retuerce, con ojos y sonrisa que brillan. */
+export function makeSmiler(seed: number): EnemyModel {
   const group = new THREE.Group();
-  const shadow = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.82, depthWrite: false });
-  const blobs: THREE.Mesh[] = [];
-  const shapes: [number, number, number, number][] = [
-    [0, 1.55, 0, 0.42],
-    [0, 1.05, 0.05, 0.5],
-    [0, 0.55, 0.05, 0.4],
-    [-0.35, 1.0, 0, 0.25],
-    [0.35, 1.0, 0, 0.25],
-    [-0.45, 0.55, -0.05, 0.16],
-    [0.45, 0.55, -0.05, 0.16],
-  ];
-  for (const [x, y, z, r] of shapes) {
-    const m = new THREE.Mesh(new THREE.SphereGeometry(r, 14, 10), shadow);
-    m.position.set(x, y, z);
-    m.scale.y = 1.3;
-    blobs.push(m);
-    group.add(m);
+  const puffs: { s: THREE.Sprite; a: number; r: number; y: number }[] = [];
+  for (let i = 0; i < 16; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: smoke(), color: 0x000000, transparent: true, opacity: 0.55, depthWrite: false }));
+    const y = 0.3 + (i / 16) * 1.5;
+    s.scale.setScalar(0.7 + Math.sin(i) * 0.25 + (y > 1.2 ? 0.3 : 0));
+    puffs.push({ s, a: i * 2.4, r: 0.12 + (i % 3) * 0.08, y });
+    group.add(s);
   }
   const face = new THREE.Sprite(
     new THREE.SpriteMaterial({ map: smilerFace, fog: false, transparent: true, depthWrite: false, color: new THREE.Color(1.6, 1.6, 1.55) }),
   );
-  face.scale.set(1.1, 1.1, 1);
-  face.position.set(0, 1.55, -0.3);
+  face.scale.set(1.0, 1.0, 1);
+  face.position.set(0, 1.55, 0);
   face.renderOrder = 2;
   group.add(face);
   return {
     group,
-    animate(time) {
-      blobs.forEach((b, i) => {
-        b.position.x = shapes[i][0] + Math.sin(time * 1.7 + i * 2 + seed) * 0.04;
-        b.scale.x = 1 + Math.sin(time * 2.3 + i) * 0.06;
-      });
+    eye: 1.6,
+    animate(_dt, time, anim) {
+      const fast = anim === Anim.Run ? 2.5 : 1;
+      for (const p of puffs) {
+        const a = p.a + time * 1.3 * fast + seed;
+        p.s.position.set(Math.cos(a) * p.r, p.y + Math.sin(time * 2 + p.a) * 0.05, Math.sin(a) * p.r);
+      }
       face.position.y = 1.55 + Math.sin(time * 1.3 + seed) * 0.04;
-      face.material.opacity = 0.85 + Math.random() * 0.15;
+      face.material.opacity = anim === Anim.Attack ? 1 : 0.8 + Math.random() * 0.2;
+      const grin = anim === Anim.Attack ? 1.35 : 1;
+      face.scale.set(grin, grin, 1);
     },
   };
+}
+
+/** Pieza articulada: un cilindro que cuelga de su pivote. */
+function segment(len: number, r0: number, r1: number, m: THREE.Material): THREE.Group {
+  const pivot = new THREE.Group();
+  const g = new THREE.CylinderGeometry(r1, r0, len, 8);
+  g.translate(0, -len / 2, 0);
+  pivot.add(new THREE.Mesh(g, m));
+  return pivot;
+}
+
+function glowEyes(color: number, spread: number, size = 0.025): THREE.Group {
+  const m = new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(2), fog: false });
+  const g = new THREE.Group();
+  for (const s of [-1, 1]) {
+    const e = new THREE.Mesh(new THREE.SphereGeometry(size, 8, 6), m);
+    e.position.x = s * spread;
+    g.add(e);
+  }
+  return g;
+}
+
+/** Hound: humanoide pálido que va a cuatro patas, con melena negra. */
+export function makeHound(seed: number): EnemyModel {
+  const skin = litMaterial({ color: 0x9c9a8e }, 0.1);
+  const hair = litMaterial({ color: 0x0c0b0a, side: THREE.DoubleSide }, 0.1);
+  const group = new THREE.Group();
+  const body = new THREE.Group();
+  body.position.y = 0.75;
+  group.add(body);
+
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.75, 6, 12), skin);
+  torso.rotation.x = Math.PI / 2 - 0.15;
+  const ribs = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.4, 4, 10), litMaterial({ color: 0x8a877b }, 0.1));
+  ribs.rotation.x = Math.PI / 2;
+  ribs.position.set(0, -0.08, -0.1);
+  body.add(torso, ribs);
+
+  const head = new THREE.Group();
+  head.position.set(0, 0.12, -0.6);
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.16, 16, 12), skin);
+  skull.scale.set(0.9, 1, 1.15);
+  const jaw = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.16), litMaterial({ color: 0x5a2222 }, 0.1));
+  jaw.position.set(0, -0.12, -0.06);
+  const eyes = glowEyes(0xff2a10, 0.06, 0.018);
+  eyes.position.set(0, 0.02, -0.16);
+  head.add(skull, jaw, eyes);
+  // melena: mechones largos que cuelgan
+  for (let i = 0; i < 14; i++) {
+    const len = 0.5 + Math.sin(i * 3.1 + seed) * 0.15;
+    const strand = new THREE.Mesh(new THREE.PlaneGeometry(0.07, len), hair);
+    const a = (i / 14) * Math.PI * 2;
+    strand.position.set(Math.cos(a) * 0.13, -len / 2 + 0.1, Math.sin(a) * 0.1 + 0.03);
+    strand.rotation.set(0.25, a, 0);
+    head.add(strand);
+  }
+  body.add(head);
+
+  const limbs: { upper: THREE.Group; lower: THREE.Group; phase: number }[] = [];
+  for (const [x, z, phase] of [[-0.2, -0.38, 0], [0.2, -0.38, Math.PI], [-0.18, 0.38, Math.PI], [0.18, 0.38, 0]] as const) {
+    const upper = segment(0.42, 0.06, 0.07, skin);
+    upper.position.set(x, 0, z);
+    const lower = segment(0.42, 0.04, 0.055, skin);
+    lower.position.y = -0.42;
+    upper.add(lower);
+    const hand = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.03, 0.16), skin);
+    hand.position.set(0, -0.42, -0.05);
+    lower.add(hand);
+    body.add(upper);
+    limbs.push({ upper, lower, phase });
+  }
+
+  let cycle = 0;
+  return {
+    group,
+    eye: 0.85,
+    animate(dt, time, anim) {
+      const speed = anim === Anim.Run ? 9 : anim === Anim.Walk || anim === Anim.Flee ? 4.5 : 0;
+      cycle += dt * speed;
+      const amp = anim === Anim.Run ? 0.75 : 0.4;
+      for (const l of limbs) {
+        const s = speed ? Math.sin(cycle + l.phase) : 0;
+        l.upper.rotation.x = s * amp;
+        l.lower.rotation.x = speed ? -Math.max(0, Math.cos(cycle + l.phase)) * amp * 1.2 : 0.15;
+      }
+      const growl = anim === Anim.Growl || anim === Anim.Attack;
+      body.position.y = 0.75 + (speed ? Math.abs(Math.sin(cycle)) * 0.06 : Math.sin(time * 2 + seed) * 0.01) - (growl ? 0.15 : 0);
+      body.rotation.x = anim === Anim.Run ? -0.08 : growl ? 0.12 : 0;
+      head.rotation.x = growl ? 0.3 + Math.sin(time * 30) * 0.03 : Math.sin(time * 0.8 + seed) * 0.1;
+      head.rotation.y = speed ? 0 : Math.sin(time * 0.5 + seed) * 0.4;
+      jaw.position.y = growl ? -0.17 : -0.12;
+      if (anim === Anim.Attack) head.position.z = -0.6 - Math.abs(Math.sin(time * 12)) * 0.15;
+      else head.position.z = -0.6;
+    },
+  };
+}
+
+/** Faceling: humanoide alto y pálido, vestido, sin cara. */
+export function makeFaceling(seed: number): EnemyModel {
+  const skin = litMaterial({ color: 0xd2c7b8 }, 0.1);
+  const suit = litMaterial({ color: [0x3a3d44, 0x4a3d34, 0x2f3a33][Math.floor(seed) % 3] }, 0.1);
+  const shirt = litMaterial({ color: 0xbcb6a8 }, 0.1);
+  const group = new THREE.Group();
+  const body = new THREE.Group();
+  group.add(body);
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.6, 4, 12), suit);
+  torso.scale.set(1.2, 1, 0.75);
+  torso.position.y = 1.32;
+  const collar = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.25, 0.02), shirt);
+  collar.position.set(0, 1.5, -0.15);
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.06, 0.16, 10), skin);
+  neck.position.y = 1.78;
+  const head = new THREE.Group();
+  head.position.y = 1.95;
+  // cabeza lisa: sin ojos, sin boca
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.13, 20, 16), skin);
+  skull.scale.set(0.95, 1.25, 1.05);
+  head.add(skull);
+  const legL = segment(0.95, 0.07, 0.08, suit);
+  legL.position.set(-0.1, 0.98, 0);
+  const legR = segment(0.95, 0.07, 0.08, suit);
+  legR.position.set(0.1, 0.98, 0);
+  for (const leg of [legL, legR]) {
+    const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.07, 0.26), litMaterial({ color: 0x111111 }, 0.1));
+    shoe.position.set(0, -0.95, -0.05);
+    leg.add(shoe);
+  }
+  const armL = segment(0.82, 0.045, 0.055, suit);
+  armL.position.set(-0.28, 1.65, 0);
+  const armR = segment(0.82, 0.045, 0.055, suit);
+  armR.position.set(0.28, 1.65, 0);
+  for (const arm of [armL, armR]) {
+    const hand = new THREE.Mesh(new THREE.CapsuleGeometry(0.035, 0.1, 4, 8), skin);
+    hand.position.y = -0.87;
+    arm.add(hand);
+  }
+  body.add(torso, collar, neck, head, legL, legR, armL, armR);
+  let cycle = seed;
+  return {
+    group,
+    eye: 1.95,
+    animate(dt, time, anim) {
+      const moving = anim === Anim.Walk || anim === Anim.Run || anim === Anim.Flee;
+      cycle += dt * (anim === Anim.Run ? 7 : moving ? 3.2 : 0);
+      const sw = moving ? Math.sin(cycle) * (anim === Anim.Run ? 0.6 : 0.35) : 0;
+      legL.rotation.x = sw;
+      legR.rotation.x = -sw;
+      const hostile = anim === Anim.Run || anim === Anim.Attack;
+      armL.rotation.x = hostile ? 1.3 + Math.sin(time * 9) * 0.1 : -sw * 0.6;
+      armR.rotation.x = hostile ? 1.3 + Math.cos(time * 9) * 0.1 : sw * 0.6;
+      // la cabeza se inclina despacio, como si te observara
+      head.rotation.z = Math.sin(time * 0.4 + seed) * 0.25;
+      head.rotation.x = anim === Anim.Idle ? Math.sin(time * 0.3 + seed) * 0.15 : 0;
+      body.position.y = moving ? Math.abs(Math.cos(cycle)) * 0.03 : 0;
+    },
+  };
+}
+
+/** Skin-Stealer: criatura altísima y esquelética envuelta en jirones de piel humana. */
+export function makeSkinStealer(seed: number): EnemyModel {
+  const hide = litMaterial({ color: 0x4a2a22 }, 0.1);
+  const bone = litMaterial({ color: 0x6b4d3e }, 0.1);
+  const skin = litMaterial({ color: 0xc9a48a, side: THREE.DoubleSide }, 0.1);
+  const group = new THREE.Group();
+  const body = new THREE.Group();
+  group.add(body);
+  const spine = new THREE.Group();
+  spine.position.y = 1.35;
+  body.add(spine);
+  const chest = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.7, 4, 10), hide);
+  chest.position.y = 0.4;
+  spine.add(chest);
+  for (let i = 0; i < 5; i++) {
+    const rib = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.015, 4, 12, Math.PI), bone);
+    rib.position.set(0, 0.2 + i * 0.1, -0.02);
+    rib.rotation.set(Math.PI / 2, 0, Math.PI);
+    spine.add(rib);
+  }
+  // jirones de piel colgando
+  for (let i = 0; i < 6; i++) {
+    const flap = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.5 + (i % 3) * 0.15), skin);
+    const a = (i / 6) * Math.PI * 2;
+    flap.position.set(Math.cos(a) * 0.19, 0.45, Math.sin(a) * 0.19);
+    flap.rotation.y = -a + Math.PI / 2;
+    spine.add(flap);
+  }
+  const head = new THREE.Group();
+  head.position.y = 1.0;
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 10), hide);
+  skull.scale.set(0.85, 1.35, 1);
+  const mask = new THREE.Mesh(new THREE.SphereGeometry(0.135, 14, 10, Math.PI * 0.6, Math.PI * 0.8, 0.3, 1.6), skin);
+  mask.scale.set(0.9, 1.3, 1.05);
+  mask.rotation.y = Math.PI;
+  const eyes = glowEyes(0xffd27a, 0.05, 0.016);
+  eyes.position.set(0, 0.04, -0.13);
+  head.add(skull, mask, eyes);
+  spine.add(head);
+  const legs: THREE.Group[] = [];
+  for (const x of [-0.12, 0.12]) {
+    const upper = segment(0.75, 0.04, 0.06, hide);
+    upper.position.set(x, 1.4, 0);
+    const lower = segment(0.75, 0.03, 0.045, bone);
+    lower.position.y = -0.75;
+    upper.add(lower);
+    body.add(upper);
+    legs.push(upper);
+  }
+  const arms: THREE.Group[] = [];
+  for (const x of [-0.24, 0.24]) {
+    const upper = segment(0.7, 0.035, 0.05, hide);
+    upper.position.set(x, 0.8, 0);
+    const lower = segment(0.75, 0.025, 0.035, bone);
+    lower.position.y = -0.7;
+    upper.add(lower);
+    // dedos largos
+    for (let f = -1; f <= 1; f++) {
+      const finger = segment(0.22, 0.006, 0.01, bone);
+      finger.position.set(f * 0.02, -0.75, 0);
+      finger.rotation.x = 0.2;
+      lower.add(finger);
+    }
+    spine.add(upper);
+    arms.push(upper);
+  }
+  let cycle = seed;
+  return {
+    group,
+    eye: 2.35,
+    animate(dt, time, anim) {
+      const moving = anim === Anim.Walk || anim === Anim.Run;
+      cycle += dt * (anim === Anim.Run ? 8 : moving ? 3 : 0);
+      const sw = moving ? Math.sin(cycle) * 0.5 : 0;
+      legs[0].rotation.x = sw;
+      legs[1].rotation.x = -sw;
+      arms[0].rotation.x = anim === Anim.Attack ? 1.6 : -sw * 0.7 + 0.1;
+      arms[1].rotation.x = anim === Anim.Attack ? 1.6 : sw * 0.7 + 0.1;
+      spine.rotation.x = 0.25 + (anim === Anim.Run ? 0.25 : 0); // jorobado
+      // sacudidas bruscas de cabeza
+      head.rotation.z = Math.sin(time * 0.6 + seed) * 0.2 + (Math.random() < 0.02 ? (Math.random() - 0.5) * 0.8 : 0);
+      head.rotation.y = anim === Anim.Idle ? Math.sin(time * 0.3) * 0.5 : 0;
+    },
+  };
+}
+
+export function makeEnemy(kind: string, seed: number): EnemyModel {
+  switch (kind) {
+    case 'hound':
+      return makeHound(seed);
+    case 'faceling':
+      return makeFaceling(seed);
+    case 'skinstealer':
+      return makeSkinStealer(seed);
+    default:
+      return makeSmiler(seed);
+  }
 }
 
 // ---------- objetos ----------
@@ -260,10 +531,40 @@ export function makeBattery(): THREE.Group {
   return group;
 }
 
-const signTex = textTexture('SALIDA', '#8dff9b', '#06200b');
+/** Barrita energética envuelta. */
+export function makeEnergyBar(): THREE.Group {
+  const wrap = litMaterial({ map: textTexture('ENERGÍA', '#ffffff', '#c23a1c', 128, 32), emissive: 0x150500 }, 0.05);
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.025, 0.05), wrap);
+  bar.position.y = 0.013;
+  const end = (x: number) => {
+    const e = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.02, 0.055), litMaterial({ color: 0xb0b0b0 }, 0.05));
+    e.position.set(x, 0.013, 0);
+    return e;
+  };
+  const g = new THREE.Group();
+  g.add(bar, end(-0.087), end(0.087));
+  return g;
+}
+
+/** Botiquín con vendas. */
+export function makeMedkit(): THREE.Group {
+  const g = new THREE.Group();
+  const box = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.12, 0.2), litMaterial({ color: 0xe8e4dc, emissive: 0x1a1a1a }, 0.05));
+  box.position.y = 0.06;
+  const red = litMaterial({ color: 0xc41e1e, emissive: 0x200000 }, 0.05);
+  const c1 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.005, 0.03), red);
+  c1.position.y = 0.123;
+  const c2 = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.005, 0.1), red);
+  c2.position.y = 0.123;
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.02, 0.02), litMaterial({ color: 0x333333 }, 0.05));
+  handle.position.set(0, 0.06, -0.11);
+  g.add(box, c1, c2, handle);
+  return g;
+}
 
 /** Puerta metálica de salida con el cartel verde encima. */
-export function makeExitDoor(): THREE.Group {
+export function makeExitDoor(label = 'SALIDA'): THREE.Group {
+  const signTex = textTexture(label, '#8dff9b', '#06200b', 512, 64);
   const group = new THREE.Group();
   const frame = litMaterial({ color: 0x4a4a46 }, 0.3);
   const door = litMaterial({ color: 0x55665a }, 0.3);
@@ -283,10 +584,10 @@ export function makeExitDoor(): THREE.Group {
   bar.position.set(0, 1.0, 0.04);
   const window_ = new THREE.Mesh(new THREE.PlaneGeometry(0.25, 0.45), new THREE.MeshBasicMaterial({ color: 0x050505 }));
   window_.position.set(0, 1.6, 0.03);
-  const signBox = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.2, 0.08), litMaterial({ color: 0x222222 }, 0.3));
+  const signBox = new THREE.Mesh(new THREE.BoxGeometry(1.24, 0.2, 0.08), litMaterial({ color: 0x222222 }, 0.3));
   signBox.position.set(0, h + 0.3, 0.02);
   const sign = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.56, 0.15),
+    new THREE.PlaneGeometry(1.18, 0.15),
     new THREE.MeshBasicMaterial({ map: signTex, fog: false, color: new THREE.Color(2.2, 2.2, 2.2) }),
   );
   sign.position.set(0, h + 0.3, 0.061);

@@ -1,9 +1,12 @@
+import { ITEM_INFO, type Slot } from './inventory';
+import { ESCAPED, LEVELS } from './levels';
 import type { PlayerState } from './protocol';
-import { ESCAPED, LEVELS } from './world';
+import type { ItemKind } from './world';
 
 const $ = (id: string) => document.getElementById(id)!;
 
 export class Hud {
+  private health = $('bar-health');
   private sanity = $('bar-sanity');
   private stamina = $('bar-stamina');
   private battery = $('bar-battery');
@@ -23,10 +26,41 @@ export class Hud {
     $('hud').hidden = !visible;
   }
 
-  bars(sanity: number, stamina: number, battery: number) {
+  bars(health: number, sanity: number, stamina: number, battery: number, exhausted: boolean) {
+    this.health.style.width = `${Math.max(0, health)}%`;
     this.sanity.style.width = `${sanity}%`;
     this.stamina.style.width = `${stamina}%`;
+    this.stamina.classList.toggle('exhausted', exhausted);
     this.battery.style.width = `${battery}%`;
+  }
+
+  setInventory(slots: (Slot | null)[], selected: number) {
+    const bar = $('hotbar');
+    bar.replaceChildren(
+      ...slots.map((s, i) => {
+        const el = document.createElement('div');
+        el.className = 'slot' + (i === selected ? ' selected' : '');
+        const key = document.createElement('span');
+        key.className = 'key';
+        key.textContent = String(i + 1);
+        el.append(key);
+        if (s) {
+          const img = document.createElement('img');
+          img.src = itemIcon(s.kind);
+          img.alt = ITEM_INFO[s.kind].name;
+          el.append(img);
+          if (s.count > 1) {
+            const n = document.createElement('span');
+            n.className = 'count';
+            n.textContent = String(s.count);
+            el.append(n);
+          }
+        }
+        return el;
+      }),
+    );
+    const cur = slots[selected];
+    $('item-name').textContent = cur ? `${ITEM_INFO[cur.kind].name} · clic para usar` : '';
   }
 
   setPrompt(text: string | null) {
@@ -89,4 +123,66 @@ export class Hud {
   showLock(visible: boolean) {
     this.lock.hidden = !visible;
   }
+}
+
+const icons = new Map<ItemKind, string>();
+
+/** Icono dibujado a mano para cada objeto. */
+function itemIcon(kind: ItemKind): string {
+  let url = icons.get(kind);
+  if (url) return url;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d')!;
+  g.lineJoin = 'round';
+  if (kind === 'agua') {
+    g.fillStyle = 'rgba(220, 235, 255, 0.85)';
+    g.beginPath();
+    g.roundRect(22, 18, 20, 38, 5);
+    g.fill();
+    g.fillRect(27, 10, 10, 9);
+    g.fillStyle = '#f5f5f5';
+    g.fillRect(26, 6, 12, 6);
+    g.fillStyle = '#f2ead5';
+    g.fillRect(22, 30, 20, 13);
+    g.fillStyle = '#7a5530';
+    g.fillRect(25, 34, 14, 2);
+    g.fillRect(25, 38, 10, 2);
+  } else if (kind === 'pila') {
+    for (const x of [16, 34]) {
+      g.fillStyle = '#222';
+      g.fillRect(x, 16, 14, 40);
+      g.fillStyle = '#d8a619';
+      g.fillRect(x, 16, 14, 14);
+      g.fillStyle = '#bbb';
+      g.fillRect(x + 4, 11, 6, 5);
+    }
+  } else if (kind === 'barrita') {
+    g.save();
+    g.translate(32, 32);
+    g.rotate(-0.5);
+    g.fillStyle = '#c23a1c';
+    g.fillRect(-24, -9, 48, 18);
+    g.fillStyle = '#ddd';
+    g.fillRect(-28, -8, 4, 16);
+    g.fillRect(24, -8, 4, 16);
+    g.fillStyle = '#fff';
+    g.font = 'bold 9px sans-serif';
+    g.textAlign = 'center';
+    g.fillText('ENERGÍA', 0, 3);
+    g.restore();
+  } else {
+    g.fillStyle = '#e8e4dc';
+    g.beginPath();
+    g.roundRect(10, 18, 44, 34, 5);
+    g.fill();
+    g.fillStyle = '#c41e1e';
+    g.fillRect(28, 24, 8, 22);
+    g.fillRect(21, 31, 22, 8);
+    g.fillStyle = '#444';
+    g.fillRect(24, 12, 16, 6);
+  }
+  url = c.toDataURL();
+  icons.set(kind, url);
+  return url;
 }

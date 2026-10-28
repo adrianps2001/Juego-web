@@ -38,10 +38,13 @@ function onMessage(msg: HostMessage) {
       leave('La sala está llena (máximo 4 jugadores).');
       break;
     case 'state':
-      game?.onState(msg.players, msg.entities);
+      game?.onState(msg.players, msg.entities, msg.blackout);
       break;
     case 'picked':
       game?.onPicked(msg.key, msg.by);
+      break;
+    case 'hit':
+      game?.onHit(msg.damage, msg.kind);
       break;
     case 'notice':
       if (game) hud.notice(msg.text);

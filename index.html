@@ -27,8 +27,8 @@
       <button id="menu-settings" class="secondary">Configuración</button>
       <ul class="controls">
         <li><b>WASD</b> moverse · <b>Shift</b> correr</li>
-        <li><b>F</b> linterna · <b>E</b> interactuar</li>
-        <li><b>Ratón</b> mirar · <b>Esc</b> soltar el ratón</li>
+        <li><b>Espacio</b> saltar · <b>F</b> linterna · <b>E</b> coger / abrir</li>
+        <li><b>1-6</b> o rueda: elegir objeto · <b>clic</b> usarlo · <b>Esc</b> pausa</li>
       </ul>
     </div>
 
@@ -41,9 +41,14 @@
       </div>
       <div id="notices"></div>
       <div class="bars">
+        <div class="bar"><span>Salud</span><div><i id="bar-health"></i></div></div>
         <div class="bar"><span>Cordura</span><div><i id="bar-sanity"></i></div></div>
         <div class="bar"><span>Energía</span><div><i id="bar-stamina"></i></div></div>
         <div class="bar"><span>Linterna</span><div><i id="bar-battery"></i></div></div>
+      </div>
+      <div id="inventory">
+        <div id="item-name"></div>
+        <div id="hotbar"></div>
       </div>
       <div id="prompt" hidden></div>
       <div id="crosshair"></div>

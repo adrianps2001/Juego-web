@@ -207,43 +207,187 @@ const pipeCeiling: Painter = (ctx, w, h) => {
   blotches(ctx, w, h, 'rgba(10, 5, 0, 0.45)', 6, w / 3);
 };
 
+// ---- variantes extra ----
+
+const oldWallpaper: Painter = (ctx, w, h) => {
+  wallpaper(ctx, w, h);
+  ctx.fillStyle = 'rgba(70, 55, 20, 0.28)';
+  ctx.fillRect(0, 0, w, h);
+  blotches(ctx, w, h, 'rgba(60, 50, 15, 0.35)', 10, w / 4);
+  blotches(ctx, w, h, 'rgba(50, 60, 30, 0.25)', 5, w / 6); // moho
+  // papel despegado: tiras más claras con borde oscuro
+  for (let i = 0; i < 3; i++) {
+    const x = Math.random() * w;
+    const y = Math.random() * h * 0.6;
+    const pw = 15 + Math.random() * 30;
+    const ph = 40 + Math.random() * 120;
+    ctx.fillStyle = 'rgba(205, 190, 140, 0.9)';
+    ctx.fillRect(x, y, pw, ph);
+    ctx.fillStyle = 'rgba(40, 30, 10, 0.5)';
+    ctx.fillRect(x, y + ph, pw, 3);
+    ctx.fillRect(x + pw, y, 2, ph);
+  }
+};
+
+const officePaint: Painter = (ctx, w, h) => {
+  ctx.fillStyle = '#c9bf9c';
+  ctx.fillRect(0, 0, w, h);
+  noise(ctx, w, h, 0.07, 0.8);
+  blotches(ctx, w, h, 'rgba(110, 95, 60, 0.15)', 6, w / 4);
+  // media pared inferior más oscura con moldura
+  ctx.fillStyle = '#8f8467';
+  ctx.fillRect(0, h * 0.62, w, h * 0.38);
+  ctx.fillStyle = '#5e5440';
+  ctx.fillRect(0, h * 0.61, w, 5);
+  noise(ctx, w, h * 0.38, 0.1, 0.8);
+  ctx.fillStyle = '#3d362a';
+  ctx.fillRect(0, h - h * 0.04, w, h * 0.04);
+};
+
+const wetCarpet: Painter = (ctx, w, h) => {
+  carpet(ctx, w, h);
+  ctx.fillStyle = 'rgba(40, 32, 12, 0.35)';
+  ctx.fillRect(0, 0, w, h);
+  blotches(ctx, w, h, 'rgba(20, 18, 8, 0.4)', 8, w / 3);
+};
+
+const linoleum: Painter = (ctx, w, h) => {
+  const n = 4;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      ctx.fillStyle = (i + j) % 2 ? '#a59d86' : '#b8b09a';
+      ctx.fillRect((i * w) / n, (j * h) / n, w / n, h / n);
+    }
+  }
+  noise(ctx, w, h, 0.12, 0.8);
+  blotches(ctx, w, h, 'rgba(60, 50, 30, 0.2)', 5, w / 4);
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  for (let i = 0; i <= n; i++) {
+    ctx.fillRect((i * w) / n, 0, 1.5, h);
+    ctx.fillRect(0, (i * h) / n, w, 1.5);
+  }
+};
+
+const brokenTiles: Painter = (ctx, w, h) => {
+  ceilingTiles(ctx, w, h);
+  blotches(ctx, w, h, 'rgba(110, 80, 20, 0.35)', 6, w / 3);
+  blotches(ctx, w, h, 'rgba(60, 50, 20, 0.3)', 3, w / 5);
+  // una placa combada y más oscura
+  ctx.fillStyle = 'rgba(80, 65, 30, 0.25)';
+  ctx.fillRect(w / 2 + 4, 4, w / 2 - 8, h / 2 - 8);
+};
+
+const greenOffice: Painter = (ctx, w, h) => {
+  ctx.fillStyle = '#b7b9b0';
+  ctx.fillRect(0, 0, w, h);
+  noise(ctx, w, h, 0.12, 1);
+  ctx.fillStyle = '#4f6b58';
+  ctx.fillRect(0, h * 0.55, w, h * 0.45);
+  noise(ctx, w, h * 0.45, 0.15, 1);
+  blotches(ctx, w, h, 'rgba(30, 40, 30, 0.25)', 8, w / 4);
+  ctx.fillStyle = '#2c3b31';
+  ctx.fillRect(0, h * 0.55, w, 4);
+};
+
+const dirtyConcrete: Painter = (ctx, w, h) => {
+  concreteWall(ctx, w, h);
+  ctx.fillStyle = 'rgba(30, 25, 15, 0.3)';
+  ctx.fillRect(0, 0, w, h);
+  blotches(ctx, w, h, 'rgba(20, 15, 5, 0.4)', 10, w / 3);
+  // marca de agua: hasta donde llegó la inundación
+  ctx.fillStyle = 'rgba(25, 30, 25, 0.4)';
+  ctx.fillRect(0, h * 0.7, w, h * 0.3);
+};
+
+const wetConcrete: Painter = (ctx, w, h) => {
+  concreteFloor(ctx, w, h);
+  ctx.fillStyle = 'rgba(10, 18, 25, 0.35)';
+  ctx.fillRect(0, 0, w, h);
+  blotches(ctx, w, h, 'rgba(120, 140, 160, 0.12)', 6, w / 3); // reflejos
+};
+
+const paintedFloor: Painter = (ctx, w, h) => {
+  ctx.fillStyle = '#5a5f5c';
+  ctx.fillRect(0, 0, w, h);
+  noise(ctx, w, h, 0.16, 1);
+  ctx.fillStyle = 'rgba(214, 180, 40, 0.75)';
+  ctx.fillRect(0, h * 0.45, w, h * 0.06);
+  noise(ctx, w, h, 0.1, 0.5);
+};
+
+const beamCeiling: Painter = (ctx, w, h) => {
+  concreteCeiling(ctx, w, h);
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(0, h * 0.42, w, h * 0.16);
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillRect(0, h * 0.42, w, 3);
+};
+
+const rustMetal: Painter = (ctx, w, h) => {
+  ctx.fillStyle = '#4b3a2c';
+  ctx.fillRect(0, 0, w, h);
+  noise(ctx, w, h, 0.25, 1);
+  blotches(ctx, w, h, 'rgba(120, 55, 15, 0.45)', 12, w / 4);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  for (let x = 0; x < w; x += w / 2) ctx.fillRect(x, 0, 3, h);
+  for (let y = 0; y < h; y += h / 4) ctx.fillRect(0, y, w, 3);
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  for (let x = 6; x < w; x += w / 2) for (let y = 6; y < h; y += h / 4) {
+    ctx.beginPath();
+    ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+};
+
+/** Mitad superior de una textura de pared, estirada (sin zócalo ni franjas). */
+export function upperHalf(tex: THREE.Texture): THREE.CanvasTexture {
+  const src = tex.image as HTMLCanvasElement;
+  return canvasTexture(src.width, src.height, (ctx, w, h) => ctx.drawImage(src, 0, 0, w, h / 2, 0, 0, w, h));
+}
+
 export interface ThemeTextures {
-  wall: THREE.Texture;
-  floor: THREE.Texture;
-  ceiling: THREE.Texture;
+  walls: THREE.Texture[];
+  floors: THREE.Texture[];
+  ceils: THREE.Texture[];
   wallScale: number; // metros de ancho que cubre la textura de pared
+  wallHeight: number; // metros de alto (el zócalo queda abajo)
   floorScale: number;
-  ceilingScale: number;
+  ceilScale: number;
 }
 
 export function themeTextures(theme: Theme): ThemeTextures {
+  const wall = (p: Painter) => canvasTexture(256, 512, p);
+  const sq = (p: Painter) => canvasTexture(256, 256, p);
   switch (theme) {
     case 'lobby':
       return {
-        wall: canvasTexture(256, 512, wallpaper),
-        floor: canvasTexture(256, 256, carpet),
-        ceiling: canvasTexture(256, 256, ceilingTiles),
+        walls: [wall(wallpaper), wall(oldWallpaper), wall(officePaint)],
+        floors: [sq(carpet), sq(wetCarpet), sq(linoleum)],
+        ceils: [sq(ceilingTiles), sq(brokenTiles)],
         wallScale: 1.4,
+        wallHeight: 2.8,
         floorScale: 2.5,
-        ceilingScale: 1.2,
+        ceilScale: 1.2,
       };
     case 'habitable':
       return {
-        wall: canvasTexture(256, 512, concreteWall),
-        floor: canvasTexture(256, 256, concreteFloor),
-        ceiling: canvasTexture(256, 256, concreteCeiling),
+        walls: [wall(concreteWall), wall(greenOffice), wall(dirtyConcrete)],
+        floors: [sq(concreteFloor), sq(wetConcrete), sq(paintedFloor)],
+        ceils: [sq(beamCeiling)],
         wallScale: 2.4,
+        wallHeight: 3,
         floorScale: 5,
-        ceilingScale: 4,
+        ceilScale: 4,
       };
     case 'pipes':
       return {
-        wall: canvasTexture(256, 512, grimeWall),
-        floor: canvasTexture(256, 256, grate),
-        ceiling: canvasTexture(256, 256, pipeCeiling),
+        walls: [wall(grimeWall), wall(rustMetal)],
+        floors: [sq(grate), sq(concreteFloor)],
+        ceils: [sq(pipeCeiling)],
         wallScale: 1.6,
+        wallHeight: 2.6,
         floorScale: 1.2,
-        ceilingScale: 3,
+        ceilScale: 3,
       };
   }
 }

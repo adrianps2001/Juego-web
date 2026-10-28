@@ -69,6 +69,7 @@ export function hostRoom(name: string, onMessage: (msg: HostMessage) => void): P
         },
       });
       authority = auth;
+      if (import.meta.env.DEV) Object.assign(window, { autoridad: auth }); // para depurar desde la consola
       resolve({
         roomCode,
         isHost: true,
