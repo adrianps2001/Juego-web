@@ -1,0 +1,22 @@
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; overflow: hidden; font-family: system-ui, sans-serif; color: #fff; background: #1b1f24; }
+#game { position: fixed; inset: 0; }
+.panel { background: rgba(20, 24, 30, 0.85); border-radius: 12px; padding: 20px; }
+#menu { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(340px, calc(100% - 32px)); display: flex; flex-direction: column; gap: 12px; }
+#menu h1 { margin: 0 0 4px; font-size: 1.6rem; text-align: center; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; }
+input { padding: 10px; border-radius: 8px; border: 1px solid #444; background: #0f1215; color: #fff; font-size: 1rem; }
+#code { text-transform: uppercase; letter-spacing: 3px; flex: 1; min-width: 0; }
+button { padding: 10px 14px; border: 0; border-radius: 8px; background: #3a7bd5; color: #fff; font-size: 1rem; cursor: pointer; }
+button:hover { background: #4a8be5; }
+button:disabled { opacity: 0.5; cursor: default; }
+.row { display: flex; gap: 8px; }
+.sep { text-align: center; opacity: 0.6; font-size: 0.85rem; }
+#status { min-height: 1.2em; margin: 0; color: #ffb4a8; font-size: 0.9rem; }
+#hud .small { position: fixed; top: 12px; left: 12px; padding: 12px; font-size: 0.9rem; }
+#hud .small button { padding: 4px 8px; font-size: 0.8rem; }
+#players { list-style: none; padding: 0; margin: 8px 0; }
+#players li { display: flex; align-items: center; gap: 6px; }
+#players .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.help { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.5); padding: 6px 12px; border-radius: 8px; font-size: 0.8rem; text-align: center; width: max-content; max-width: calc(100% - 32px); }
