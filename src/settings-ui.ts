@@ -25,6 +25,8 @@ export function initSettingsUi() {
   invert.addEventListener('change', () => updateSettings({ invertY: invert.checked }));
   const fps = $<HTMLInputElement>('set-fps');
   fps.addEventListener('change', () => updateSettings({ showFps: fps.checked }));
+  const screamers = $<HTMLInputElement>('set-screamers');
+  screamers.addEventListener('change', () => updateSettings({ screamers: screamers.checked }));
 
   onSettings((s) => {
     for (const r of ranges) {
@@ -33,6 +35,7 @@ export function initSettingsUi() {
     }
     invert.checked = s.invertY;
     fps.checked = s.showFps;
+    screamers.checked = s.screamers;
   });
 
   $('settings-reset').addEventListener('click', () => updateSettings({ ...DEFAULTS }));

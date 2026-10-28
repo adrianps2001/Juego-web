@@ -10,6 +10,7 @@ export interface Settings {
   fov: number;
   brightness: number;
   showFps: boolean;
+  screamers: boolean; // sustos a pantalla completa
 }
 
 export const DEFAULTS: Settings = {
@@ -21,6 +22,7 @@ export const DEFAULTS: Settings = {
   fov: 75,
   brightness: 1,
   showFps: false,
+  screamers: true,
 };
 
 const KEY = 'ajustes';

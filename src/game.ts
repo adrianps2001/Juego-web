@@ -6,6 +6,7 @@ import { ESCAPED, LEVELS, getMap } from './levels';
 import { MAX_TORCHES, lightUniforms } from './lighting';
 import { Anim, makeBattery, makeBottle, makeCan, makeEnemy, makeEnergyBar, makeFlareStick, makeHumanoid, makeLitFlare, makeMedkit, makeViewTorch, type EnemyModel, type Humanoid } from './models';
 import { Post } from './post';
+import { Screamer, type ScreamerKind } from './screamer';
 import type { ClientMessage, EntityState, Flare, HostMessage, PlayerState, Pose } from './protocol';
 import { getSettings, onSettings, type Settings } from './settings';
 import type { Sound } from './sound';
@@ -99,6 +100,9 @@ export class Game {
   private bumpCool = 0;
   private windowCool = 20;
   private humTimer = 30;
+  private screamer = new Screamer();
+  private screamCool = 0;
+  private phantomCool = 120;
   private warnCool = 0;
   private zoneNow = '';
   private prevX = 0;
@@ -321,6 +325,7 @@ export class Game {
     this.shake = 0.4;
     this.sound.hurt(kind);
     this.hud.notice(HIT_TEXT[kind]);
+    this.scare(kind === 'smiler' || kind === 'hound' || kind === 'skinstealer' ? kind : 'face');
     if (this.health <= 0) this.die(kind);
   }
 
@@ -649,7 +654,7 @@ export class Game {
     this.damage = 1;
     this.pose.dead = true;
     this.setLight(false);
-    this.sound.scream();
+    if (!this.scare(reason === 'smiler' || reason === 'hound' || reason === 'skinstealer' ? reason : 'face')) this.sound.scream();
     this.hud.setPrompt(null);
     this.hud.showDeath(mine);
     this.send({ t: 'died', reason: theirs });
@@ -993,9 +998,16 @@ export class Game {
       w.face.visible = true;
       w.face.userData.left = 0.35;
       this.windowCool = 45;
-      this.sound.sting();
+      if (!this.scare('face', true)) this.sound.sting();
       this.sanity = Math.max(0, this.sanity - 12);
       this.shake = 0.25;
+    }
+    // alucinaciones: a oscuras y con poca cordura, a veces aparece una cara
+    this.phantomCool -= dt;
+    const dark = isDarkAt(map, this.pose.x, this.pose.z) || lightUniforms.uBlackout.value > 0.5;
+    if (this.phantomCool <= 0 && dark && this.sanity < 50 && Math.random() < dt * (0.02 + (50 - this.sanity) / 1500)) {
+      this.phantomCool = 90 + Math.random() * 90;
+      if (this.scare(Math.random() < 0.5 ? 'face' : 'smiler', true)) this.sanity = Math.max(0, this.sanity - 8);
     }
     // Nivel 0: el zumbido sube de golpe de vez en cuando
     if (map.def.isolation) {
@@ -1005,6 +1017,19 @@ export class Game {
         this.sound.humSpike();
       }
     }
+  }
+
+  /**
+   * Screamer a pantalla completa. No se repite seguido (si te muerden varias
+   * veces seguidas solo salta una vez). Devuelve si ha saltado.
+   */
+  private scare(kind: ScreamerKind, minor = false): boolean {
+    if (!this.settings.screamers || this.screamCool > performance.now() || this.screamer.active) return false;
+    this.screamCool = performance.now() + (minor ? 20000 : 6000);
+    this.screamer.play(kind);
+    this.sound.screamer();
+    this.shake = 0.6;
+    return true;
   }
 
   /** Caer por un agujero: se atraviesa el suelo hacia el nivel siguiente. */

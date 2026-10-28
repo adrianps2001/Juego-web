@@ -89,3 +89,5 @@ button.secondary:hover { background: #4d4630; }
 #note .paper { background: #ece4cc; color: #2a2418; max-width: min(460px, calc(100% - 32px)); padding: 22px 26px; border-radius: 3px; box-shadow: 0 8px 30px #000; text-align: left; transform: rotate(-1deg); font-family: 'Comic Sans MS', 'Segoe Print', cursive; }
 #note h3 { margin: 0 0 10px; font-size: 1.1rem; }
 #note p { white-space: pre-line; line-height: 1.45; margin: 0 0 10px; }
+#screamer { position: fixed; inset: 0; z-index: 20; background: #000; pointer-events: none; }
+#screamer canvas { width: 100%; height: 100%; object-fit: cover; image-rendering: pixelated; }

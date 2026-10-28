@@ -38,6 +38,9 @@ lore de la wiki de los Backrooms:
 - **Linterna**: gasta **pilas**, y atrae a los Smilers.
 - **Inventario**: 6 huecos (hasta 5 objetos iguales en cada uno).
 - **Notas**: hay notas de otros exploradores con pistas (`E` para leerlas).
+- **Screamers**: si una criatura te alcanza, si te asomas a la ventana
+  equivocada o si deambulas a oscuras con poca cordura, una cara te salta a la
+  pantalla con un chillido agudo. Se pueden desactivar en la configuración.
 
 ## Controles
 
@@ -146,6 +149,7 @@ src/
 ├── settings-ui.ts # panel de configuración
 ├── textures.ts   # texturas dibujadas por código
 ├── post.ts       # postprocesado
+├── screamer.ts   # sustos a pantalla completa
 ├── game.ts       # bucle del juego en primera persona
 ├── authority.ts  # lógica del anfitrión (criaturas, apagones, objetos)
 ├── net.ts        # conexión P2P
