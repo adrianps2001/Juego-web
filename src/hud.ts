@@ -95,6 +95,14 @@ export class Hud {
     return !this.note.hidden;
   }
 
+  /** Fundido a negro muy corto (al pasar de nivel). */
+  fade() {
+    const el = $('fade');
+    el.classList.remove('go');
+    void el.offsetWidth;
+    el.classList.add('go');
+  }
+
   showFps(visible: boolean) {
     this.fps.hidden = !visible;
   }

@@ -1,5 +1,8 @@
 // El mundo como una rejilla 2,5D: cada casilla de 0,5 m tiene su altura de
 // suelo y de techo, y puede ser pared, obstáculo, agujero, rampa o escalera.
+// Un nivel puede tener varias plantas (rejillas apiladas): en una columna caben
+// una sala abajo y otra encima. Los huecos del suelo de una planta dejan caer
+// a la de abajo, y las escaleras las unen.
 // No depende de Three.js: el anfitrión también lo usa para mover a los
 // enemigos. Los niveles se diseñan en levels.ts con el constructor de abajo.
 
@@ -15,6 +18,8 @@ export const F_NOLAMP = 16; // zona a oscuras: no se ponen fluorescentes
 export const F_WET = 32; // charco
 export const F_RED = 64; // Habitación Roja
 export const F_DEEP = 128; // fluido hasta los tobillos (cuesta andar)
+export const F_HOLE = 256; // hueco en el suelo: se cae a la planta de abajo
+export const F_SHAFT = 512; // debajo de un hueco: el techo es el de la planta de arriba
 
 export type Theme = 'lobby' | 'habitable' | 'pipes';
 
@@ -40,6 +45,7 @@ export type ItemKind = 'agua' | 'pila' | 'barrita' | 'vendas' | 'lata' | 'bengal
 export type EntityKind = 'figure' | 'smiler' | 'hound' | 'faceling' | 'skinstealer' | 'clump' | 'duller';
 
 export interface Item {
+  s?: number; // planta (0 = la de abajo)
   key: string;
   kind: ItemKind;
   x: number;
@@ -47,6 +53,7 @@ export interface Item {
   z: number;
 }
 export interface Crate {
+  s?: number; // planta (0 = la de abajo)
   key: string;
   x: number;
   y: number;
@@ -58,6 +65,7 @@ export interface Crate {
 
 /** Nota que se puede leer. */
 export interface Note {
+  s?: number; // planta (0 = la de abajo)
   key: string;
   x: number;
   y: number;
@@ -71,6 +79,7 @@ export interface Note {
 
 /** Puerta: cerrada con llave, o que lleva a otro sitio del mapa. */
 export interface Door {
+  s?: number; // planta (0 = la de abajo)
   key: string;
   x: number;
   y: number;
@@ -78,7 +87,7 @@ export interface Door {
   ry: number; // hacia dónde mira la puerta (su cara "de este lado")
   look: 'steel' | 'double' | 'wood' | 'white';
   locked: boolean;
-  to?: { x: number; z: number; ry: number }; // destino al cruzarla
+  to?: { x: number; z: number; ry: number; s?: number }; // destino al cruzarla
   window?: boolean;
   sign?: string; // cartel encima (p. ej. SALIDA en verde)
   label?: string; // texto al interactuar
@@ -86,6 +95,7 @@ export interface Door {
 
 /** Bloque de pared que aparece o desaparece cuando nadie lo mira. */
 export interface Shift {
+  s?: number; // planta (0 = la de abajo)
   id: number;
   x: number;
   z: number;
@@ -98,6 +108,7 @@ export interface Shift {
 
 /** Zona que se repite: al salir por un extremo se aparece por el otro. */
 export interface Loop {
+  s?: number; // planta (0 = la de abajo)
   x0: number;
   x1: number;
   z0: number;
@@ -109,6 +120,7 @@ export interface Loop {
 
 /** Personaje que no ataca (patrulla de la M.E.G., trabajadores sombra). */
 export interface Npc {
+  s?: number; // planta (0 = la de abajo)
   kind: 'meg' | 'worker';
   x: number;
   z: number;
@@ -128,6 +140,7 @@ export interface Zone {
 
 /** Panel de pared en diagonal (giros de 45°). */
 export interface Diag {
+  s?: number; // planta (0 = la de abajo)
   x: number;
   z: number;
   ry: number;
@@ -135,13 +148,16 @@ export interface Diag {
   wall: number;
 }
 export interface Exit {
+  s?: number; // planta (0 = la de abajo)
   x: number;
   y: number;
   z: number;
   ry: number;
   label: string;
+  walk?: boolean; // basta con llegar (sin puerta)
 }
 export interface Lair {
+  s?: number; // planta (0 = la de abajo)
   kind: EntityKind;
   x: number;
   z: number;
@@ -149,6 +165,7 @@ export interface Lair {
   lines?: string[];
 }
 export interface Lamp {
+  s?: number; // planta (0 = la de abajo)
   x: number;
   y: number;
   z: number;
@@ -157,6 +174,7 @@ export interface Lamp {
   forced?: boolean; // puesto a mano (se respeta aunque la zona sea oscura)
 }
 export interface Prop {
+  s?: number; // planta (0 = la de abajo)
   type: string;
   x: number;
   y: number;
@@ -177,6 +195,7 @@ export interface Glitch {
   noclip: boolean;
 }
 export interface Vent {
+  s?: number; // planta (0 = la de abajo)
   x: number;
   y: number;
   z: number;
@@ -189,7 +208,7 @@ export interface LevelMap {
   def: LevelDef;
   w: number;
   h: number;
-  flags: Uint8Array;
+  flags: Uint16Array;
   floor: Float32Array;
   ceil: Float32Array;
   rampDir: Int8Array; // -1 sin rampa; 0 sube hacia +x, 1 hacia -x, 2 hacia +z, 3 hacia -z
@@ -197,7 +216,7 @@ export interface LevelMap {
   wallMat: Uint8Array;
   floorMat: Uint8Array;
   ceilMat: Uint8Array;
-  spawn: { x: number; y: number; z: number };
+  spawn: { x: number; y: number; z: number; s?: number; ry?: number };
   items: Item[];
   crates: Crate[];
   exits: Exit[];
@@ -214,15 +233,23 @@ export interface LevelMap {
   zones: Zone[];
   diags: Diag[];
   /** Ventanas peligrosas al final de algunos túneles. */
-  windows: { x: number; y: number; z: number; ry: number }[];
+  windows: { x: number; y: number; z: number; ry: number; s?: number }[];
   /** Puntos donde viven bichos ambientales (polillas, ratas). */
-  critters: { kind: 'moth' | 'rat'; x: number; z: number }[];
+  critters: { kind: 'moth' | 'rat'; x: number; z: number; s?: number }[];
   /** Bloque de "cambio periférico" al que pertenece cada casilla (-1 = ninguno). */
   shiftCell: Int16Array;
   /** Luz por casilla: [fija, parpadeante] intercalados. */
   light: Float32Array;
   /** 1 si la casilla está a oscuras. */
   dark: Uint8Array;
+  /** En las casillas F_SHAFT: altura del techo original (donde empieza el forjado de arriba). */
+  slab: Float32Array;
+  /** Número de esta planta. */
+  storey: number;
+  /** Todas las plantas del nivel (comparten las listas de objetos). storeys[0] es el nivel. */
+  storeys: LevelMap[];
+  /** Alturas a partir de las cuales empieza cada planta superior (para la luz). */
+  splits: number[];
 }
 
 export function hash(...n: number[]): number {
@@ -255,7 +282,7 @@ export function floorAt(map: LevelMap, x: number, z: number): number {
   const cz = cellOf(z);
   if (!inside(map, cx, cz)) return 0;
   const i = cz * map.w + cx;
-  if (map.flags[i] & F_PIT) return -Infinity;
+  if (map.flags[i] & (F_PIT | F_HOLE)) return -Infinity;
   const dir = map.rampDir[i];
   if (dir < 0) return map.floor[i];
   const fx = x / CELL - cx;
@@ -282,7 +309,7 @@ export function blocksAt(map: LevelMap, cx: number, cz: number, y: number, heigh
   const i = cz * map.w + cx;
   const f = map.flags[i];
   if (f & (F_SOLID | F_BLOCK)) return true;
-  if (f & F_PIT) return false;
+  if (f & (F_PIT | F_HOLE)) return false;
   if (cellTop(map, cx, cz) > y + STEP) return true;
   return map.ceil[i] < Math.max(y, map.floor[i]) + height;
 }
@@ -341,7 +368,7 @@ export function lineOfSight(map: LevelMap, x0: number, y0: number, z0: number, x
     if (!inside(map, cx, cz)) return false;
     const i = cz * map.w + cx;
     if (map.flags[i] & F_SOLID) return false;
-    if (!(map.flags[i] & F_PIT) && y < map.floor[i] - 0.05) return false;
+    if (!(map.flags[i] & (F_PIT | F_HOLE)) && y < map.floor[i] - 0.05) return false;
     if (y > map.ceil[i]) return false;
   }
   return true;
@@ -349,7 +376,110 @@ export function lineOfSight(map: LevelMap, x0: number, y0: number, z0: number, x
 
 /** ¿Puede un enemigo pisar esta casilla? */
 export function walkable(map: LevelMap, i: number): boolean {
-  return (map.flags[i] & (F_SOLID | F_BLOCK | F_PIT)) === 0;
+  return (map.flags[i] & (F_SOLID | F_BLOCK | F_PIT | F_HOLE)) === 0;
+}
+
+// ---------------------------------------------------------------------------
+// Consultas sobre todas las plantas (para el jugador)
+// ---------------------------------------------------------------------------
+
+/** ¿Cabe alguien con los pies a la altura y en esta casilla de esta planta? */
+function passable(g: LevelMap, cx: number, cz: number, y: number, height: number): boolean {
+  if (!inside(g, cx, cz)) return false;
+  const i = cz * g.w + cx;
+  const f = g.flags[i];
+  if (f & (F_SOLID | F_BLOCK)) return false;
+  if (f & F_PIT) return g.ceil[i] >= y + height;
+  // hueco: es aire desde el forjado (guardado en floor) hasta el techo
+  if (f & F_HOLE) return g.ceil[i] >= y + height && y >= g.floor[i] - 0.05;
+  // en un pozo, por encima del forjado manda la planta de arriba (barandillas, etc.)
+  if (f & F_SHAFT && y > g.slab[i] - 0.05) return false;
+  if (cellTop(g, cx, cz) > y + STEP) return false;
+  return g.ceil[i] >= Math.max(y, g.floor[i]) + height;
+}
+
+/** ¿Bloquea esta columna a alguien con los pies a la altura y? (en todas las plantas) */
+export function blocksAll(map: LevelMap, cx: number, cz: number, y: number, height = PLAYER_HEIGHT): boolean {
+  for (const g of map.storeys) if (passable(g, cx, cz, y, height)) return false;
+  return true;
+}
+
+/** Suelo más alto que se puede pisar desde la altura y (cae por los huecos). */
+export function floorUnder(map: LevelMap, x: number, z: number, y = Infinity): number {
+  let best = -Infinity;
+  for (const g of map.storeys) {
+    const cx = cellOf(x);
+    const cz = cellOf(z);
+    if (!inside(g, cx, cz) || g.flags[cz * g.w + cx] & F_SOLID) continue;
+    const f = floorAt(g, x, z);
+    if (f <= y + STEP + 0.05 && f > best) best = f;
+  }
+  if (best === -Infinity && map.storeys.length === 1) return floorAt(map, x, z);
+  return best;
+}
+
+/** Planta en la que está alguien con los pies a la altura y. */
+export function gridAt(map: LevelMap, x: number, z: number, y = Infinity): LevelMap {
+  if (map.storeys.length === 1) return map;
+  let best: LevelMap | null = null;
+  let bestF = -Infinity;
+  for (const g of map.storeys) {
+    const cx = cellOf(x);
+    const cz = cellOf(z);
+    if (!inside(g, cx, cz) || g.flags[cz * g.w + cx] & F_SOLID) continue;
+    const f = floorAt(g, x, z);
+    if (f <= y + STEP + 0.05 && f > bestF) {
+      bestF = f;
+      best = g;
+    }
+  }
+  if (best) return best;
+  let k = 0;
+  for (const s of map.splits) if (y >= s) k++;
+  return map.storeys[Math.min(k, map.storeys.length - 1)];
+}
+
+/** Techo encima de alguien con los pies a la altura y. */
+export function ceilOver(map: LevelMap, x: number, z: number, y = Infinity): number {
+  return ceilAt(gridAt(map, x, z, y), x, z);
+}
+
+export function isDarkAll(map: LevelMap, x: number, z: number, y = Infinity): boolean {
+  return isDarkAt(gridAt(map, x, z, y), x, z);
+}
+
+/** Como collide, pero teniendo en cuenta todas las plantas. */
+export function collideAll(map: LevelMap, x: number, z: number, y: number, r: number, height = PLAYER_HEIGHT) {
+  const cx = cellOf(x);
+  const cz = cellOf(z);
+  for (let iter = 0; iter < 3; iter++) {
+    for (let j = cz - 1; j <= cz + 1; j++) {
+      for (let i = cx - 1; i <= cx + 1; i++) {
+        if (!blocksAll(map, i, j, y, height)) continue;
+        const x0 = i * CELL;
+        const x1 = x0 + CELL;
+        const z0 = j * CELL;
+        const z1 = z0 + CELL;
+        const px = Math.min(Math.max(x, x0), x1);
+        const pz = Math.min(Math.max(z, z0), z1);
+        const dx = x - px;
+        const dz = z - pz;
+        const d2 = dx * dx + dz * dz;
+        if (d2 >= r * r) continue;
+        if (d2 > 1e-8) {
+          const d = Math.sqrt(d2);
+          x += (dx / d) * (r - d);
+          z += (dz / d) * (r - d);
+        } else {
+          const pushes = [x0 - r - x, x1 + r - x, z0 - r - z, z1 + r - z];
+          const k = pushes.reduce((best, v, n) => (Math.abs(v) < Math.abs(pushes[best]) ? n : best), 0);
+          if (k < 2) x += pushes[k];
+          else z += pushes[k];
+        }
+      }
+    }
+  }
+  return { x, z };
 }
 
 const NEIGHBORS = [
@@ -410,9 +540,11 @@ export interface AreaOpts {
 }
 
 export class Builder {
-  readonly map: LevelMap;
+  private grids: LevelMap[] = [];
+  private cur = 0;
   private lampCandidates: Lamp[] = [];
   private itemCount = 0;
+  private holes: { s: number; x: number; z: number; w: number; d: number }[] = [];
 
   constructor(
     level: number,
@@ -424,12 +556,12 @@ export class Builder {
     const w = Math.round(wMeters / CELL);
     const h = Math.round(hMeters / CELL);
     const n = w * h;
-    this.map = {
+    const first: LevelMap = {
       level,
       def,
       w,
       h,
-      flags: new Uint8Array(n).fill(F_SOLID),
+      flags: new Uint16Array(n).fill(F_SOLID),
       floor: new Float32Array(n),
       ceil: new Float32Array(n).fill(defaults.ceil),
       rampDir: new Int8Array(n).fill(-1),
@@ -458,7 +590,50 @@ export class Builder {
       shiftCell: new Int16Array(n).fill(-1),
       light: new Float32Array(n * 2),
       dark: new Uint8Array(n),
+      slab: new Float32Array(n),
+      storey: 0,
+      storeys: [],
+      splits: [],
     };
+    first.storeys = [first];
+    this.grids = [first];
+  }
+
+  /** La planta en la que se está construyendo. */
+  get map(): LevelMap {
+    return this.grids[this.cur];
+  }
+
+  /**
+   * Pasa a construir en otra planta (la crea si no existe). Las plantas
+   * comparten las listas de objetos; cada una tiene su rejilla.
+   */
+  storey(k: number, ceil = this.defaults.ceil): this {
+    const first = this.grids[0];
+    while (this.grids.length <= k) {
+      const n = first.w * first.h;
+      const g: LevelMap = {
+        ...first,
+        flags: new Uint16Array(n).fill(F_SOLID),
+        floor: new Float32Array(n),
+        ceil: new Float32Array(n).fill(ceil),
+        rampDir: new Int8Array(n).fill(-1),
+        rampRise: new Float32Array(n),
+        wallMat: new Uint8Array(n),
+        floorMat: new Uint8Array(n),
+        ceilMat: new Uint8Array(n),
+        shiftCell: new Int16Array(n).fill(-1),
+        light: new Float32Array(n * 2),
+        dark: new Uint8Array(n),
+        slab: new Float32Array(n),
+        storey: this.grids.length,
+      };
+      this.grids.push(g);
+      first.storeys.push(g);
+    }
+    for (const g of this.grids) g.storeys = first.storeys;
+    this.cur = k;
+    return this;
   }
 
   private each(x: number, z: number, w: number, d: number, fn: (i: number, cx: number, cz: number) => void) {
@@ -493,8 +668,8 @@ export class Builder {
         for (let b = 0; b < nz; b++) {
           const lx = x + ((a + 0.5) * w) / nx;
           const lz = z + ((b + 0.5) * d) / nz;
-          const h = hash(m.level, Math.round(lx * 10), Math.round(lz * 10));
-          this.lampCandidates.push({ x: lx, y: ceil, z: lz, flicker: h < m.def.flickerChance, broken: false });
+          const h = hash(m.level, Math.round(lx * 10), Math.round(lz * 10), this.cur);
+          this.lampCandidates.push({ x: lx, y: ceil, z: lz, flicker: h < m.def.flickerChance, broken: false, s: this.cur });
         }
       }
     }
@@ -529,8 +704,20 @@ export class Builder {
     return this;
   }
 
+  /** Agujero sin fondo (caer es morir en el Nivel 0). */
   pit(x: number, z: number, w: number, d: number): this {
     this.each(x, z, w, d, (i) => (this.map.flags[i] = (this.map.flags[i] & ~F_SOLID) | F_PIT | F_NOLAMP));
+    return this;
+  }
+
+  /**
+   * Hueco en el suelo de esta planta: se cae a la planta de abajo (que tiene
+   * que estar abierta debajo). También sirve de hueco de escalera.
+   */
+  hole(x: number, z: number, w: number, d: number): this {
+    if (this.cur === 0) throw new Error('hole() solo en plantas superiores');
+    this.each(x, z, w, d, (i) => (this.map.flags[i] = (this.map.flags[i] & ~F_SOLID) | F_HOLE | F_NOLAMP));
+    this.holes.push({ s: this.cur, x, z, w, d });
     return this;
   }
 
@@ -560,18 +747,20 @@ export class Builder {
   }
 
   lamp(x: number, z: number, opts: { flicker?: boolean; broken?: boolean; y?: number } = {}): this {
-    this.lampCandidates.push({ x, y: opts.y ?? ceilAt(this.map, x, z), z, flicker: !!opts.flicker, broken: !!opts.broken, forced: true });
+    this.lampCandidates.push({ x, y: opts.y ?? NaN, z, flicker: !!opts.flicker, broken: !!opts.broken, forced: true, s: this.cur });
     return this;
   }
 
-  spawn(x: number, z: number): this {
-    this.map.spawn = { x, y: 0, z };
+  /** Donde se aparece al entrar al nivel; ry = hacia dónde se mira (como las puertas). */
+  spawn(x: number, z: number, ry?: number): this {
+    const sp = { x, y: NaN, z, s: this.cur, ry: ry === undefined ? undefined : ry + Math.PI };
+    this.grids[0].spawn = sp;
     return this;
   }
 
   /** Mueble u objeto decorativo. `solid` = tamaño del hueco que bloquea. */
   prop(type: string, x: number, z: number, ry = 0, o: { solid?: [number, number]; y?: number; w?: number; d?: number; h?: number; text?: string } = {}): this {
-    this.map.props.push({ type, x, y: o.y ?? NaN, z, ry, w: o.w, d: o.d, h: o.h, text: o.text });
+    this.map.props.push({ type, x, y: o.y ?? NaN, z, ry, w: o.w, d: o.d, h: o.h, text: o.text, s: this.cur });
     if (o.solid) {
       const [sw, sd] = Math.abs(Math.sin(ry)) > 0.7 ? [o.solid[1], o.solid[0]] : o.solid;
       this.block(x - sw / 2, z - sd / 2, sw, sd);
@@ -580,31 +769,31 @@ export class Builder {
   }
 
   item(kind: ItemKind, x: number, z: number): this {
-    this.map.items.push({ key: `${this.map.level}:i${this.itemCount++}`, kind, x, y: NaN, z });
+    this.map.items.push({ key: `${this.map.level}:i${this.itemCount++}`, kind, x, y: NaN, z, s: this.cur });
     return this;
   }
 
   crate(x: number, z: number, ry: number, pool: Crate['pool'] = 'mixto', shelf = false): this {
-    this.map.crates.push({ key: `${this.map.level}:c${this.map.crates.length}`, x, y: NaN, z, ry, pool, shelf });
+    this.map.crates.push({ key: `${this.map.level}:c${this.map.crates.length}`, x, y: NaN, z, ry, pool, shelf, s: this.cur });
     return shelf ? this : this.block(x - 0.45, z - 0.45, 0.9, 0.9);
   }
 
   /** Nota legible. */
   note(x: number, z: number, ry: number, title: string, text: string, wall = true, y?: number): this {
-    this.map.notes.push({ key: `${this.map.level}:n${this.map.notes.length}`, x, y: NaN, z, ry, title, text, wall, h: y ?? (wall ? 1.45 : 0.01) });
+    this.map.notes.push({ key: `${this.map.level}:n${this.map.notes.length}`, x, y: NaN, z, ry, title, text, wall, h: y ?? (wall ? 1.45 : 0.01), s: this.cur });
     return this;
   }
 
   /** Puerta. Si `to` existe, al cruzarla se aparece allí. */
   door(x: number, z: number, ry: number, o: Partial<Omit<Door, 'key' | 'x' | 'y' | 'z' | 'ry'>> = {}): this {
-    this.map.doors.push({ key: `${this.map.level}:d${this.map.doors.length}`, x, y: NaN, z, ry, look: 'steel', locked: !o.to, ...o });
+    this.map.doors.push({ key: `${this.map.level}:d${this.map.doors.length}`, x, y: NaN, z, ry, look: 'steel', locked: !o.to, ...o, s: this.cur });
     return this;
   }
 
   /** Bloque que aparece y desaparece cuando nadie lo mira ("cambio periférico"). */
   shift(x: number, z: number, w: number, d: number, closed: boolean, wall = 0, pairWithPrevious = false): this {
     const id = this.map.shifts.length;
-    this.map.shifts.push({ id, x, z, w, d, closed, wall });
+    this.map.shifts.push({ id, x, z, w, d, closed, wall, s: this.cur });
     if (pairWithPrevious && id > 0) {
       this.map.shifts[id].pair = id - 1;
       this.map.shifts[id - 1].pair = id;
@@ -613,12 +802,12 @@ export class Builder {
   }
 
   loop(l: Loop): this {
-    this.map.loops.push(l);
+    this.map.loops.push({ ...l, s: this.cur });
     return this;
   }
 
   npc(n: Npc): this {
-    this.map.npcs.push(n);
+    this.map.npcs.push({ ...n, s: this.cur });
     return this.block(n.x - 0.25, n.z - 0.25, 0.5, 0.5);
   }
 
@@ -659,7 +848,7 @@ export class Builder {
   /** Panel diagonal que corta una esquina (los túneles giran a 45°). */
   diag(x: number, z: number, ry: number, w: number, wall = 0): this {
     const m = this.map;
-    m.diags.push({ x, z, ry, w, wall });
+    m.diags.push({ x, z, ry, w, wall, s: this.cur });
     // lo que queda detrás del panel no se puede pisar
     const nx = -Math.sin(ry);
     const nz = -Math.cos(ry);
@@ -675,29 +864,26 @@ export class Builder {
   }
 
   window(x: number, z: number, ry: number): this {
-    this.map.windows.push({ x, y: NaN, z, ry });
+    this.map.windows.push({ x, y: NaN, z, ry, s: this.cur });
     return this;
   }
 
   critter(kind: 'moth' | 'rat', x: number, z: number): this {
-    this.map.critters.push({ kind, x, z });
+    this.map.critters.push({ kind, x, z, s: this.cur });
     return this;
   }
 
-  /** Puerta de salida contra una pared; ry = hacia dónde mira la puerta. */
-  exit(x: number, z: number, ry: number, label = 'SALIDA'): this {
-    this.map.exits.push({ x, y: NaN, z, ry, label });
+  /**
+   * Salida. Con `walk`, basta con llegar (p. ej. al final de una escalera que
+   * baja); si no, es una puerta contra una pared que se abre con E.
+   */
+  exit(x: number, z: number, ry: number, label = 'SALIDA', walk = false): this {
+    this.map.exits.push({ x, y: NaN, z, ry, label, walk, s: this.cur });
     return this;
   }
 
   lair(kind: EntityKind, x: number, z: number, lines?: string[]): this {
-    this.map.lairs.push({ kind, x, z, lines });
-    return this;
-  }
-
-  /** Trozo de pared que falla. Si es `noclip`, se puede atravesar. */
-  glitch(x: number, z: number, ry: number, w: number, h: number, noclip = false, y?: number): this {
-    this.map.glitches.push({ x, y: y ?? NaN, z, ry, w, h, noclip });
+    this.map.lairs.push({ kind, x, z, lines, s: this.cur });
     return this;
   }
 
@@ -716,49 +902,105 @@ export class Builder {
 
   vent(x: number, z: number, period = 7): this {
     const n = this.map.vents.length;
-    this.map.vents.push({ x, y: NaN, z, period, phase: hash(this.map.level, n, 61) * period });
+    this.map.vents.push({ x, y: NaN, z, period, phase: hash(this.map.level, n, 61) * period, s: this.cur });
     return this;
   }
 
   build(): LevelMap {
-    const m = this.map;
-    const fix = (o: { x: number; y: number; z: number; ry?: number }) => {
+    const grids = this.grids;
+    const m = grids[0];
+    // suelo más bajo de cada planta (sus forjados empiezan por debajo)
+    const baseOf = grids.map((g) => {
+      let lo = Infinity;
+      for (let i = 0; i < g.flags.length; i++) if (!(g.flags[i] & (F_SOLID | F_HOLE | F_PIT))) lo = Math.min(lo, g.floor[i]);
+      return lo;
+    });
+    // huecos: la planta de abajo ve el techo de la de arriba (es un pozo)
+    for (const h of this.holes) {
+      this.cur = h.s;
+      const below = grids[h.s - 1];
+      this.each(h.x, h.z, h.w, h.d, (i) => {
+        const up = grids[h.s];
+        // (si después se abrió suelo encima, ya no es hueco)
+        if (below.flags[i] & F_SOLID || !(up.flags[i] & F_HOLE)) return;
+        // el forjado empieza en el techo de abajo (o un poco por debajo del suelo de arriba)
+        // (cada zona de la planta puede tener su altura: se usa la del suelo abierto antes del hueco)
+        const upFloor = up.floor[i] > below.floor[i] ? up.floor[i] : baseOf[h.s];
+        const slab = Math.min(below.flags[i] & F_SHAFT ? below.slab[i] : below.ceil[i], upFloor - 0.25);
+        below.flags[i] |= F_SHAFT;
+        below.slab[i] = slab;
+        below.ceil[i] = up.ceil[i];
+        up.floor[i] = slab; // el hueco va del forjado hacia arriba
+      });
+    }
+    // dónde empieza cada planta superior (para elegir su mapa de luz)
+    m.splits = [];
+    for (let k = 1; k < grids.length; k++) m.splits.push(Number.isFinite(baseOf[k]) ? baseOf[k] - 1.2 : 1e9);
+    for (const g of grids) g.splits = m.splits;
+
+    const fix = (o: { x: number; y: number; z: number; ry?: number; s?: number }) => {
       if (!Number.isNaN(o.y)) return;
+      const g = grids[o.s ?? 0] ?? m;
       // lo que está pegado a una pared toma la altura del suelo de delante
       let x = o.x;
       let z = o.z;
-      if (flagsAt(m, cellOf(x), cellOf(z)) & F_SOLID && o.ry !== undefined) {
+      if (flagsAt(g, cellOf(x), cellOf(z)) & F_SOLID && o.ry !== undefined) {
         x += Math.sin(o.ry) * 0.4;
         z += Math.cos(o.ry) * 0.4;
       }
-      const y = floorAt(m, x, z);
+      const y = floorAt(g, x, z);
       o.y = Number.isFinite(y) ? y : 0;
     };
-    m.spawn.y = floorAt(m, m.spawn.x, m.spawn.z);
+    fix(m.spawn as { x: number; y: number; z: number; s?: number });
     for (const list of [m.items, m.crates, m.exits, m.props, m.vents, m.doors, m.notes, m.windows] as { x: number; y: number; z: number }[][]) list.forEach(fix);
-    for (const g of m.glitches) if (Number.isNaN(g.y)) g.y = floorAt(m, g.x, g.z) + g.h / 2 + 0.1;
+    // (las zonas que se solapan dejan fluorescentes repetidos: se quedan los últimos)
+    const taken = new Map<number, Lamp[]>();
+    const key = (s: number, bx: number, bz: number) => (s * 4096 + bz) * 4096 + bx;
+    for (let k = this.lampCandidates.length - 1; k >= 0; k--) {
+      const l = this.lampCandidates[k];
+      if (l.forced) continue;
+      const bx = Math.floor(l.x / 1.5);
+      const bz = Math.floor(l.z / 1.5);
+      let dup = false;
+      for (let j = -1; j <= 1 && !dup; j++) {
+        for (let i = -1; i <= 1 && !dup; i++) dup = !!taken.get(key(l.s ?? 0, bx + i, bz + j))?.some((o) => Math.hypot(o.x - l.x, o.z - l.z) < 1.5);
+      }
+      if (dup) {
+        this.lampCandidates.splice(k, 1);
+        continue;
+      }
+      const kk = key(l.s ?? 0, bx, bz);
+      taken.set(kk, [...(taken.get(kk) ?? []), l]);
+    }
     for (const l of this.lampCandidates) {
+      const g = grids[l.s ?? 0];
       const cx = cellOf(l.x);
       const cz = cellOf(l.z);
-      const f = flagsAt(m, cx, cz);
-      if (f & (F_SOLID | F_PIT)) continue;
+      const f = flagsAt(g, cx, cz);
+      if (f & (F_SOLID | F_PIT | F_HOLE)) continue;
       if (f & F_NOLAMP && !l.forced) continue;
-      l.y = m.ceil[cz * m.w + cx];
+      if (Number.isNaN(l.y)) l.y = g.ceil[cz * g.w + cx];
+      else if (!l.forced) l.y = g.ceil[cz * g.w + cx];
       m.lamps.push(l);
     }
     // bloques de cambio periférico: casillas abiertas en la geometría fija
     for (const sh of m.shifts) {
+      this.cur = sh.s ?? 0;
       this.each(sh.x, sh.z, sh.w, sh.d, (i) => {
-        m.shiftCell[i] = sh.id;
-        m.flags[i] &= ~F_SOLID;
+        const g = this.map;
+        g.shiftCell[i] = sh.id;
+        g.flags[i] &= ~F_SOLID;
       });
     }
-    bakeLight(m);
+    for (const g of grids) bakeLight(g);
     for (const sh of m.shifts) setShift(m, sh.id, sh.closed);
-    for (let i = 0; i < m.w * m.h; i++) {
-      if (m.flags[i] & F_SOLID) continue;
-      if (m.light[i * 2] + m.light[i * 2 + 1] < 0.12) m.dark[i] = 1;
+    for (const g of grids) {
+      for (let i = 0; i < g.w * g.h; i++) {
+        if (g.flags[i] & F_SOLID) continue;
+        if (g.light[i * 2] + g.light[i * 2 + 1] < 0.12) g.dark[i] = 1;
+      }
     }
+    this.cur = 0;
     return m;
   }
 }
@@ -768,7 +1010,7 @@ function bakeLight(m: LevelMap) {
   const r = m.def.lampRadius;
   const rc = Math.ceil(r / CELL);
   for (const lamp of m.lamps) {
-    if (lamp.broken) continue;
+    if (lamp.broken || (lamp.s ?? 0) !== m.storey) continue;
     const lx = cellOf(lamp.x);
     const lz = cellOf(lamp.z);
     for (let j = Math.max(0, lz - rc); j <= Math.min(m.h - 1, lz + rc); j++) {
@@ -793,7 +1035,7 @@ function bakeLight(m: LevelMap) {
     for (let j = 1; j < m.h - 1; j++) {
       for (let i = 1; i < m.w - 1; i++) {
         const idx = j * m.w + i;
-        if (!(m.flags[idx] & (F_SOLID | F_PIT))) continue;
+        if (!(m.flags[idx] & (F_SOLID | F_PIT | F_HOLE))) continue;
         for (const ch of [0, 1]) {
           let best = src[idx * 2 + ch];
           for (const [dx, dz] of NEIGHBORS) best = Math.max(best, src[((j + dz) * m.w + i + dx) * 2 + ch] * 0.92);
@@ -809,10 +1051,11 @@ export function setShift(map: LevelMap, id: number, closed: boolean) {
   const sh = map.shifts[id];
   if (!sh) return;
   sh.closed = closed;
-  for (let i = 0; i < map.shiftCell.length; i++) {
-    if (map.shiftCell[i] !== id) continue;
-    if (closed) map.flags[i] |= F_SOLID;
-    else map.flags[i] &= ~F_SOLID;
+  const g = map.storeys[sh.s ?? 0] ?? map;
+  for (let i = 0; i < g.shiftCell.length; i++) {
+    if (g.shiftCell[i] !== id) continue;
+    if (closed) g.flags[i] |= F_SOLID;
+    else g.flags[i] &= ~F_SOLID;
   }
 }
 

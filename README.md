@@ -9,9 +9,13 @@ lore de la wiki de los Backrooms:
 
 | Nivel | Nombre | Qué hay |
 |---|---|---|
-| 0 | El Umbral | Salas de papel amarillo y moqueta húmeda que **cambian cuando nadie mira** (cambio periférico). Sala de columnas enorme, **agujeros sin fondo** (caer es morir), zona de arcos con moqueta empapada, **zona de apagón** con fluido hasta los tobillos y figuras que te acechan, y las **Habitaciones Rojas**: un pasillo envuelto en niebla roja que se repite sin fin y del que solo se sale por la pared que parpadea. La salida del nivel es otra **pared que parpadea**. |
-| 1 | La Zona Habitable | Sector **Aquila** (columnas, tuberías que gotean, escombros, marca de la M.E.G.), **Base Alpha** de la M.E.G. con patrullas que te hablan (zona segura), un **pasillo que no acaba** (mira el panel del fondo), sector en obras con **trabajadores sombra**, sector **Gild** de estanterías, sector **gótico** con el Círculo de Ariadna, y los **pasillos** tras la puerta de SALIDA verde: oficina, sala de ladrillo, enfermería, sala de goma y sala de cuadros. **Parpadeos**: apagones totales tras los que reaparecen cajas. |
-| 2 | Pipe Dreams | Túneles estrechos de hormigón y ladrillo que giran a 45°, con tuberías y máquinas muertas, en dos alturas. Fluorescentes **en serie** (si uno falla se apaga todo el tramo), luces violetas de emergencia, puertas de acero cerradas, una que da a un pasillo que vuelve sobre sí mismo y otra que da **al Vacío**. Ventanas al final de los túneles en las que mejor no mirar. Campamento abandonado, polillas y ratas. |
+| 0 | El Umbral | Salas de papel amarillo y moqueta húmeda que **cambian cuando nadie mira** (cambio periférico). Sala de columnas enorme con **otra planta encima con el suelo roto**, **agujeros sin fondo** (caer es morir) vistos desde una pasarela, zona de arcos, **zona de apagón**, las **Habitaciones Rojas**, **oficinas de dos plantas** con patio interior, un **gran atrio** hundido con balcón y caída libre, pasillos sin fin con desniveles, una sala altísima con escaleras que acaban en la pared y **Las Caídas** (terrazas que bajan). Se sale por la puerta de **MANTENIMIENTO**: una escalera que baja y baja hasta el Nivel 1. |
+| 1 | La Zona Habitable | Sector **Aquila**, **Base Alpha** de la M.E.G. (zona segura), un **pasillo que no acaba**, sector en obras con **trabajadores sombra**, sector **Gild** de estanterías con **entreplanta** encima, sector **gótico** con el Círculo de Ariadna, los **pasillos** seguros, un **aparcamiento de tres plantas** con rampas y forjados hundidos, un **hangar** con galería y pasarelas a 6 m, un **bloque de viviendas** de dos plantas con patio, y el **depósito inundado** con una pasarela por encima. Se baja al Nivel 2 por la escalera del depósito. **Parpadeos**: apagones totales. |
+| 2 | Pipe Dreams | Túneles estrechos que giran a 45°, en tres alturas: los de abajo, los de siempre y los **túneles altos** con rejillas sueltas que caen a los de abajo. Una **sala de bombas** hundida, una **sala de calderas** con pasarelas, la **cisterna** (una sima con una pasarela) y la red de túneles del este. Fluorescentes **en serie**, luces violetas, puertas de acero, una que vuelve sobre sí misma y otra que da **al Vacío**. |
+
+Los niveles tienen **plantas unas encima de otras**: los huecos del suelo
+caen a la planta de abajo (la caída hace daño) y las escaleras suben a la de
+arriba.
 
 ## Criaturas
 
@@ -79,11 +83,14 @@ b.pit(46, 46, 4, 3);                             // agujero
 b.prop('desk', 12, 46, Math.PI, { solid: [1.6, 0.8] });
 b.crate(44, 6, 0.3, 'comida');                   // caja (comida, medico, herramientas o mixto)
 b.lair('hound', 48, 72);                         // guarida de una criatura
-b.glitch(19.95, 33, -Math.PI / 2, 1.6, 2.2, true); // pared que se puede atravesar
 b.note(2.05, 5, Math.PI / 2, 'Título', 'Texto'); // nota en la pared
 b.door(46, 4.05, 0, { to: { x: 106, z: 8, ry: Math.PI } }); // puerta que lleva a otro sitio
 b.shift(26, 12, 2, 0.5, true);                   // pared que aparece y desaparece
 b.zone('safe', 72, 2, 26, 22);                   // zona segura (también red, void, meeting)
+b.exit(153, 143.5, 0, 'NIVEL 1', true);          // salida al andar por ella
+b.storey(1);                                     // pasa a construir la planta de arriba
+b.open(44, 34, 26, 22, { floor: 4.6, ceil: 7.4 }); // sala en la planta de arriba
+b.hole(44, 36, 26, 20);                          // hueco que cae a la planta de abajo
 ```
 
 Los parámetros de cada nivel (luces, niebla, cansancio, apagones…) están en

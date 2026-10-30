@@ -11,7 +11,7 @@ import { Screamer, type ScreamerKind } from './screamer';
 import type { ClientMessage, EntityState, Flare, HostMessage, PlayerState, Pose } from './protocol';
 import { getSettings, onSettings, type Settings } from './settings';
 import type { Sound } from './sound';
-import { F_DEEP, PLAYER_HEIGHT, STEP, ceilAt, cellOf, collide, flagsAt, floorAt, inZone, isDarkAt, setShift, type EntityKind, type ItemKind } from './world';
+import { F_DEEP, PLAYER_HEIGHT, STEP, cellOf, ceilOver, collideAll, flagsAt, floorUnder, gridAt, inZone, isDarkAll, setShift, type EntityKind, type ItemKind } from './world';
 
 const EYE = 1.6;
 const RADIUS = 0.3;
@@ -143,6 +143,7 @@ export class Game {
   private hurtSound = 0;
   private pixelRatio = PIXEL_RATIO;
   private levelToken = 0;
+  private lastFloor = 0; // último suelo pisado (para saber si se cae a un agujero)
   private loopWraps = 0;
   private frameAvg = 1 / 60;
   private resClock = 3;
@@ -221,7 +222,7 @@ export class Game {
       let en = this.enemies.get(e.id);
       if (!en) {
         en = { model: makeEnemy(e.kind, e.id), target: e, vx: 0, vz: 0, at: performance.now() };
-        en.model.group.position.set(e.x, this.floorY(e.x, e.z), e.z);
+        en.model.group.position.set(e.x, e.y, e.z);
         en.model.group.rotation.y = e.ry;
         this.enemies.set(e.id, en);
         this.scene.add(en.model.group);
@@ -235,7 +236,7 @@ export class Game {
       en.vx += (vx - en.vx) * 0.5;
       en.vz += (vz - en.vz) * 0.5;
       en.at = now;
-      if (jump >= 2) en.model.group.position.set(e.x, this.floorY(e.x, e.z), e.z);
+      if (jump >= 2) en.model.group.position.set(e.x, e.y, e.z);
       en.target = e;
       en.model.group.visible = e.level === this.pose.level;
     }
@@ -311,9 +312,9 @@ export class Game {
     const map = this.level.map;
     for (const sh of map.shifts) {
       const closed = this.closedShifts.has(`${this.pose.level}:${sh.id}`);
-      if (closed === sh.closed) continue;
-      setShift(map, sh.id, closed);
-      this.level.setShiftVisible(sh.id, closed);
+      // en el anfitrión el mapa ya lo ha cambiado la autoridad: se compara con lo que se ve
+      if (closed !== sh.closed) setShift(map, sh.id, closed);
+      if (closed !== this.level.shiftShown(sh.id)) this.level.setShiftVisible(sh.id, closed);
     }
   }
 
@@ -376,10 +377,12 @@ export class Game {
     const L = LEVELS[level];
     const map = getMap(level);
     if (move) {
-      this.pose.x = map.spawn.x + (Math.random() - 0.5);
-      this.pose.z = map.spawn.z + (Math.random() - 0.5);
+      this.pose.x = map.spawn.x + (Math.random() - 0.5) * 0.6;
+      this.pose.z = map.spawn.z + (Math.random() - 0.5) * 0.6;
+      this.pose.y = map.spawn.y;
+      this.yaw = (map.spawn as { ry?: number }).ry ?? this.yaw;
     }
-    this.pose.y = floorAt(map, this.pose.x, this.pose.z);
+    this.pose.y = floorUnder(map, this.pose.x, this.pose.z, this.pose.y + 0.5);
     this.eyeY = this.pose.y + EYE;
     this.vy = 0;
     this.scene.background = new THREE.Color(L.fog.color);
@@ -412,10 +415,10 @@ export class Game {
     this.enterLevel(0);
   }
 
-  private floorY(x: number, z: number): number {
+  floorY(x: number, z: number, y = Infinity): number {
     if (!this.level) return 0;
-    const y = floorAt(this.level.map, x, z);
-    return Number.isFinite(y) ? y : 0;
+    const f = floorUnder(this.level.map, x, z, y);
+    return Number.isFinite(f) ? f : 0;
   }
 
   // ---------------------------------------------------------------- entrada
@@ -559,13 +562,13 @@ export class Game {
     for (let d = 0; d < 6; d += 0.25) {
       const nx = this.pose.x + dx * d;
       const nz = this.pose.z + dz * d;
-      const c = collide(map, nx, nz, this.pose.y, 0.15, 0.3);
+      const c = collideAll(map, nx, nz, this.pose.y, 0.15, 0.3);
       if (Math.hypot(c.x - nx, c.z - nz) > 0.01) break;
       x = nx;
       z = nz;
     }
     if (Math.hypot(x - this.pose.x, z - this.pose.z) < 0.5) return false;
-    const y = floorAt(map, x, z);
+    const y = floorUnder(map, x, z, this.pose.y + 0.3);
     this.send({ t: 'flare', level: this.pose.level, x, y: Number.isFinite(y) ? y : this.pose.y, z });
     return true;
   }
@@ -726,7 +729,7 @@ export class Game {
     // ---- agacharse ----
     const wantCrouch = k.has('KeyC') || k.has('ControlLeft');
     // no puedes levantarte si el techo es bajo
-    const ceilHere = ceilAt(map, this.pose.x, this.pose.z);
+    const ceilHere = ceilOver(map, this.pose.x, this.pose.z, this.pose.y);
     this.crouching = wantCrouch || (this.crouching && ceilHere - this.pose.y < PLAYER_HEIGHT);
     this.pose.crouch = this.crouching;
 
@@ -745,7 +748,7 @@ export class Game {
     if (this.exhausted && this.stamina >= 50) this.exhausted = false;
     this.pose.sprint = sprinting;
     // fluido hasta los tobillos: cuesta andar y hace ruido
-    const deep = (flagsAt(map, cellOf(this.pose.x), cellOf(this.pose.z)) & F_DEEP) !== 0;
+    const deep = (flagsAt(gridAt(map, this.pose.x, this.pose.z, this.pose.y), cellOf(this.pose.x), cellOf(this.pose.z)) & F_DEEP) !== 0;
 
     if (moving) {
       const len = Math.hypot(fwd, side);
@@ -755,7 +758,7 @@ export class Game {
       const cos = Math.cos(this.yaw);
       const dx = ((-sin * fwd + cos * side) / len) * speed;
       const dz = ((-cos * fwd - sin * side) / len) * speed;
-      const p = collide(map, this.pose.x + dx, this.pose.z + dz, this.pose.y, RADIUS, this.crouching ? 1.1 : PLAYER_HEIGHT);
+      const p = collideAll(map, this.pose.x + dx, this.pose.z + dz, this.pose.y, RADIUS, this.crouching ? 1.1 : PLAYER_HEIGHT);
       const moved = Math.hypot(p.x - this.pose.x, p.z - this.pose.z);
       this.pose.x = p.x;
       this.pose.z = p.z;
@@ -788,7 +791,7 @@ export class Game {
     this.updateLoops(map);
 
     // ---- vertical: escalones, saltos y caídas ----
-    const g = floorAt(map, this.pose.x, this.pose.z);
+    const g = floorUnder(map, this.pose.x, this.pose.z, this.pose.y);
     if (this.onGround && g <= this.pose.y && this.pose.y - g < STEP && this.vy <= 0) {
       this.pose.y = g; // bajar escaleras y rampas pegado al suelo
     } else if (g > this.pose.y && g - this.pose.y <= STEP + 0.05) {
@@ -798,8 +801,9 @@ export class Game {
       this.vy -= GRAVITY * dt;
       this.pose.y += this.vy * dt;
       if (this.pose.y <= g) {
-        if (this.vy < -8.5) {
-          const dmg = Math.round((-this.vy - 8.5) * 9);
+        // caer un piso (unos 4 m) duele un poco; mucho más, bastante
+        if (this.vy < -10) {
+          const dmg = Math.round((-this.vy - 10) * 6);
           this.health -= dmg;
           this.damage = Math.min(1, this.damage + 0.5);
           this.sound.thud();
@@ -810,11 +814,13 @@ export class Game {
       }
     }
     this.onGround = this.pose.y <= g + 0.001;
-    const ceil = ceilAt(map, this.pose.x, this.pose.z);
+    const ceil = ceilOver(map, this.pose.x, this.pose.z, this.pose.y);
     if (this.pose.y + PLAYER_HEIGHT > ceil && this.vy > 0) this.vy = 0;
     if (this.onGround && this.pressed.has('Space') && !this.crouching) this.vy = JUMP;
     // en el Nivel 0 nadie ha sobrevivido a los agujeros
-    if (this.pose.y < VOID_Y) return L.isolation ? this.die('pozo') : this.fallThrough();
+    // caer por un agujero sin fondo (no por un hueco a otra planta)
+    if (!Number.isFinite(g) && this.pose.y < this.lastFloor + VOID_Y) return L.isolation ? this.die('pozo') : this.fallThrough();
+    if (Number.isFinite(g) && this.onGround) this.lastFloor = g;
 
     // ---- linterna ----
     if (this.pressed.has('KeyF')) {
@@ -864,7 +870,7 @@ export class Game {
     if (zone !== this.zoneNow) this.enterZone(zone);
 
     // ---- cordura y salud ----
-    const dark = isDarkAt(map, this.pose.x, this.pose.z) || lightUniforms.uBlackout.value > 0.5;
+    const dark = isDarkAll(map, this.pose.x, this.pose.z, this.pose.y) || lightUniforms.uBlackout.value > 0.5;
     const company = this.others.some((p) => this.canSee(p) && Math.hypot(p.x - this.pose.x, p.z - this.pose.z) < 8);
     let drain = L.sanityDrain * (dark && !this.pose.light ? 3 : dark ? 1.8 : 1) + threat * 3;
     if (zone === 'red') drain *= 2.2;
@@ -891,14 +897,9 @@ export class Game {
     if (this.updateNpcs(dt)) return;
     this.updateScares(dt, map);
 
-    // ---- glitches que se pueden atravesar ----
-    for (const gl of map.glitches) {
-      if (gl.noclip && Math.hypot(gl.x - this.pose.x, gl.z - this.pose.z) < 0.7 && Math.abs(gl.y - this.pose.y - 1) < 1.5) {
-        this.sound.glitch();
-        this.damage = 0.6;
-        this.hud.notice('Has hecho noclip a través de la pared…');
-        return this.enterLevel(this.pose.level + 1);
-      }
+    // ---- salidas a las que basta con llegar (el final de una escalera que baja) ----
+    for (const e of map.exits) {
+      if (e.walk && Math.hypot(e.x - this.pose.x, e.z - this.pose.z) < 1.3 && Math.abs(e.y - this.pose.y) < 1.5) return this.passExit();
     }
 
     this.updateInteraction();
@@ -1020,7 +1021,7 @@ export class Game {
         this.shake = 0.3;
         // empujón
         const k = 0.6 / Math.max(d, 0.1);
-        const p = collide(this.level!.map, this.pose.x + (this.pose.x - n.x) * k, this.pose.z + (this.pose.z - n.z) * k, this.pose.y, RADIUS);
+        const p = collideAll(this.level!.map, this.pose.x + (this.pose.x - n.x) * k, this.pose.z + (this.pose.z - n.z) * k, this.pose.y, RADIUS);
         this.pose.x = p.x;
         this.pose.z = p.z;
         this.sound.hurt('worker');
@@ -1058,7 +1059,7 @@ export class Game {
     }
     // alucinaciones: a oscuras y con poca cordura, a veces aparece una cara
     this.phantomCool -= dt;
-    const dark = isDarkAt(map, this.pose.x, this.pose.z) || lightUniforms.uBlackout.value > 0.5;
+    const dark = isDarkAll(map, this.pose.x, this.pose.z, this.pose.y) || lightUniforms.uBlackout.value > 0.5;
     if (this.phantomCool <= 0 && dark && this.sanity < 50 && Math.random() < dt * (0.02 + (50 - this.sanity) / 1500)) {
       this.phantomCool = 90 + Math.random() * 90;
       if (this.scare(Math.random() < 0.5 ? 'face' : 'smiler', true)) this.sanity = Math.max(0, this.sanity - 8);
@@ -1086,6 +1087,13 @@ export class Game {
     return true;
   }
 
+  /** Bajar al nivel siguiente sin pantalla de carga: un parpadeo a negro y sigues bajando. */
+  private passExit() {
+    this.hud.fade();
+    this.sound.clunk();
+    this.enterLevel(this.pose.level + 1);
+  }
+
   /** Caer por un agujero: se atraviesa el suelo hacia el nivel siguiente. */
   private fallThrough() {
     this.sound.glitch();
@@ -1106,7 +1114,7 @@ export class Game {
     };
     const item = map.items.find((i) => !this.picked.has(i.key) && near(i, 1.4));
     const crate = map.crates.find((c) => !this.picked.has(c.key) && near({ ...c, y: c.y + (c.shelf ? 1.2 : 0) }, 1.5));
-    const exit = map.exits.find((e) => near(e, 1.5));
+    const exit = map.exits.find((e) => !e.walk && near(e, 1.5));
     const door = map.doors.find((d) => (d.locked || d.to) && near(d, 1.4) && ahead(d));
     const note = map.notes.find((n) => near(n, 1.4) && ahead(n));
     const npc = this.level!.npcs.find((n) => Math.hypot(n.x - this.pose.x, n.z - this.pose.z) < 1.8 && ahead(n));
@@ -1154,7 +1162,8 @@ export class Game {
         this.sound.door();
         this.pose.x = door.to.x;
         this.pose.z = door.to.z;
-        this.pose.y = floorAt(map, this.pose.x, this.pose.z);
+        const tg = map.storeys[door.to.s ?? 0];
+        this.pose.y = floorUnder(map, this.pose.x, this.pose.z, tg.floor[cellOf(this.pose.z) * tg.w + cellOf(this.pose.x)] + 0.5);
         this.eyeY = this.pose.y + EYE;
         this.yaw = door.to.ry + Math.PI;
         this.prevX = this.pose.x;
@@ -1189,7 +1198,7 @@ export class Game {
       const ke = 1 - Math.exp(-14 * dt);
       g.position.x += (tx - g.position.x) * ke;
       g.position.z += (tz - g.position.z) * ke;
-      g.position.y = this.floorY(g.position.x, g.position.z);
+      g.position.y += (e.target.y - g.position.y) * ke;
       let diff = e.target.ry - g.rotation.y;
       diff = Math.atan2(Math.sin(diff), Math.cos(diff));
       g.rotation.y += diff * (1 - Math.exp(-8 * dt));

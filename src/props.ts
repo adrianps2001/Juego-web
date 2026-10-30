@@ -13,6 +13,8 @@ export function mat(color: number, extra: LitParams = {}, key = ''): THREE.Mater
   let m = mats.get(k);
   if (!m) {
     m = litMaterial({ color, ...extra }, 0.15);
+    // color liso y opaco: al fusionar los muebles se pasa a color por vértice
+    if (!Object.keys(extra).length) m.userData.plain = true;
     mats.set(k, m);
   }
   return m;
@@ -765,6 +767,53 @@ function violet(): THREE.Group {
   return group(cage, b);
 }
 
+// ---- plantas y aparcamientos ----
+
+/** Barandilla (w = largo). */
+function railing(w = 3): THREE.Group {
+  const m = mat(0x8a8e8c);
+  const g = group(box(w, 0.05, 0.05, m, 0, 1.0, 0), box(w, 0.04, 0.04, m, 0, 0.5, 0));
+  for (let x = -w / 2; x <= w / 2 + 0.01; x += 1) g.add(box(0.05, 1.0, 0.05, m, x, 0.5, 0));
+  return g;
+}
+
+/** Coche abandonado (aparcamiento). */
+let carSeed = 0;
+function car(): THREE.Group {
+  const colors = [0x5a6a7a, 0x7a3a2e, 0xb8b2a0, 0x2e3a30, 0x4a4a52];
+  const paint = mat(colors[carSeed++ % colors.length]);
+  const glass = mat(0x1a2024);
+  const tyre = mat(0x151515);
+  const g = group(box(1.8, 0.6, 4.3, paint, 0, 0.55, 0), box(1.6, 0.5, 2.3, paint, 0, 1.1, -0.1), box(1.62, 0.36, 2.0, glass, 0, 1.12, -0.1));
+  g.add(box(1.5, 0.02, 0.6, mat(0xd8d0b0, { emissive: 0x050402 }, 'e'), 0, 0.62, 2.16));
+  for (const x of [-0.85, 0.85]) {
+    for (const z of [-1.35, 1.35]) {
+      const w = cyl(0.33, 0.33, 0.22, tyre, x, 0.33, z, 12);
+      w.rotation.z = Math.PI / 2;
+      g.add(w);
+    }
+  }
+  g.add(box(1.82, 0.12, 0.12, mat(0x333333), 0, 0.35, 2.18), box(1.82, 0.12, 0.12, mat(0x333333), 0, 0.35, -2.18));
+  return g;
+}
+
+/** Contenedor de carga (6 × 2,4 m). */
+let contSeed = 0;
+function container(): THREE.Group {
+  const colors = [0x8a3a22, 0x2e5a7a, 0x5a6a2e, 0x7a6a2e];
+  const m = mat(colors[contSeed++ % colors.length]);
+  const g = group(box(2.4, 2.6, 6, m, 0, 1.3, 0));
+  for (let z = -2.8; z <= 2.81; z += 0.4) g.add(box(2.44, 2.5, 0.06, m, 0, 1.3, z));
+  g.add(box(2.3, 2.4, 0.04, mat(0x3a3a36), 0, 1.3, 3.02), box(0.05, 2.2, 0.06, mat(0x888888), 0.4, 1.3, 3.05), box(0.05, 2.2, 0.06, mat(0x888888), -0.4, 1.3, 3.05));
+  return g;
+}
+
+/** Líneas de aparcamiento pintadas en el suelo. */
+function parkLines(w = 2.6): THREE.Group {
+  const m = mat(0xc8c0a0);
+  return group(box(0.1, 0.01, 5, m, -w / 2, 0.006, 0), box(0.1, 0.01, 5, m, w / 2, 0.006, 0));
+}
+
 // ---------------------------------------------------------------------------
 
 /** Objetos que se mueven o tienen textura propia: no se fusionan. */
@@ -832,6 +881,10 @@ export function buildProp(p: Prop): THREE.Object3D | null {
     case 'foldchair': return foldChair();
     case 'pc': return pc();
     case 'violet': return violet();
+    case 'railing': return railing(p.w);
+    case 'car': return car();
+    case 'container': return container();
+    case 'parklines': return parkLines(p.w);
     case 'text': {
       const w = p.w ?? 2;
       const tex = textTexture(p.text ?? '', 'rgba(150, 20, 15, 0.85)', 'rgba(0,0,0,0)', 512, Math.round(512 / (w / 0.35)));

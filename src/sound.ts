@@ -22,6 +22,7 @@ export class Sound {
   private level = 0;
   private spike = 0; // subida repentina del zumbido (Nivel 0)
   private ambientTimer = 4;
+  private paramClock = 0;
   private whir = this.ctx.createGain(); // máquinas del Nivel 2
 
   constructor() {
@@ -132,13 +133,17 @@ export class Sound {
   update(flicker: number, smiler: number, hound: number, stealer: number, insanity: number, dark: boolean, dt = 1 / 60) {
     const t = this.ctx.currentTime;
     this.spike = Math.max(0, this.spike - dt * 0.25);
-    this.hum.gain.setTargetAtTime(this.humLevel * flicker * (dark ? 0.3 : 1) * (1 + this.spike * 4), t, 0.05);
     this.ambient(dt, insanity, dark);
+    // los volúmenes se reprograman unas 20 veces por segundo, no en cada fotograma
+    this.paramClock -= dt;
+    if (this.paramClock > 0) return;
+    this.paramClock = 0.05;
+    this.hum.gain.setTargetAtTime(this.humLevel * flicker * (dark ? 0.3 : 1) * (1 + this.spike * 4), t, 0.05);
     this.drone.gain.setTargetAtTime(0.35 * smiler, t, 0.1);
     this.whine.gain.setTargetAtTime(0.012 * smiler * smiler, t, 0.1);
     this.growl.gain.setTargetAtTime(0.5 * hound * hound, t, 0.15);
     // el Skin-Stealer chasquea los huesos de vez en cuando
-    this.clickTimer -= 1 / 60;
+    this.clickTimer -= 0.05;
     if (stealer > 0.05 && this.clickTimer <= 0) {
       this.clickTimer = 0.2 + Math.random() * (1.5 - stealer);
       this.burst(0.02, 2500 + Math.random() * 2000, 0.25 * stealer, 'bandpass');

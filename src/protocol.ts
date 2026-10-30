@@ -35,6 +35,7 @@ export interface EntityState {
   kind: EntityKind;
   level: number;
   x: number;
+  y: number; // altura de los pies (hay niveles con varias plantas)
   z: number;
   ry: number;
   anim: number; // ver Anim en models.ts

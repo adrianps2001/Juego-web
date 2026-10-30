@@ -4,11 +4,12 @@ import { lightUniforms, litMaterial, useLevelLight } from './lighting';
 import { makeBattery, makeBottle, makeCan, makeEnergyBar, makeExitDoor, makeFlareStick, makeMedkit, makeMeg, makeMoth, makeRat, makeWorker, type NpcModel } from './models';
 import { DYNAMIC_PROPS, buildProp, disposePropMaterials, makeCrate, mat } from './props';
 import { canvasTexture, paperTexture, textTexture, themeTextures } from './textures';
-import { CELL, F_PIT, F_SOLID, F_STAIRS, collide, floorAt, hash, type Door, type ItemKind, type LevelMap, type Npc } from './world';
+import { CELL, F_HOLE, F_PIT, F_SHAFT, F_SOLID, F_STAIRS, collide, floorAt, floorUnder, hash, type Door, type ItemKind, type LevelMap, type Npc } from './world';
 
 const PIT_DEPTH = 8;
 // el nivel se trocea en bloques para que no se dibuje lo que queda fuera de la vista
-const TILE = 12;
+// (bloques grandes: menos llamadas de dibujo; lo que queda fuera de la niebla no se dibuja igual)
+const TILE = 24;
 const tileOf = (x: number, z: number) => `${Math.floor(x / TILE)},${Math.floor(z / TILE)}`;
 
 type Buffers = { m: THREE.Material; pos: number[]; nor: number[]; uv: number[] };
@@ -72,7 +73,6 @@ export class Level3D {
   private steadyPanels: THREE.MeshBasicMaterial;
   private flickerPanels: THREE.MeshBasicMaterial;
   private glow: THREE.Color;
-  private glitchMat: THREE.ShaderMaterial;
   private animated: { obj: THREE.Object3D; kind: string; seed: number }[] = [];
   private steam: { x: number; y: number; z: number; period: number; phase: number; sprites: THREE.Sprite[] }[] = [];
   private disposables: { dispose: () => void }[] = [];
@@ -80,7 +80,7 @@ export class Level3D {
   private shiftMeshes = new Map<number, THREE.Object3D>();
   private glows: { sprite: THREE.Sprite; base: number; seed: number }[] = [];
   private moths: { obj: THREE.Group; flap: (t: number) => void; hx: number; hy: number; hz: number; seed: number }[] = [];
-  private rats: { obj: THREE.Group; x: number; z: number; tx: number; tz: number; wait: number; seed: number }[] = [];
+  private rats: { obj: THREE.Group; x: number; z: number; tx: number; tz: number; wait: number; seed: number; g: LevelMap }[] = [];
   /** Personajes que no atacan: se mueven aquí, en cada cliente. */
   readonly npcs: { def: Npc; model: NpcModel; x: number; y: number; z: number; ry: number; leg: number; pause: number }[] = [];
   /** Ventanas peligrosas: a veces se asoma algo. */
@@ -103,16 +103,18 @@ export class Level3D {
     const sink = new QuadSink();
     // fondo negro de los agujeros
     const voidMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-    for (let i = 0; i < map.w * map.h; i++) {
-      if (!(map.flags[i] & F_PIT)) continue;
-      const cx = i % map.w;
-      const cz = (i - cx) / map.w;
-      const x0 = cx * CELL;
-      const z0 = cz * CELL;
-      const y = -PIT_DEPTH;
-      sink.quad(voidMat, [x0, y, z0], [x0, y, z0 + CELL], [x0 + CELL, y, z0 + CELL], [x0 + CELL, y, z0], [0, 1, 0], [[0, 0], [0, 1], [1, 1], [1, 0]]);
+    for (const g of map.storeys) {
+      for (let i = 0; i < g.w * g.h; i++) {
+        if (!(g.flags[i] & F_PIT)) continue;
+        const cx = i % g.w;
+        const cz = (i - cx) / g.w;
+        const x0 = cx * CELL;
+        const z0 = cz * CELL;
+        const y = -PIT_DEPTH;
+        sink.quad(voidMat, [x0, y, z0], [x0, y, z0 + CELL], [x0 + CELL, y, z0 + CELL], [x0 + CELL, y, z0], [0, 1, 0], [[0, 0], [0, 1], [1, 1], [1, 0]]);
+      }
+      this.buildGrid(g, sink, wallMats, floorMats, ceilMats, pitMat, tex.wallScale, tex.wallHeight, tex.floorScale, tex.ceilScale);
     }
-    this.buildGrid(sink, wallMats, floorMats, ceilMats, pitMat, tex.wallScale, tex.wallHeight, tex.floorScale, tex.ceilScale);
     for (const m of sink.meshes()) this.group.add(m);
     this.buildShifts(wallMats, tex.wallScale, tex.wallHeight);
     this.buildDiags(wallMats, tex.wallScale, tex.wallHeight);
@@ -138,8 +140,10 @@ export class Level3D {
         if (p.type === 'bulb') this.addGlow(obj, 0xffe0a0, 1.0, 0.7, -0.55);
       } else statics.add(obj);
     }
-    if (L.theme === 'pipes') this.buildPipes(statics);
-    if (L.theme === 'habitable') this.buildConduits(statics);
+    for (const g of map.storeys) {
+      if (L.theme === 'pipes') this.buildPipes(g, statics);
+      if (L.theme === 'habitable') this.buildConduits(g, statics);
+    }
     this.mergeStatics(statics);
 
     // objetos que se pueden coger, cajas y salidas
@@ -163,15 +167,6 @@ export class Level3D {
       door.position.set(e.x, e.y, e.z);
       door.rotation.y = e.ry;
       this.group.add(door);
-    }
-
-    // paredes que fallan
-    this.glitchMat = glitchMaterial(new THREE.Color(...L.tint));
-    for (const g of map.glitches) {
-      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(g.w, g.h, 6, 6), g.noclip ? glitchMaterial(new THREE.Color(...L.tint), 1.6) : this.glitchMat);
-      mesh.position.set(g.x, g.y, g.z);
-      mesh.rotation.y = g.ry;
-      this.group.add(mesh);
     }
 
     // puertas, notas, ventanas, personajes y bichos
@@ -203,7 +198,7 @@ export class Level3D {
     }
     for (const n of map.npcs) {
       const model = n.kind === 'meg' ? makeMeg() : makeWorker(hash(n.x, n.z) * 10);
-      const y = floorAt(map, n.x, n.z);
+      const y = floorAt(map.storeys[n.s ?? 0], n.x, n.z);
       model.group.position.set(n.x, y, n.z);
       model.group.rotation.y = n.ry;
       this.group.add(model.group);
@@ -214,14 +209,15 @@ export class Level3D {
       if (c.kind === 'moth') {
         for (let k = 0; k < 3; k++) {
           const m = makeMoth();
-          const ceil = map.ceil[Math.floor(c.z / CELL) * map.w + Math.floor(c.x / CELL)];
+          const g = map.storeys[c.s ?? 0];
+          const ceil = g.ceil[Math.floor(c.z / CELL) * g.w + Math.floor(c.x / CELL)];
           this.group.add(m.group);
           this.moths.push({ obj: m.group, flap: m.flap, hx: c.x, hy: ceil - 0.6, hz: c.z, seed: seed + k * 3.1 });
         }
       } else {
         const r = makeRat();
         this.group.add(r);
-        this.rats.push({ obj: r, x: c.x, z: c.z, tx: c.x, tz: c.z, wait: 0, seed });
+        this.rats.push({ obj: r, x: c.x, z: c.z, tx: c.x, tz: c.z, wait: 0, seed, g: map.storeys[c.s ?? 0] });
       }
     }
 
@@ -244,6 +240,7 @@ export class Level3D {
   // ---------------------------------------------------------------- rejilla
 
   private buildGrid(
+    m: LevelMap,
     sink: QuadSink,
     wallMats: THREE.Material[],
     floorMats: THREE.Material[],
@@ -254,7 +251,6 @@ export class Level3D {
     floorScale: number,
     ceilScale: number,
   ) {
-    const m = this.map;
     const C = CELL;
     // los bloques de cambio periférico se dibujan aparte (aparecen y desaparecen)
     const open = (i: number) => !(m.flags[i] & F_SOLID) || m.shiftCell[i] >= 0;
@@ -299,13 +295,19 @@ export class Level3D {
         const z0 = cz * C;
         const z1 = z0 + C;
         const pit = (m.flags[i] & F_PIT) !== 0;
+        // hueco a la planta de abajo: aire desde el forjado (guardado en floor)
+        const hole = (m.flags[i] & F_HOLE) !== 0;
+        // pozo bajo un hueco: lo de encima del forjado lo dibuja la planta de arriba
+        const shaft = (m.flags[i] & F_SHAFT) !== 0;
         const ceil = m.ceil[i];
+        const wallTop = shaft ? m.slab[i] : ceil;
+        const bottom = pit ? -PIT_DEPTH : m.floor[i];
 
         // ---- suelo ----
-        if (!pit) {
+        if (!pit && !hole) {
           const fm = floorMats[m.floorMat[i]] ?? floorMats[0];
           if (m.flags[i] & F_STAIRS) {
-            this.stairs(sink, fm, wallMats[0], i, x0, z0, floorTex);
+            this.stairs(m, sink, fm, wallMats[0], i, x0, z0, floorTex);
           } else if (m.rampDir[i] < 0) {
             const y = m.floor[i];
             addRun(`f|${cz}|${y}|${mid(fm)}|${Math.floor(x0 / TILE)}`, x0, x1, (a, b) =>
@@ -323,9 +325,11 @@ export class Level3D {
 
         // ---- techo ----
         const cm = ceilMats[m.ceilMat[i]] ?? ceilMats[0];
-        addRun(`c|${cz}|${ceil}|${mid(cm)}|${Math.floor(x0 / TILE)}`, x0, x1, (a, b) =>
-          sink.quad(cm, [a, ceil, z0], [b, ceil, z0], [b, ceil, z1], [a, ceil, z1], [0, -1, 0], [ceilTex(a, z0), ceilTex(b, z0), ceilTex(b, z1), ceilTex(a, z1)]),
-        );
+        if (!shaft) {
+          addRun(`c|${cz}|${ceil}|${mid(cm)}|${Math.floor(x0 / TILE)}`, x0, x1, (a, b) =>
+            sink.quad(cm, [a, ceil, z0], [b, ceil, z0], [b, ceil, z1], [a, ceil, z1], [0, -1, 0], [ceilTex(a, z0), ceilTex(b, z0), ceilTex(b, z1), ceilTex(a, z1)]),
+          );
+        }
 
         // ---- caras verticales hacia cada vecina ----
         for (const [dx, dz] of DIRS) {
@@ -343,9 +347,9 @@ export class Level3D {
           const n = [-dx, 0, -dz];
           const along0 = dx !== 0 ? e0[1] : e0[0];
           const along1 = dx !== 0 ? e1[1] : e1[0];
-          const myFloor0 = pit ? -PIT_DEPTH : fy(i, e0[0], e0[1]);
-          const myFloor1 = pit ? -PIT_DEPTH : fy(i, e1[0], e1[1]);
-          const base = pit ? -PIT_DEPTH : m.floor[i];
+          const myFloor0 = pit || hole ? bottom : fy(i, e0[0], e0[1]);
+          const myFloor1 = pit || hole ? bottom : fy(i, e1[0], e1[1]);
+          const base = bottom;
           const uvAt = (along: number, y: number) => [along / wallScale, (y - base) / wallHeight];
           const split = base + wallHeight;
           const face = (mt: THREE.Material, b0: number, b1: number, t0: number, t1: number) => {
@@ -383,13 +387,13 @@ export class Level3D {
           if (j < 0 || !open(j)) {
             // pared maciza
             const wm = wallMats[j < 0 ? 0 : m.wallMat[j]] ?? wallMats[0];
-            face(wm, myFloor0, myFloor1, ceil, ceil);
+            face(wm, myFloor0, myFloor1, wallTop, wallTop);
             continue;
           }
-          const otherPit = (m.flags[j] & F_PIT) !== 0;
+          const otherPit = (m.flags[j] & (F_PIT | F_HOLE)) !== 0;
           // escalón o borde: la vecina tiene el suelo más alto (en un agujero
           // ya lo cubre la pared del agujero: dibujarla dos veces parpadea)
-          if (!otherPit && !pit) {
+          if (!otherPit && !pit && !hole) {
             const o0 = fy(j, e0[0], e0[1]);
             const o1 = fy(j, e1[0], e1[1]);
             if (o0 > myFloor0 + 0.005 || o1 > myFloor1 + 0.005) {
@@ -397,14 +401,15 @@ export class Level3D {
               face(stairsSide ? floorMats[0] : wallMats[m.wallMat[j]] ?? wallMats[0], myFloor0, myFloor1, Math.max(o0, myFloor0), Math.max(o1, myFloor1));
             }
           }
-          if (pit && !otherPit) {
+          if ((pit || hole) && !otherPit) {
             // paredes del agujero: desde el suelo de la vecina hasta el fondo
+            // (o, en un hueco entre plantas, hasta el techo de la de abajo)
             const o0 = fy(j, e0[0], e0[1]);
             const o1 = fy(j, e1[0], e1[1]);
-            face(pitMat, -PIT_DEPTH, -PIT_DEPTH, o0, o1);
+            face(pit ? pitMat : wallMats[0], bottom, bottom, o0, o1);
           }
-          // techo más bajo en la vecina: cara que cuelga
-          if (m.ceil[j] < ceil - 0.005) face(wallMats[0], m.ceil[j], m.ceil[j], ceil, ceil);
+          // techo más bajo en la vecina: cara que cuelga (en un pozo la pone la planta de arriba)
+          if (!shaft && m.ceil[j] < ceil - 0.005) face(wallMats[0], m.ceil[j], m.ceil[j], ceil, ceil);
         }
       }
     }
@@ -425,8 +430,7 @@ export class Level3D {
   }
 
   /** Escalera: dos peldaños por casilla. */
-  private stairs(sink: QuadSink, fm: THREE.Material, riser: THREE.Material, i: number, x0: number, z0: number, floorTex: (x: number, z: number) => number[]) {
-    const m = this.map;
+  private stairs(m: LevelMap, sink: QuadSink, fm: THREE.Material, riser: THREE.Material, i: number, x0: number, z0: number, floorTex: (x: number, z: number) => number[]) {
     const dir = m.rampDir[i];
     const rise = m.rampRise[i];
     const C = CELL;
@@ -471,8 +475,8 @@ export class Level3D {
 
   /** Bloques de "cambio periférico": paredes que se encienden y apagan. */
   private buildShifts(wallMats: THREE.Material[], wallScale: number, wallHeight: number) {
-    const m = this.map;
-    for (const sh of m.shifts) {
+    for (const sh of this.map.shifts) {
+      const m = this.map.storeys[sh.s ?? 0];
       const sink = new QuadSink();
       const mt = wallMats[sh.wall] ?? wallMats[0];
       for (let i = 0; i < m.shiftCell.length; i++) {
@@ -509,6 +513,11 @@ export class Level3D {
     }
   }
 
+  /** ¿Se ve ahora el bloque (cerrado)? */
+  shiftShown(id: number): boolean {
+    return this.shiftMeshes.get(id)?.visible ?? false;
+  }
+
   /** Muestra u oculta los bloques de cambio periférico. */
   setShiftVisible(id: number, closed: boolean) {
     const g = this.shiftMeshes.get(id);
@@ -517,9 +526,9 @@ export class Level3D {
 
   /** Paneles en diagonal de los giros de 45° del Nivel 2. */
   private buildDiags(wallMats: THREE.Material[], wallScale: number, wallHeight: number) {
-    const m = this.map;
     const sink = new QuadSink();
-    for (const d of m.diags) {
+    for (const d of this.map.diags) {
+      const m = this.map.storeys[d.s ?? 0];
       const tx = Math.cos(d.ry);
       const tz = -Math.sin(d.ry);
       const p0: [number, number] = [d.x - (tx * d.w) / 2, d.z - (tz * d.w) / 2];
@@ -606,8 +615,7 @@ export class Level3D {
   // ---------------------------------------------------------------- detalles
 
   /** Tuberías del Nivel 2 a lo largo de todas las paredes de los túneles. */
-  private buildPipes(into: THREE.Group) {
-    const { map } = this;
+  private buildPipes(map: LevelMap, into: THREE.Group) {
     const rust = mat(0x7a4426);
     const steel = mat(0x5a5a52);
     const copper = mat(0x8a5a2e);
@@ -674,8 +682,7 @@ export class Level3D {
   }
 
   /** Conductos y bandejas de cables bajo el techo del almacén. */
-  private buildConduits(into: THREE.Group) {
-    const { map } = this;
+  private buildConduits(map: LevelMap, into: THREE.Group) {
     const metal = mat(0x6b7075);
     for (let cz = 8; cz < map.h; cz += 16) {
       let start = -1;
@@ -702,13 +709,28 @@ export class Level3D {
     const byKey = new Map<string, { m: THREE.Material; list: THREE.BufferGeometry[] }>();
     const ids = new Map<THREE.Material, number>();
     const pos = new THREE.Vector3();
+    // todos los colores lisos de un bloque van en una sola malla con color por vértice
+    const plainMat = litMaterial({ vertexColors: true }, 0.15);
     root.traverse((o) => {
       if (!(o instanceof THREE.Mesh)) return;
       const g = (o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone()).applyMatrix4(o.matrixWorld);
       for (const name of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(name)) g.deleteAttribute(name);
-      const m = o.material as THREE.Material;
-      if (!ids.has(m)) ids.set(m, ids.size);
+      if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+      let m = o.material as THREE.Material;
       o.getWorldPosition(pos);
+      if (m.userData.plain) {
+        const c = (m as THREE.MeshBasicMaterial).color;
+        const n = g.attributes.position.count;
+        const col = new Float32Array(n * 3);
+        for (let k = 0; k < n; k++) {
+          col[k * 3] = c.r;
+          col[k * 3 + 1] = c.g;
+          col[k * 3 + 2] = c.b;
+        }
+        g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+        m = plainMat;
+      }
+      if (!ids.has(m)) ids.set(m, ids.size);
       const key = `${ids.get(m)}|${tileOf(pos.x, pos.z)}`;
       const entry = byKey.get(key) ?? { m, list: [] };
       entry.list.push(g);
@@ -729,9 +751,8 @@ export class Level3D {
     for (const g of this.glows) (g.sprite.material as THREE.SpriteMaterial).opacity = g.base * (0.85 + 0.15 * Math.sin(time * 3 + g.seed));
     this.steadyPanels.color.copy(this.glow).multiplyScalar(Math.max(0.03, on));
     this.flickerPanels.color.copy(this.glow).multiplyScalar(Math.max(0.03, flicker * on));
-    this.glitchMat.uniforms.uTime.value = time;
     this.group.children.forEach((c) => {
-      if (c instanceof THREE.Mesh && c.material instanceof THREE.ShaderMaterial && c.material !== this.glitchMat) c.material.uniforms.uTime.value = time;
+      if (c instanceof THREE.Mesh && c.material instanceof THREE.ShaderMaterial) c.material.uniforms.uTime.value = time;
     });
     for (const a of this.animated) {
       if (a.kind === 'hanglamp') a.obj.rotation.z = Math.sin(time * 0.7 + a.seed) * 0.05;
@@ -742,7 +763,7 @@ export class Level3D {
         const drop = a.obj.getObjectByName('drop')!;
         const period = 1.6 + (a.seed % 1.3);
         const t = (time + a.seed) % period;
-        const floor = floorAt(this.map, a.obj.position.x, a.obj.position.z);
+        const floor = floorUnder(this.map, a.obj.position.x, a.obj.position.z, a.obj.position.y);
         const fall = 4.9 * t * t;
         drop.visible = a.obj.position.y - 0.1 - fall > floor;
         drop.position.y = -0.1 - fall;
@@ -802,7 +823,7 @@ export class Level3D {
           const len = 1 + hash(time, r.seed) * 3;
           const nx = r.x + Math.cos(a) * len;
           const nz = r.z + Math.sin(a) * len;
-          const c = collide(this.map, nx, nz, floorAt(this.map, r.x, r.z), 0.15, 0.2);
+          const c = collide(r.g, nx, nz, floorAt(r.g, r.x, r.z), 0.15, 0.2);
           if (Math.hypot(c.x - nx, c.z - nz) < 0.01) {
             r.tx = nx;
             r.tz = nz;
@@ -815,7 +836,7 @@ export class Level3D {
         r.z += (dz / d) * step;
         r.obj.rotation.y = Math.atan2(-dx, -dz);
       }
-      const y = floorAt(this.map, r.x, r.z);
+      const y = floorAt(r.g, r.x, r.z);
       r.obj.position.set(r.x, Number.isFinite(y) ? y : 0, r.z);
     }
   }
@@ -848,7 +869,7 @@ export class Level3D {
         const want = Math.atan2(n.x - player.x, n.z - player.z); // el modelo mira hacia -z
         n.ry += Math.atan2(Math.sin(want - n.ry), Math.cos(want - n.ry)) * Math.min(1, dt * 5);
       }
-      const y = floorAt(this.map, n.x, n.z);
+      const y = floorAt(this.map.storeys[n.def.s ?? 0], n.x, n.z);
       if (Number.isFinite(y)) n.y = y;
       n.model.group.position.set(n.x, n.y, n.z);
       n.model.group.rotation.y = n.ry;
@@ -1027,43 +1048,6 @@ function slopeNormal(dir: number, rise: number): number[] {
   const n = dir === 0 ? [-s, 1, 0] : dir === 1 ? [s, 1, 0] : dir === 2 ? [0, 1, -s] : [0, 1, s];
   const l = Math.hypot(n[0], n[1], n[2]);
   return n.map((v) => v / l);
-}
-
-/** Trozo de pared corrupto: bloques de colores, ruido y desgarros. */
-function glitchMaterial(tint: THREE.Color, strength = 1): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 }, uTint: { value: tint }, uStrength: { value: strength } },
-    transparent: true,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-    vertexShader: `
-      uniform float uTime; uniform float uStrength; varying vec2 vUv;
-      void main() {
-        vUv = uv;
-        vec3 p = position;
-        float j = step(0.92, fract(sin(floor(uTime * 9.0) * 12.9898 + p.y * 3.0) * 43758.5));
-        p.x += j * 0.08 * uStrength * sin(p.y * 40.0);
-        p.z += sin(uTime * 3.0 + p.y * 8.0) * 0.015 * uStrength;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
-      }`,
-    fragmentShader: `
-      uniform float uTime; uniform vec3 uTint; uniform float uStrength; varying vec2 vUv;
-      float r(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-      void main() {
-        float t = floor(uTime * 12.0);
-        vec2 cell = floor(vUv * vec2(10.0, 16.0));
-        float tear = step(0.85, r(vec2(floor(vUv.y * 30.0), t)));
-        vec2 uv = vUv + vec2(tear * (r(vec2(t, vUv.y)) - 0.5) * 0.3, 0.0);
-        float n = r(floor(uv * vec2(24.0, 40.0)) + t);
-        vec3 col = mix(uTint * vec3(0.78, 0.68, 0.33), vec3(n), 0.45);
-        float block = step(0.8, r(cell + t * 0.37));
-        col = mix(col, vec3(r(cell + 1.0), r(cell + 2.0), r(cell + 3.0)), block * 0.8);
-        col *= 0.6 + 0.6 * step(0.3, r(vec2(t, 7.0)));
-        float edge = smoothstep(0.0, 0.18, vUv.x) * smoothstep(1.0, 0.82, vUv.x) * smoothstep(0.0, 0.12, vUv.y) * smoothstep(1.0, 0.88, vUv.y);
-        float a = edge * (0.55 + 0.45 * n) * clamp(uStrength, 0.0, 1.0) * (0.75 + 0.25 * sin(uTime * 20.0));
-        gl_FragColor = vec4(col, a);
-      }`,
-  });
 }
 
 let steamTex: THREE.Texture | null = null;

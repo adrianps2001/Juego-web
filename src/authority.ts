@@ -17,6 +17,7 @@ import {
   center,
   distanceField,
   floorAt,
+  gridAt,
   inZone,
   lineOfSight,
   setShift,
@@ -53,6 +54,7 @@ interface Lair {
   x: number;
   z: number;
   lines?: string[];
+  s?: number; // planta
   entity: number | null;
   cooldown: number;
 }
@@ -224,7 +226,7 @@ export class Authority {
     this.out.broadcast({
       t: 'state',
       players: [...this.players.values()].map(({ speed: _s, lastT: _t, shoutTimer: _h, ...rest }) => rest),
-      entities: this.entities.map(({ id, kind, level, x, z, ry, anim }) => ({ id, kind, level, x: round(x), z: round(z), ry: round(ry), anim })),
+      entities: this.entities.map(({ id, kind, level, x, y, z, ry, anim }) => ({ id, kind, level, x: round(x), y: round(y), z: round(z), ry: round(ry), anim })),
       blackout: this.blackout.map((b, i) => (b > 0 ? i : -1)).filter((i) => i >= 0),
       circuits: this.circuit.map((b, i) => (b > 0 ? i : -1)).filter((i) => i >= 0),
       shifts: LEVELS.flatMap((_, level) => getMap(level).shifts.filter((s) => s.closed).map((s) => `${level}:${s.id}`)),
@@ -274,8 +276,13 @@ export class Authority {
       const map = getMap(level);
       if (!map.shifts.length) return;
       const here = alive.filter((p) => p.level === level);
-      const seen = (x: number, z: number) =>
-        here.some((p) => Math.hypot(p.x - x, p.z - z) < 35 && lineOfSight(map, p.x, p.y + 1.6, p.z, x, floorAt(map, x, z) + 1, z));
+      // ¿lo ve alguien? (desde su planta; el bloque está en la suya)
+      const seen = (x: number, z: number, g = map) =>
+        here.some((p) => {
+          if (Math.hypot(p.x - x, p.z - z) >= 35) return false;
+          const pg = gridAt(map, p.x, p.z, p.y);
+          return pg === g && lineOfSight(g, p.x, p.y + 1.6, p.z, x, floorAt(g, x, z) + 1, z);
+        });
       // la entrada de las Habitaciones Rojas se cierra cuando alguien está dentro
       for (const loop of map.loops) {
         if (loop.oneWay) continue;
@@ -285,7 +292,7 @@ export class Authority {
           if (sh.pair !== undefined) continue;
           const cx = sh.x + sh.w / 2;
           const cz = sh.z + sh.d / 2;
-          if (inside && !sh.closed && !seen(cx, cz)) setShift(map, sh.id, true);
+          if (inside && !sh.closed && !seen(cx, cz, map.storeys[sh.s ?? 0])) setShift(map, sh.id, true);
           if (!inside && sh.closed && this.loopEmpty[level] > 30) setShift(map, sh.id, false);
         }
       }
@@ -300,7 +307,7 @@ export class Authority {
         const cx = s.x + s.w / 2;
         const cz = s.z + s.d / 2;
         // no cerrar encima de nadie
-        return seen(cx, cz) || here.some((p) => Math.abs(p.x - cx) < s.w / 2 + 0.6 && Math.abs(p.z - cz) < s.d / 2 + 0.6);
+        return seen(cx, cz, map.storeys[s.s ?? 0]) || here.some((p) => Math.abs(p.x - cx) < s.w / 2 + 0.6 && Math.abs(p.z - cz) < s.d / 2 + 0.6);
       };
       if (blocked(sh) || blocked(other)) return;
       setShift(map, sh.id, !sh.closed);
@@ -313,7 +320,7 @@ export class Authority {
   private darkMask(map: LevelMap): Uint8Array {
     const level = map.level;
     if (this.blackout[level] > 0) return this.mask(`all${level}`, map, () => 1);
-    if (this.circuit[level] > 0) return this.mask(`circ${level}`, map, (i) => (map.light[i * 2] < 0.12 ? 1 : 0));
+    if (this.circuit[level] > 0) return this.mask(`circ${level}|${map.storey}`, map, (i) => (map.light[i * 2] < 0.12 ? 1 : 0));
     return map.dark;
   }
 
@@ -329,7 +336,7 @@ export class Authority {
 
   /** Campo de distancias hacia un punto (cacheado unos instantes). */
   private field(map: LevelMap, x: number, z: number, darkOnly: boolean): Int16Array {
-    const key = `${map.level}|${cellOf(x)}|${cellOf(z)}|${darkOnly}`;
+    const key = `${map.level}|${map.storey}|${cellOf(x)}|${cellOf(z)}|${darkOnly}`;
     let f = this.fields.get(key);
     if (!f) {
       f = distanceField(map, cellOf(x), cellOf(z), PATH_CELLS, darkOnly, this.darkMask(map));
@@ -343,7 +350,10 @@ export class Authority {
       if (lair.entity !== null) continue;
       lair.cooldown -= dt;
       if (lair.cooldown > 0) continue;
-      const dists = alive.filter((p) => p.level === lair.level).map((p) => Math.hypot(p.x - lair.x, p.z - lair.z));
+      const lv = getMap(lair.level);
+      const lg = lv.storeys[lair.s ?? 0];
+      // solo despierta por quien anda por su misma planta
+      const dists = alive.filter((p) => p.level === lair.level && gridAt(lv, p.x, p.z, p.y) === lg).map((p) => Math.hypot(p.x - lair.x, p.z - lair.z));
       if (!dists.length) continue;
       const near = Math.min(...dists);
       const spec = SPEC[lair.kind];
@@ -363,6 +373,7 @@ export class Authority {
         kind: lair.kind,
         level: lair.level,
         x: lair.x,
+        y: Number.isFinite(floorAt(lg, lair.x, lair.z)) ? floorAt(lg, lair.x, lair.z) : 0,
         z: lair.z,
         ry: Math.random() * Math.PI * 2,
         anim: lair.kind === 'skinstealer' ? Anim.Disguise : lair.kind === 'duller' ? Anim.Hidden : Anim.Idle,
@@ -400,9 +411,12 @@ export class Authority {
   // ------------------------------------------------------------------ comportamientos
 
   private think(e: Entity, alive: Player[], dt: number) {
-    const map = getMap(e.level);
-    // en las zonas seguras (la Base Alpha) no persiguen a nadie
-    const here = alive.filter((p) => p.level === e.level && !inZone(map, 'safe', p.x, p.z));
+    const level = getMap(e.level);
+    const map = level.storeys[e.lair.s ?? 0];
+    // solo cuenta quien está en su misma planta; en las zonas seguras (la Base Alpha) no persiguen a nadie
+    const here = alive.filter((p) => p.level === e.level && gridAt(level, p.x, p.z, p.y) === map && !inZone(map, 'safe', p.x, p.z));
+    const fy = floorAt(map, e.x, e.z);
+    if (Number.isFinite(fy)) e.y = fy;
     e.timer += dt;
     e.attackCd -= dt;
     const nearest = closest(e, alive.filter((p) => p.level === e.level));

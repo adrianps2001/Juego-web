@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { grimeTexture } from './textures';
-import { CELL, F_DEEP, F_RED, F_WET, type LevelMap, type Theme } from './world';
+import { CELL, F_DEEP, F_RED, F_SHAFT, F_SOLID, F_WET, type LevelMap, type Theme } from './world';
 
 /**
  * Uniforms compartidos por todos los materiales "iluminados". Al cambiar de
@@ -10,6 +10,8 @@ export const lightUniforms = {
   uLightMap: { value: null as THREE.Texture | null },
   uDetailMap: { value: null as THREE.Texture | null },
   uLmScale: { value: new THREE.Vector2(1, 1) },
+  // plantas: el mapa de luz las lleva una debajo de otra; se elige por la altura
+  uStoreys: { value: 1 },
   uFlicker: { value: 1 },
   uCircuit: { value: 1 }, // 0 = el circuito de las luces parpadeantes se ha fundido
   uTint: { value: new THREE.Color(1, 1, 1) },
@@ -36,9 +38,9 @@ export const MAX_TORCHES = 6;
 const TORCH_RANGE = 22; // metros
 const TORCH_COS = Math.cos(0.42); // apertura del haz
 
-// alturas guardadas en el mapa de luz: de -8 a +16 m
-const H_MIN = -8;
-const H_RANGE = 24;
+// alturas guardadas en el mapa de luz: de -10 a +30 m
+const H_MIN = -10;
+const H_RANGE = 40;
 
 /**
  * Crea las texturas del nivel y actualiza los uniforms:
@@ -49,39 +51,46 @@ const H_RANGE = 24;
 export function useLevelLight(map: LevelMap): THREE.DataTexture[] {
   const L = map.def;
   const n = map.w * map.h;
-  const data = new Uint8Array(n * 4);
+  const grids = map.storeys;
+  const data = new Uint8Array(n * 4 * grids.length);
+  const det = new Uint8Array(n * 4 * grids.length);
   const enc = (y: number) => Math.max(0, Math.min(255, ((y - H_MIN) / H_RANGE) * 255));
-  for (let i = 0; i < n; i++) {
-    data[i * 4] = Math.min(255, map.light[i * 2] * 127.5);
-    data[i * 4 + 1] = Math.min(255, map.light[i * 2 + 1] * 127.5);
-    data[i * 4 + 2] = enc(map.floor[i]);
-    data[i * 4 + 3] = enc(map.ceil[i]);
-  }
-  const light = dataTexture(data, map.w, map.h);
-
-  // detalle: valores por casilla y luego un desenfoque para que no haya bordes
-  let wet: Float32Array = new Float32Array(n);
-  let red: Float32Array = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    const f = map.flags[i];
-    wet[i] = f & F_DEEP ? 1 : f & F_WET ? 0.75 : 0;
-    red[i] = f & F_RED ? 1 : 0;
-  }
-  for (let pass = 0; pass < 3; pass++) {
-    wet = blur(wet, map.w, map.h);
-    red = blur(red, map.w, map.h);
-  }
-  const det = new Uint8Array(n * 4);
-  for (let i = 0; i < n; i++) {
-    const x = ((i % map.w) + 0.5) * CELL;
-    const z = (Math.floor(i / map.w) + 0.5) * CELL;
-    det[i * 4] = Math.min(255, wet[i] * 255);
-    det[i * 4 + 1] = Math.min(255, red[i] * 255);
-    // variación de color a gran escala (precalculada aquí para no hacerla en cada píxel)
-    det[i * 4 + 2] = (valueNoise(x * 0.3, z * 0.3, 1) * 0.6 + valueNoise(x * 0.9, z * 0.9, 2) * 0.4) * 255;
-    det[i * 4 + 3] = 255;
-  }
-  const detail = dataTexture(det, map.w, map.h);
+  grids.forEach((g, k) => {
+    const o = k * n * 4;
+    for (let i = 0; i < n; i++) {
+      data[o + i * 4] = Math.min(255, g.light[i * 2] * 127.5);
+      data[o + i * 4 + 1] = Math.min(255, g.light[i * 2 + 1] * 127.5);
+      data[o + i * 4 + 2] = enc(g.floor[i]);
+      // en un pozo se guarda el forjado: por encima manda la planta de arriba
+      // (en una pared, lo de arriba de donde empieza la planta siguiente es de esa planta)
+      const top = g.flags[i] & F_SOLID && k < map.splits.length ? Math.min(g.ceil[i], map.splits[k] + 0.9) : g.ceil[i];
+      data[o + i * 4 + 3] = enc(g.flags[i] & F_SHAFT ? g.slab[i] : top);
+    }
+    // detalle: valores por casilla y luego un desenfoque para que no haya bordes
+    let wet: Float32Array = new Float32Array(n);
+    let red: Float32Array = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const f = g.flags[i];
+      wet[i] = f & F_DEEP ? 1 : f & F_WET ? 0.75 : 0;
+      red[i] = f & F_RED ? 1 : 0;
+    }
+    for (let pass = 0; pass < 3; pass++) {
+      wet = blur(wet, map.w, map.h);
+      red = blur(red, map.w, map.h);
+    }
+    for (let i = 0; i < n; i++) {
+      const x = ((i % map.w) + 0.5) * CELL;
+      const z = (Math.floor(i / map.w) + 0.5) * CELL;
+      det[o + i * 4] = Math.min(255, wet[i] * 255);
+      det[o + i * 4 + 1] = Math.min(255, red[i] * 255);
+      // variación de color a gran escala (precalculada aquí para no hacerla en cada píxel)
+      det[o + i * 4 + 2] = (valueNoise(x * 0.3, z * 0.3, 1 + k) * 0.6 + valueNoise(x * 0.9, z * 0.9, 2 + k) * 0.4) * 255;
+      det[o + i * 4 + 3] = 255;
+    }
+  });
+  const light = dataTexture(data, map.w, map.h * grids.length);
+  const detail = dataTexture(det, map.w, map.h * grids.length);
+  lightUniforms.uStoreys.value = grids.length;
 
   lightUniforms.uLightMap.value?.dispose();
   lightUniforms.uDetailMap.value?.dispose();
@@ -194,6 +203,26 @@ ${world ? '#define LM_WORLD' : ''}
 uniform sampler2D uLightMap;
 uniform sampler2D uDetailMap;
 uniform vec2 uLmScale;
+uniform float uStoreys;
+vec2 lmCoord(vec3 p, float k) {
+  return vec2(p.x * uLmScale.x, (p.z * uLmScale.y + k) / uStoreys);
+}
+float lmK = 0.0;
+/**
+ * Mapa de luz de la planta que toca: se empieza por la de abajo y se sube
+ * mientras el punto quede por encima de su techo.
+ */
+vec4 lmSample(vec3 p) {
+  vec4 lm = texture2D(uLightMap, lmCoord(p, 0.0));
+  lmK = 0.0;
+  for (int k = 1; k < 3; k++) {
+    if (float(k) >= uStoreys) break;
+    if (p.y <= lm.a * ${H_RANGE.toFixed(1)} + ${H_MIN.toFixed(1)} + 0.25) break;
+    lm = texture2D(uLightMap, lmCoord(p, float(k)));
+    lmK = float(k);
+  }
+  return lm;
+}
 uniform float uFlicker;
 uniform float uCircuit;
 uniform vec3 uTint;
@@ -254,14 +283,14 @@ varying vec3 vWorldNormal;
           : '#include <map_fragment>',
       ).replace(
         '#include <opaque_fragment>',
-        `vec4 lm = texture2D(uLightMap, vLmPos.xz * uLmScale);
+        `vec4 lm = lmSample(vLmPos);
   float lmFloor = lm.b * ${H_RANGE.toFixed(1)} + ${H_MIN.toFixed(1)};
   float lmCeil = lm.a * ${H_RANGE.toFixed(1)} + ${H_MIN.toFixed(1)};
   float above = vWorldPos.y - lmFloor;
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   float wet = 0.0;
 #ifdef LM_WORLD
-  vec4 dm = texture2D(uDetailMap, vLmPos.xz * uLmScale);
+  vec4 dm = texture2D(uDetailMap, lmCoord(vLmPos, lmK));
   // variación de color a gran escala: rompe la repetición de las texturas
   diffuseColor.rgb *= mix(0.84, 1.1, dm.b);
   // humedad: en el suelo y subiendo un poco por la base de las paredes

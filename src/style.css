@@ -91,3 +91,6 @@ button.secondary:hover { background: #4d4630; }
 #note p { white-space: pre-line; line-height: 1.45; margin: 0 0 10px; }
 #screamer { position: fixed; inset: 0; z-index: 20; background: #000; pointer-events: none; }
 #screamer canvas { width: 100%; height: 100%; object-fit: cover; image-rendering: pixelated; }
+#fade { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; }
+#fade.go { animation: fadeblink 1.1s ease-out; }
+@keyframes fadeblink { 0% { opacity: 1; } 45% { opacity: 1; } 100% { opacity: 0; } }
