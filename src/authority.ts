@@ -1,4 +1,4 @@
-import { ESCAPED, LEVELS, getMap } from './levels';
+import { ESCAPED, LEVELS, getMap, setSession } from './levels';
 import { Anim } from './models';
 import {
   MAX_PLAYERS,
@@ -118,7 +118,11 @@ export class Authority {
   private loopEmpty = LEVELS.map(() => 0);
   private masks = new Map<string, Uint8Array>();
 
+  /** Semilla de esta partida: dónde están los objetos y las criaturas. */
+  private session = Math.floor(Math.random() * 0xffffffff) >>> 0;
+
   constructor(private out: Outbox) {
+    setSession(this.session);
     LEVELS.forEach((_, level) => {
       for (const l of getMap(level).lairs) this.lairs.push({ level, ...l, entity: null, cooldown: 0 });
     });
@@ -150,7 +154,7 @@ export class Authority {
       shoutTimer: 0,
     };
     this.players.set(id, p);
-    this.out.sendTo(id, { t: 'welcome', id, color: p.color, picked: [...this.picked], x: p.x, z: p.z });
+    this.out.sendTo(id, { t: 'welcome', id, color: p.color, picked: [...this.picked], x: p.x, z: p.z, session: this.session });
     this.notice(`${name} ha caído en los Backrooms`);
     return true;
   }

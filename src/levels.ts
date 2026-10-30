@@ -183,7 +183,7 @@ function vertical(b: Builder, R: Rng, m0: Maze, reserved1: BRect[], drops: numbe
 }
 
 function scatterItems(b: Builder, R: Rng, mazes: Maze[], kinds: ItemKind[], n: number) {
-  const spots = mazes.flatMap((m) => [...m.ends, ...take(R, m.rooms, 20)].map((k) => ({ k, s: m.o.storey })));
+  const spots = mazes.flatMap((m) => [...m.ends, ...take(R, m.rooms, 30)].map((k) => ({ k, s: m.o.storey })));
   for (const { k, s } of take(R, spots, n)) {
     if (k.kind !== 'hall' && k.kind !== 'room') continue;
     const c = mid(k);
@@ -273,6 +273,8 @@ function level0(): LevelMap {
   const b = new Builder(0, LEVELS[0], NX * B, NZ * B, { ceil: 2.8 });
   b.storey(1, 6.6).storey(0);
   const R = makeRng(1009);
+  // lo que cambia en cada partida (objetos y criaturas)
+  const C = makeRng((1009 * 7919) ^ session);
 
   const PILLARS = { x: 6, z: 1, w: 6, h: 4 };
   const PITS = { x: 18, z: 8, w: 4, h: 4 };
@@ -478,8 +480,8 @@ function level0(): LevelMap {
     if (w) b.note(w.x + Math.sin(w.ry) * 0.05, w.z + Math.cos(w.ry) * 0.05, w.ry, 'Nota arrugada', 'Si lees esto, has hecho noclip. Estás en el Nivel 0.\n\nEsto es un laberinto, y encima de este hay otro igual. Hay escaleras, suelos rotos y puertas que dan a salas sin suelo.\n\nPara salir, busca una puerta gris de MANTENIMIENTO. Está lejos. No sé dónde.');
   }
 
-  scatterItems(b, R, [m0, m1], ['agua', 'agua', 'pila', 'pila', 'barrita', 'vendas', 'lata'], 42);
-  scatterLairs(b, R, [m0, m1], start, [...Array.from({ length: 22 }, () => ['figure'] as [EntityKind]), ['smiler'], ['smiler'], ['smiler']]);
+  scatterItems(b, C, [m0, m1], ['agua', 'agua', 'pila', 'pila', 'barrita', 'vendas', 'lata'], 60);
+  scatterLairs(b, C, [m0, m1], start, [...Array.from({ length: 22 }, () => ['figure'] as [EntityKind]), ['smiler'], ['smiler'], ['smiler']]);
   wakes(b, R, [m0, m1], 8);
   return b.build();
 }
@@ -529,6 +531,8 @@ function level1(): LevelMap {
   const b = new Builder(1, LEVELS[1], NX * B, NZ * B, { ceil: 3.4 });
   b.storey(1, 7.4).storey(0);
   const R = makeRng(2027);
+  // lo que cambia en cada partida (objetos y criaturas)
+  const C = makeRng((2027 * 7919) ^ session);
 
   const MANILA = { x: 1, z: 1, w: 2, h: 2 };
   const ALPHA = { x: 6, z: 1, w: 5, h: 4 };
@@ -712,8 +716,8 @@ function level1(): LevelMap {
   b.storey(0);
 
   const start = m0.at(3, 1) ?? m0.list[0];
-  scatterItems(b, R, [m0, m1], ['agua', 'pila', 'barrita', 'vendas', 'lata', 'bengala', 'agua', 'pila'], 40);
-  scatterLairs(b, R, [m0, m1], start, [
+  scatterItems(b, C, [m0, m1], ['agua', 'pila', 'barrita', 'vendas', 'lata', 'bengala', 'agua', 'pila'], 60);
+  scatterLairs(b, C, [m0, m1], start, [
     ['hound'],
     ['hound'],
     ['hound'],
@@ -782,6 +786,8 @@ function level2(): LevelMap {
   const b = new Builder(2, LEVELS[2], 200, NZ * B, { ceil: 2.6 });
   b.storey(1, 6.4).storey(0);
   const R = makeRng(3011);
+  // lo que cambia en cada partida (objetos y criaturas)
+  const C = makeRng((3011 * 7919) ^ session);
 
   const MACHINE = { x: 8, z: 6, w: 3, h: 3 };
   const BOILER = { x: 22, z: 4, w: 6, h: 5 };
@@ -956,8 +962,8 @@ function level2(): LevelMap {
     }
   }
 
-  scatterItems(b, R, [m0, m1], ['pila', 'pila', 'vendas', 'agua', 'barrita', 'bengala', 'lata', 'pila'], 38);
-  scatterLairs(b, R, [m0, m1], start, [
+  scatterItems(b, C, [m0, m1], ['pila', 'pila', 'vendas', 'agua', 'barrita', 'bengala', 'lata', 'pila'], 60);
+  scatterLairs(b, C, [m0, m1], start, [
     ...Array.from({ length: 9 }, () => ['smiler'] as [EntityKind]),
     ...Array.from({ length: 6 }, () => ['clump'] as [EntityKind]),
     ...Array.from({ length: 5 }, () => ['hound'] as [EntityKind]),
@@ -974,6 +980,17 @@ function level2(): LevelMap {
 
 const builders = [level0, level1, level2];
 const cache = new Map<number, LevelMap>();
+
+/**
+ * Semilla de la partida: la elige el anfitrión y la reciben todos al entrar.
+ * El laberinto es siempre el mismo; los objetos y las criaturas cambian.
+ */
+let session = 0;
+export function setSession(seed: number) {
+  if (seed === session) return;
+  session = seed >>> 0;
+  cache.clear();
+}
 
 export function getMap(level: number): LevelMap {
   let map = cache.get(level);

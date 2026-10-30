@@ -1,5 +1,6 @@
 import { Game } from './game';
 import { Hud } from './hud';
+import { setSession } from './levels';
 import { hostRoom, joinRoom, type Link } from './net';
 import type { HostMessage } from './protocol';
 import { Sound } from './sound';
@@ -32,6 +33,7 @@ function onMessage(msg: HostMessage) {
     case 'welcome':
       menu.hidden = true;
       status.textContent = '';
+      setSession(msg.session); // objetos y criaturas de esta partida (iguales para todos)
       game = new Game($('game'), hud, sound!, msg.id, msg.picked, msg, (m) => link?.send(m));
       if (import.meta.env.DEV) Object.assign(window, { juego: game }); // para depurar desde la consola
       break;

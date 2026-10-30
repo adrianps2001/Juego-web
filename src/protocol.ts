@@ -58,7 +58,7 @@ export type ClientMessage =
   | { t: 'died'; reason: string };
 
 export type HostMessage =
-  | { t: 'welcome'; id: string; color: number; picked: string[]; x: number; z: number }
+  | { t: 'welcome'; id: string; color: number; picked: string[]; x: number; z: number; session: number }
   | { t: 'full' }
   | {
       t: 'state';
