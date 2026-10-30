@@ -11,7 +11,7 @@ import { Screamer, type ScreamerKind } from './screamer';
 import type { ClientMessage, EntityState, Flare, HostMessage, PlayerState, Pose } from './protocol';
 import { getSettings, onSettings, type Settings } from './settings';
 import type { Sound } from './sound';
-import { F_DEEP, PLAYER_HEIGHT, STEP, cellOf, ceilOver, collideAll, flagsAt, floorUnder, gridAt, inZone, isDarkAll, setShift, type EntityKind, type ItemKind } from './world';
+import { F_DEEP, PLAYER_HEIGHT, STEP, cellOf, ceilOver, collideAll, flagsAt, floorAt, floorUnder, gridAt, inZone, isDarkAll, setShift, type EntityKind, type ItemKind } from './world';
 
 const EYE = 1.6;
 const RADIUS = 0.3;
@@ -819,7 +819,12 @@ export class Game {
     if (this.onGround && this.pressed.has('Space') && !this.crouching) this.vy = JUMP;
     // en el Nivel 0 nadie ha sobrevivido a los agujeros
     // caer por un agujero sin fondo (no por un hueco a otra planta)
-    if (!Number.isFinite(g) && this.pose.y < this.lastFloor + VOID_Y) return L.isolation ? this.die('pozo') : this.fallThrough();
+    if (!Number.isFinite(g)) {
+      // la caída infinita: se ven pasar pisos y pisos… y se despierta en otro sitio
+      const abyss = inZone(map, 'abyss', this.pose.x, this.pose.z);
+      if (abyss && this.pose.y < this.lastFloor - 48) return this.wakeElsewhere();
+      if (!abyss && this.pose.y < this.lastFloor + VOID_Y) return L.isolation ? this.die('pozo') : this.fallThrough();
+    }
     if (Number.isFinite(g) && this.onGround) this.lastFloor = g;
 
     // ---- linterna ----
@@ -1092,6 +1097,22 @@ export class Game {
     this.hud.fade();
     this.sound.clunk();
     this.enterLevel(this.pose.level + 1);
+  }
+
+  /** Tras caer al vacío: se despierta en otra parte del nivel, sin saber cómo. */
+  private wakeElsewhere() {
+    const map = this.level!.map;
+    const list = map.wakes.length ? map.wakes : [{ x: map.spawn.x, z: map.spawn.z, s: map.spawn.s ?? 0 }];
+    const w = list[Math.floor(Math.random() * list.length)];
+    this.hud.fade();
+    this.sound.glitch();
+    this.pose.x = w.x;
+    this.pose.z = w.z;
+    this.pose.y = floorAt(map.storeys[w.s] ?? map, w.x, w.z);
+    this.lastFloor = this.pose.y;
+    this.vy = 0;
+    this.sanity = Math.max(0, this.sanity - 30);
+    this.hud.notice('Caes… y caes… y te despiertas en otro sitio.');
   }
 
   /** Caer por un agujero: se atraviesa el suelo hacia el nivel siguiente. */

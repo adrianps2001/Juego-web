@@ -6,12 +6,10 @@
 // Materiales de pared/suelo/techo: el número elige la variante de textura del
 // tema del nivel (ver textures.ts).
 
-import { Builder, type LevelDef, type LevelMap } from './world';
+import { L0_DECOR, L0_ENDS, L1_DECOR, L1_ENDS, L2_DECOR, L2_ENDS } from './decor';
+import { FACE, OPP, between, makeRng, maze, pick, take, type Block, type Maze, type Port, type Rng, type Style } from './maze';
+import { Builder, F_PIT, F_SOLID, cellOf, flagsAt, type EntityKind, type ItemKind, type LevelDef, type LevelMap } from './world';
 
-const N = Math.PI;
-const S = 0;
-const E = Math.PI / 2;
-const W = -Math.PI / 2;
 
 export const LEVELS: LevelDef[] = [
   {
@@ -26,7 +24,7 @@ export const LEVELS: LevelDef[] = [
     tint: [1, 0.95, 0.78],
     sanityDrain: 0.25,
     staminaRegen: 1,
-    fog: { color: 0x3a3218, near: 6, far: 36 },
+    fog: { color: 0x3a3218, near: 4, far: 28 },
     blackouts: false,
     isolation: true,
   },
@@ -42,7 +40,7 @@ export const LEVELS: LevelDef[] = [
     tint: [0.85, 0.93, 1],
     sanityDrain: 0.3,
     staminaRegen: 1,
-    fog: { color: 0x121518, near: 3, far: 34 },
+    fog: { color: 0x121518, near: 3, far: 28 },
     blackouts: true,
   },
   {
@@ -67,828 +65,903 @@ export const LEVELS: LevelDef[] = [
 export const ESCAPED = LEVELS.length;
 
 // ===========================================================================
+// Cómo se construyen ahora los niveles
+// Cada nivel es un laberinto de bloques (ver maze.ts): salas pequeñas,
+// pasillos de anchos distintos que se tuercen, callejones sin salida y
+// varios caminos. Hay dos plantas de laberinto, una encima de la otra,
+// unidas por escaleras, suelos rotos y puertas que dan a una sala sin suelo
+// (se cae a la sala de abajo, que es de doble altura). Las salas míticas y los
+// sitios del lore son piezas hechas a mano encajadas en el laberinto.
+// ===========================================================================
+
+interface BRect {
+  x: number;
+  z: number;
+  w: number;
+  h: number;
+}
+
+/** Escalera de una planta a la de arriba en 2 × 1 bloques (sube al este o al oeste). */
+interface Stair {
+  x: number;
+  z: number;
+  up: 0 | 1;
+}
+
+const sq = (r: BRect, B: number) => ({ X: r.x * B, Z: r.z * B, W: r.w * B, D: r.h * B });
+
+function stairwell(b: Builder, B: number, st: Stair, f0: number, f1: number, wall: number): { p0: Port; p1: Port } {
+  const X = st.x * B;
+  const L = 2 * B;
+  const zc = st.z * B + B / 2;
+  const land = 1.2;
+  const top = 0.4;
+  const run = L - land - top;
+  const c = 2.6;
+  b.storey(0);
+  if (st.up === 0) {
+    b.open(X, zc - 0.8, land, 1.6, { floor: f0, ceil: f0 + c, wall, lamps: false }).lamp(X + 0.6, zc, { flicker: true });
+    b.ramp(X + land, zc - 0.8, run, 1.6, 0, f0, f1, true, f1 + c);
+    b.storey(1);
+    b.open(X + land, zc - 0.8, run + top, 1.6, { floor: f1, ceil: f1 + c, wall, lamps: false }).hole(X + land, zc - 0.8, run, 1.6);
+    b.lamp(X + L - 0.2, zc);
+  } else {
+    b.open(X + L - land, zc - 0.8, land, 1.6, { floor: f0, ceil: f0 + c, wall, lamps: false }).lamp(X + L - 0.6, zc, { flicker: true });
+    b.ramp(X + top, zc - 0.8, run, 1.6, 1, f0, f1, true, f1 + c);
+    b.storey(1);
+    b.open(X, zc - 0.8, run + top, 1.6, { floor: f1, ceil: f1 + c, wall, lamps: false }).hole(X + top, zc - 0.8, run, 1.6);
+    b.lamp(X + 0.2, zc);
+  }
+  b.storey(0);
+  const e = st.up === 0;
+  return {
+    p0: { bx: e ? st.x - 1 : st.x + 2, bz: st.z, dir: e ? 0 : 1, p: zc, w: 1.6 },
+    p1: { bx: e ? st.x + 2 : st.x - 1, bz: st.z, dir: e ? 1 : 0, p: zc, w: 1.6 },
+  };
+}
+
+/** Pozo con balcón: abajo, un anillo alrededor del pozo; arriba, un balcón con barandilla. */
+function shaftRoom(b: Builder, B: number, r: BRect, f1: number, o: { wall: number; abyss?: boolean; floorMat?: number; c1?: number }) {
+  const { X, Z, W, D } = sq(r, B);
+  const pad = 3;
+  b.storey(0);
+  b.open(X + 0.25, Z + 0.25, W - 0.5, D - 0.5, { ceil: 3, wall: o.wall, floorMat: o.floorMat, lamps: false });
+  for (const [x, z] of [[X + 1.4, Z + 1.4], [X + W - 1.4, Z + 1.4], [X + 1.4, Z + D - 1.4], [X + W - 1.4, Z + D - 1.4]]) b.lamp(x, z, { flicker: x > X + W / 2 });
+  if (o.abyss) {
+    b.pit(X + pad, Z + pad, W - 2 * pad, D - 2 * pad).zone('abyss', X + pad, Z + pad, W - 2 * pad, D - 2 * pad);
+  }
+  b.storey(1);
+  b.open(X + 0.25, Z + 0.25, W - 0.5, D - 0.5, { floor: f1, ceil: f1 + (o.c1 ?? 3), wall: o.wall, floorMat: o.floorMat, lamps: false });
+  const h = pad - 0.5;
+  b.hole(X + h, Z + h, W - 2 * h, D - 2 * h);
+  const inner = W - 2 * h;
+  b.prop('railing', X + W / 2, Z + h - 0.05, Math.PI, { w: inner });
+  b.prop('railing', X + h - 0.05, Z + D / 2, -Math.PI / 2, { w: inner });
+  b.prop('railing', X + W - h + 0.05, Z + D / 2, Math.PI / 2, { w: inner });
+  // la barandilla de este lado está rota
+  b.prop('railing', X + h + inner * 0.2, Z + D - h + 0.05, 0, { w: inner * 0.4 });
+  for (const [x, z] of [[X + 1.2, Z + 1.2], [X + W - 1.2, Z + D - 1.2]]) b.lamp(x, z, { flicker: true });
+  b.storey(0);
+}
+
+/** Abre un pasito desde el borde de una pieza hacia dentro, donde llega cada puerta del laberinto. */
+function stubs(b: Builder, B: number, ports: Port[], depth: number, o: { floor?: number; ceil?: number } = {}) {
+  for (const p of ports) {
+    const w = p.w ?? 1.6;
+    const lat = p.p ?? 0;
+    // el borde está al otro lado del bloque del laberinto
+    const ex = (p.bx + (p.dir === 0 ? 1 : 0)) * B;
+    const ez = (p.bz + (p.dir === 2 ? 1 : 0)) * B;
+    if (p.dir === 0) b.open(ex, lat - w / 2, depth, w, o);
+    else if (p.dir === 1) b.open(ex - depth, lat - w / 2, depth, w, o);
+    else if (p.dir === 2) b.open(lat - w / 2, ez, w, depth, o);
+    else b.open(lat - w / 2, ez - depth, w, depth, o);
+  }
+}
+
+const mid = (blk: Block) => ({ x: blk.area.x + blk.area.w / 2, z: blk.area.z + blk.area.d / 2 });
+
+/** Bloques donde se puede poner algo en el suelo (sin huecos). */
+const solidGround = (m: Maze) => m.list.filter((k) => k.kind === 'hall' || k.kind === 'room');
+
+/** Elige qué salas de abajo tendrán encima un suelo roto o una sala sin suelo. */
+function vertical(b: Builder, R: Rng, m0: Maze, reserved1: BRect[], drops: number, broken: number, anyBroken: boolean) {
+  const force = new Map<string, Block['kind']>();
+  const free = (k: Block) => !reserved1.some((r) => k.bx >= r.x && k.bx < r.x + r.w && k.bz >= r.z && k.bz < r.z + r.h);
+  const g = b.map;
+  const clearCenter = (k: Block) => {
+    const c = { x: k.x + m0.o.B / 2, z: k.z + m0.o.B / 2 };
+    for (let dz = -0.75; dz <= 0.75; dz += 0.5) for (let dx = -0.75; dx <= 0.75; dx += 0.5) if (flagsAt(g, cellOf(c.x + dx), cellOf(c.z + dz)) & (F_SOLID | F_PIT)) return false;
+    return true;
+  };
+  const rooms = m0.list.filter((k) => k.kind === 'room' && k.group < 0 && free(k) && clearCenter(k));
+  const d = take(R, rooms, drops);
+  for (const k of d) force.set(`${k.bx},${k.bz}`, 'drop');
+  const rest = (anyBroken ? m0.list : rooms).filter((k) => !d.includes(k) && free(k) && clearCenter(k) && k.kind !== 'drop');
+  for (const k of take(R, rest, broken)) force.set(`${k.bx},${k.bz}`, 'broken');
+  return force;
+}
+
+function scatterItems(b: Builder, R: Rng, mazes: Maze[], kinds: ItemKind[], n: number) {
+  const spots = mazes.flatMap((m) => [...m.ends, ...take(R, m.rooms, 8)].map((k) => ({ k, s: m.o.storey })));
+  for (const { k, s } of take(R, spots, n)) {
+    if (k.kind !== 'hall' && k.kind !== 'room') continue;
+    const c = mid(k);
+    b.storey(s);
+    b.item(pick(R, kinds), c.x + between(R, -0.4, 0.4), c.z + between(R, -0.4, 0.4));
+  }
+  b.storey(0);
+}
+
+function scatterLairs(b: Builder, R: Rng, mazes: Maze[], start: Block, list: [EntityKind, string[]?][]) {
+  const near = mazes[0].dist(start);
+  const spots = mazes.flatMap((m) => solidGround(m).filter((k) => m.o.storey > 0 || (near.get(k) ?? 99) > 8).map((k) => ({ k, s: m.o.storey })));
+  for (const [kind, lines] of list) {
+    const { k, s } = pick(R, spots);
+    const c = mid(k);
+    b.storey(s);
+    b.lair(kind, c.x, c.z, lines);
+  }
+  b.storey(0);
+}
+
+function wakes(b: Builder, R: Rng, mazes: Maze[], n: number) {
+  for (const m of mazes) {
+    for (const k of take(R, solidGround(m), n)) {
+      const c = mid(k);
+      b.storey(m.o.storey);
+      b.wake(c.x, c.z);
+    }
+  }
+  b.storey(0);
+}
+
+const ports = (list: [number, number, number, number?, number?][]): Port[] => list.map(([bx, bz, dir, p, w]) => ({ bx, bz, dir, p, w }));
+
+// direcciones del laberinto: este, oeste, sur, norte
+const DE = 0;
+const DW = 1;
+const DS = 2;
+const DN = 3;
+
+// ===========================================================================
 // NIVEL 0 — «El Umbral»
-// Laberinto amarillo de salas y pasillos al azar, con escalones; moqueta
-// beis empapada y fluorescentes que zumban. Variaciones de la wiki:
-//  - Salas de columnas en cuadrícula (moqueta más seca), enormes.
-//  - Zonas de arcos: paredes pálidas con huecos en arco, moqueta muy húmeda.
-//  - Agujeros en cuadrícula, negros: nadie ha sobrevivido a una caída.
-//  - Zonas de apagón: sin luz, paredes rugosas, suelo con fluido.
-//  - Habitaciones Rojas: el papel se despega; el pasillo no tiene fin.
-//  - «Cambio periférico»: partes del laberinto cambian cuando nadie mira.
-//  - Entidades: no confirmadas. Solo figuras oscuras que acechan.
-// Además, plantas unas encima de otras: oficinas de dos pisos, un gran atrio
-// con balcones, una planta de arriba con huecos que caen a la sala de
-// columnas y una pasarela sobre los agujeros. Se sale por una escalera de
-// mantenimiento que baja y baja hasta el Nivel 1.
-// Plantas: 0 = suelo (y 0), 1 = arriba (y 4,6).
+// Un laberinto de papel amarillo, moqueta húmeda y fluorescentes, de dos
+// plantas. Salas pequeñas, pasillos que se tuercen, sitios que no llevan a
+// ningún lado y paredes que cambian cuando nadie mira. Piezas:
+//  - Sala de columnas (la única sala grande).
+//  - Sala de los agujeros, con una pasarela en cruz por encima.
+//  - La caída infinita: un pozo con pisos y pisos hacia abajo.
+//  - El pasillo largo, que se apaga al fondo.
+//  - La sala altísima con la escalera que acaba en la pared.
+//  - Las Habitaciones Rojas.
+//  - La puerta de MANTENIMIENTO y la escalera que baja al Nivel 1.
+// Zonas con otro aire: arcos (al oeste), oficinas (al noreste), apagón (al sureste).
 // Paredes: 0 amarillo · 1 pálido · 2 oficina · 3 yeso rugoso · 4 rojo despegado
 // Suelos: 0 moqueta · 1 linóleo · 2 moqueta seca · 3 moqueta roja
 // ===========================================================================
-const UP0 = { floor: 4.6, ceil: 7.4 };
+
+const L0_YELLOW: Style = {
+  wall: [0],
+  floorMat: [0, 0, 2],
+  ceilMat: [0],
+  room: [2.6, 3.0],
+  hall: [2.45, 2.8],
+  widths: [1.2, 1.4, 1.6, 2, 2, 2.5, 3],
+  doors: [0.9, 1.1, 1.4, 1.8],
+  rooms: 0.45,
+  merge: 0.28,
+  dark: 0.08,
+  lamp: 0.75,
+  flicker: 0.12,
+  steps: [0, 0, 0, 0, 0.25, -0.25],
+  wet: 0.15,
+  straight: 0.45,
+  decor: L0_DECOR,
+  ends: L0_ENDS,
+};
+const L0_ARCHES: Style = { ...L0_YELLOW, wall: [1], floorMat: [0], rooms: 0.55, arches: true, wet: 0.7, deep: 0.4, dark: 0.04 };
+const L0_OFFICE: Style = { ...L0_YELLOW, wall: [2], floorMat: [1], ceilMat: [0, 1], rooms: 0.7, merge: 0.45, widths: [1.4, 1.6, 2], decor: [...L0_DECOR.slice(3, 7), ...L0_DECOR.slice(3, 7), ...L0_DECOR] };
+const L0_BLACKOUT: Style = { ...L0_YELLOW, wall: [3], rooms: 0.3, dark: 0.85, lamp: 0.15, deep: 0.55, wet: 0.5 };
+const L0_UPPER: Style = { ...L0_YELLOW, wall: [0, 0, 1], floorMat: [0, 2], room: [2.4, 2.9], hall: [2.3, 2.7], dark: 0.2, rooms: 0.4, steps: [0, 0, 0.25] };
 
 function level0(): LevelMap {
-  const b = new Builder(0, LEVELS[0], 190, 150, { ceil: 2.8 });
-  b.storey(1, 7.4).storey(0);
+  const B = 4;
+  const NX = 36;
+  const NZ = 28;
+  const F1 = 3.8;
+  const b = new Builder(0, LEVELS[0], NX * B, NZ * B, { ceil: 2.8 });
+  b.storey(1, 6.6).storey(0);
+  const R = makeRng(1009);
 
-  // ---- donde te despiertas ----
-  b.open(2, 2, 14, 12).spawn(6, 6, S);
-  b.solid(9, 2, 0.5, 5).solid(2, 9, 5, 0.5);
-  b.prop('outlet', 2.05, 12, E, { y: 0.35 }).prop('vent', 12, 2.05, S, { y: 2.3 });
-  b.note(2.05, 5, E, 'Nota arrugada', 'Si lees esto, has hecho noclip. Estás en el Nivel 0.\n\nNo te acerques a los agujeros del suelo. Hay pisos encima de pisos: algunos suelos están rotos y se cae a lo de abajo.\n\nPara salir, busca una puerta gris de MANTENIMIENTO, al sureste, más allá de las terrazas. Detrás hay una escalera que no deja de bajar.');
+  const PILLARS = { x: 6, z: 1, w: 6, h: 4 };
+  const PITS = { x: 18, z: 8, w: 4, h: 4 };
+  const ABYSS = { x: 13, z: 13, w: 3, h: 3 };
+  const HALL = { x: 2, z: 18, w: 16, h: 1 };
+  const TALL = { x: 2, z: 22, w: 3, h: 3 };
+  const RED = { x: 10, z: 21, w: 8, h: 5 };
+  const EXIT = { x: 30, z: 12, w: 3, h: 2 };
+  const STAIRS: Stair[] = [
+    { x: 4, z: 6, up: 0 },
+    { x: 15, z: 8, up: 1 },
+    { x: 26, z: 4, up: 0 },
+    { x: 24, z: 17, up: 1 },
+    { x: 8, z: 14, up: 0 },
+    { x: 31, z: 22, up: 1 },
+    { x: 20, z: 25, up: 0 },
+    { x: 32, z: 1, up: 1 },
+  ];
 
-  // ---- laberinto de salas y pasillos ----
-  b.open(16, 5, 8, 2);
-  b.open(24, 2, 10, 8).solid(28, 5, 1, 1);
-  b.open(34, 4, 8, 2);
-  b.open(26, 10, 2, 8);
-  b.open(16, 18, 26, 2.5);
-  b.open(4, 14, 2, 8);
-  b.open(2, 22, 12, 8, { ceilMat: 1 }).solid(7, 22, 0.5, 4);
-  b.open(14, 24, 2, 2).open(16, 18, 2, 8);
-  // escaleras a una sala elevada y, desde ella, otra que sube a la planta de arriba
-  b.ramp(34, 20.5, 2, 3, 2, 0, 1.2, true, 4);
-  b.open(30, 23.5, 8, 8, { floor: 1.2, ceil: 4.2, lamps: 3.5 });
-  b.ramp(30, 31.5, 2, 3, 3, 0, 1.2, true, 4);
-  b.ramp(38, 24, 2, 10, 2, 1.2, UP0.floor, true, 4.2);
-  b.open(26, 34.5, 12, 2);
-  // la sala pequeña (tranquila)
-  b.open(20, 28, 6, 5, { wall: 2, floorMat: 1, lamps: 3 }).open(22, 33, 2, 1.5).open(22, 34.5, 4, 2);
-  b.note(20.05, 30.5, E, 'Escrito en la pared', 'AQUÍ NO LLEGA EL ZUMBIDO.\nDESCANSA.\nNO SALGAS SOLO.', true, 1.5);
-  b.open(6, 30, 2, 8).open(2, 38, 30, 2).open(28, 36.5, 2, 1.5);
-  b.open(10, 40, 2, 6);
-  // cambio periférico: pares de huecos que se turnan
-  b.shift(26, 12, 2, 0.5, true).shift(34, 4, 0.5, 2, false, 0, true);
-  b.shift(14, 24, 0.5, 2, false).shift(6, 30, 2, 0.5, true, 0, true);
-  b.shift(20, 38, 0.5, 2, true).shift(28, 36.5, 2, 0.5, false, 0, true);
-  b.prop('tile', 9, 26, 0.5).prop('hole', 9, 26, 0, { y: 2.8 }).prop('tube', 36, 25.5, 1.3, { y: 1.2 });
-  b.lair('figure', 33, 8).lair('figure', 3, 39);
-  b.item('agua', 3, 28).item('pila', 33, 8.5);
-  b.zone('whisper', 2, 22, 12, 8);
+  const p0: Port[] = [];
+  const p1: Port[] = [];
 
-  // ---- sala de columnas (enorme, en cuadrícula) ----
-  b.open(42, 2, 44, 28, { ceil: 3.2, floorMat: 2 }).open(40, 18, 2, 2.5);
-  for (let x = 44.5; x < 86; x += 3) {
-    for (let z = 4.5; z < 30; z += 3) {
-      // algunas columnas desplazadas: el cambio periférico las descuadra
-      const off = Math.round(x * 7 + z * 3) % 5 === 0 ? 0.5 : 0;
-      b.solid(x - 0.25 + off, z - 0.25, 0.5, 0.5);
+  // ---- sala de columnas (la única sala grande) ----
+  {
+    const { X, Z, W, D } = sq(PILLARS, B);
+    b.open(X + 0.25, Z + 0.25, W - 0.5, D - 0.5, { ceil: 3.2, floorMat: 2, lamps: 3.5 });
+    for (let x = X + 2.5; x < X + W - 1; x += 3) {
+      for (let z = Z + 2.5; z < Z + D - 1; z += 3) {
+        const off = Math.round(x * 7 + z * 3) % 5 === 0 ? 0.5 : 0;
+        b.solid(x - 0.25 + off, z - 0.25, 0.5, 0.5);
+      }
     }
+    b.shift(X + 9.25, Z + 7.25, 1, 1, false).shift(X + 12.25, Z + 10.25, 1, 1, true, 0, true);
+    b.item('agua', X + 4, Z + 13).item('barrita', X + 20, Z + 3);
+    b.lair('figure', X + 21, Z + 13);
+    b.prop('text', X + 0.55, Z + 5, Math.PI / 2, { y: 1.6, text: 'LAS COLUMNAS SE MUEVEN', w: 3 });
+    p0.push(...ports([[5, 2, DE], [12, 3, DW], [8, 5, DN], [10, 5, DN], [9, 0, DS]]));
   }
-  b.shift(65.25, 13.25, 1, 1, false).shift(68.25, 16.25, 1, 1, true, 0, true);
-  b.lair('figure', 84, 4).lair('figure', 60, 28);
-  b.item('agua', 70, 10).item('barrita', 52, 26);
-  b.prop('text', 42.05, 10, E, { y: 1.6, text: 'ELIGE UN RUMBO', w: 2.4 });
 
-  // ---- agujeros en cuadrícula ----
-  b.open(50, 30, 3, 4);
-  b.open(44, 34, 26, 22, { ceil: 3, lamps: 4.5, ceilMat: 1 });
-  for (let gx = 0; gx < 4; gx++) for (let gz = 0; gz < 5; gz++) b.pit(46 + gx * 3.5, 36 + gz * 3.5, 1.5, 1.5);
-  for (let gx = 0; gx < 4; gx++) for (let gz = 0; gz < 3; gz++) b.pit(60 + gx * 2.5, 46 + gz * 2.5, 1.5, 1.5);
-  b.item('vendas', 68.5, 54.5).prop('text', 44.05, 40, E, { y: 1.6, text: 'NO HAY FONDO', w: 2 });
-  b.note(44.05, 46, E, 'Hoja de libreta', 'Tiré una pila por uno de los agujeros. Nunca la oí llegar.\n\nHay una pasarela por encima. Si te caes desde ahí, reza para no acertar en un agujero.');
-
-  // ---- zona de arcos (paredes pálidas, moqueta empapada, estable) ----
-  b.open(30, 52, 14, 2);
-  b.open(2, 46, 28, 34, { wall: 1, lamps: 3.5 });
-  for (const x of [9.5, 16.5, 23.5]) {
-    b.solid(x, 46, 0.5, 34, 1);
-    for (const z of [48.5, 55.5, 62.5, 69.5, 76.5]) if ((x + z) % 3 !== 0) b.arch(x, z, 0.5, 1.6, 2.2, E);
+  // ---- sala de los agujeros, con una pasarela en cruz por encima ----
+  {
+    const { X, Z, W, D } = sq(PITS, B);
+    b.open(X + 0.25, Z + 0.25, W - 0.5, D - 0.5, { ceil: 3.2, floorMat: 2, lamps: 4 });
+    for (const dx of [2.5, 6.5, 13.5]) for (const dz of [2.5, 6.5, 13.5]) b.pit(X + dx - 0.8, Z + dz - 0.8, 1.6, 1.6);
+    b.prop('text', X + 0.55, Z + 4, Math.PI / 2, { y: 1.6, text: 'NO MIRES ABAJO', w: 2.4 });
+    b.storey(1);
+    const up = { floor: F1, ceil: F1 + 2.8, lamps: false as const, wall: 0 };
+    b.open(X + 0.25, Z + 0.25, W - 0.5, D - 0.5, up).hole(X + 0.25, Z + 0.25, W - 0.5, D - 0.5);
+    b.open(X + 0.25, Z + 5, W - 0.5, 2, { ...up, lamps: 4 }).open(X + 5, Z + 0.25, 2, D - 0.5, { ...up, lamps: 4 });
+    for (const [x, z, r, w] of [[X + 2.6, Z + 4.95, Math.PI, 4.7], [X + 11.5, Z + 4.95, Math.PI, 8.5], [X + 2.6, Z + 7.05, 0, 4.7], [X + 11.5, Z + 7.05, 0, 8.5], [X + 4.95, Z + 2.6, -Math.PI / 2, 4.7], [X + 7.05, Z + 2.6, Math.PI / 2, 4.7], [X + 4.95, Z + 11.5, -Math.PI / 2, 8.5]] as const) {
+      b.prop('railing', x, z, r, { w });
+    }
+    b.note(X + 0.55, Z + 6.5, Math.PI / 2, 'Nota pegada a la barandilla', 'Abajo están los agujeros. Desde aquí parecen pequeños.\nLa barandilla se acaba de golpe.');
+    b.storey(0);
+    p0.push(...ports([[17, 10, DE], [22, 10, DW], [20, 7, DS], [20, 12, DN]]));
+    p1.push(...ports([[17, 9, DE], [22, 9, DW], [19, 7, DS], [19, 12, DN]]));
   }
-  for (const z of [57.5, 68.5]) {
-    b.solid(2, z, 28, 0.5, 1);
-    for (const x of [5, 12.5, 19.5, 26.5]) b.arch(x, z, 1.6, 0.5, 2.2, S);
-  }
-  b.prop('blindarch', 2.05, 51, E, { w: 1.6, h: 2.2 }).prop('blindarch', 29.95, 74, W, { w: 1.6, h: 2.2 }).prop('blindarch', 6, 79.95, N, { w: 1.6, h: 2.2 });
-  b.deep(2, 46, 28, 34, 0.12);
-  b.item('agua', 4, 78).item('barrita', 27.5, 78);
-  b.prop('text', 2.05, 63, E, { y: 1.5, text: 'AQUÍ NADA SE MUEVE', w: 2.6 });
 
-  // ---- zona de apagón ----
-  b.open(70, 40, 2, 2, { dark: true }).open(80, 30, 2, 2, { dark: true });
-  b.open(72, 32, 36, 30, { dark: true, wall: 3, ceilMat: 1 });
-  b.solid(80, 32, 0.5, 10, 3).solid(80, 46, 0.5, 16, 3).solid(88, 38, 0.5, 24, 3).solid(96, 32, 0.5, 18, 3).solid(96, 54, 0.5, 8, 3);
-  b.solid(80, 46, 5, 0.5, 3).solid(88, 50, 5, 0.5, 3).solid(100, 44, 8, 0.5, 3);
-  b.deep(72, 32, 36, 30, 0.15);
-  b.lamp(76, 36, { broken: true }).lamp(92, 56, { broken: true });
-  b.lair('figure', 104, 35).lair('figure', 84, 58).lair('figure', 92, 40);
-  b.item('pila', 100, 35);
-  b.note(72.05, 36, E, 'Nota casi ilegible', 'Aquí no llega el zumbido. Aquí no llega la luz.\nHay figuras al fondo que solo se mueven cuando no miras.\nEl suelo está hundido y mojado: no corras.');
-  b.prop('text', 72.05, 45, E, { y: 1.6, text: 'SIGUE EL ZUMBIDO', w: 2.6 });
+  // ---- la caída infinita ----
+  {
+    const { X, Z } = sq(ABYSS, B);
+    shaftRoom(b, B, ABYSS, F1, { wall: 0, abyss: true });
+    b.prop('text', X + 0.55, Z + 6, Math.PI / 2, { y: 1.7, text: 'NO TE ASOMES', w: 2.2 });
+    b.note(X + 11.95, Z + 1.5, -Math.PI / 2, 'Nota temblorosa', 'Me asomé. Se ven pisos y pisos hacia abajo, todos iguales, todos con la luz encendida.\n\nEn uno de ellos había alguien mirando hacia arriba.');
+    b.storey(1);
+    b.prop('text', X + 0.55, Z + 6, Math.PI / 2, { y: F1 + 1.6, text: 'NO SALTES', w: 1.8 });
+    b.storey(0);
+    p0.push(...ports([[12, 14, DE], [16, 14, DW], [14, 12, DS], [14, 16, DN]]));
+    p1.push(...ports([[12, 14, DE], [14, 12, DS]]));
+  }
+
+  // ---- el pasillo largo (se apaga al fondo) ----
+  {
+    const { X, Z, W } = sq(HALL, B);
+    b.open(X, Z + 1, W, 2, { ceil: 2.6, wall: 0, floorMat: 2, lamps: false });
+    for (let k = 0, x = X + 2; x < X + W - 10; x += 4, k++) b.lamp(x, Z + 2, { flicker: k % 5 === 3, broken: k % 7 === 6 });
+    b.dark(X + W - 10, Z + 1, 10, 2);
+    const side = ports([[5, 17, DS], [11, 17, DS], [8, 19, DN], [15, 19, DN]]);
+    stubs(b, B, side, 1, { ceil: 2.4 });
+    p0.push(...side, ...ports([[1, 18, DE], [18, 18, DW]]));
+    b.note(X + W - 0.05, Z + 2, -Math.PI / 2, 'Nota al final del pasillo', 'El pasillo siempre es más largo a la vuelta.');
+    b.lair('figure', X + W - 4, Z + 2);
+  }
+
+  // ---- sala altísima con la escalera que acaba en la pared ----
+  {
+    const { X, Z } = sq(TALL, B);
+    b.open(X + 0.25, Z + 0.25, 11.5, 11.5, { ceil: 8.5, wall: 0, lamps: 4 });
+    b.ramp(X + 1, Z + 1, 2, 9.5, 2, 0, 5, true, 8.5).solid(X + 1, Z + 10.5, 2, 1.25);
+    b.prop('door2wall', X + 2, Z + 10.45, Math.PI, { y: 5 }).prop('door2wall', X + 11.95, Z + 4, -Math.PI / 2, { y: 4.5 }).prop('door2wall', X + 7, Z + 0.55, 0, { y: 6 });
+    for (const [x, z] of [[X + 5, Z + 5], [X + 9, Z + 5], [X + 5, Z + 9], [X + 9, Z + 9]]) b.solid(x - 0.5, z - 0.5, 1, 1);
+    b.note(X + 11.95, Z + 9, -Math.PI / 2, 'Garabato a lápiz', 'Las escaleras no llevan a ninguna parte.\nLas puertas de arriba tampoco.\nNo subas.');
+    b.item('pila', X + 10, Z + 10.5);
+    p0.push(...ports([[3, 21, DS], [5, 23, DW]]));
+  }
 
   // ---- Habitaciones Rojas ----
-  b.open(90, 62, 2.5, 6, { wall: 4, lamps: 3 });
-  b.open(80, 68, 20, 6, { wall: 4, floorMat: 3, lamps: 3.5 });
-  b.open(98, 74, 2, 2, { floorMat: 3 });
-  // el pasillo que no se acaba: se repite cada 12 m y la niebla roja no deja ver los extremos
-  b.open(74, 76, 34, 3.5, { wall: 4, floorMat: 3, lamps: false });
-  for (let x = 75.5; x < 108; x += 3) b.lamp(x, 77.75);
-  b.red(90, 64, 2.5, 4).red(80, 68, 20, 6).red(74, 74, 34, 8);
-  b.shift(98, 74, 2, 2, false, 4); // la entrada: se cierra a tu espalda
-  b.loop({ axis: 'x', x0: 84, x1: 96, z0: 76, z1: 79.5 });
-  for (const x of [80, 86, 92, 98, 104]) b.prop('door2wall', x, 79.45, N);
-  for (const x of [77, 83, 95, 101, 107]) b.prop('door2wall', x, 76.05, S);
-  // la única salida: la puerta blanca, la única de verdad entre tantas puertas falsas
-  b.door(89, 76.05, S, { look: 'white', locked: false, to: { x: 92, z: 58.5, ry: N }, label: 'Abrir la puerta blanca' });
-  b.prop('text', 89, 79.44, N, { y: 2.1, text: 'SOLO LA PUERTA BLANCA ES DE VERDAD', w: 3.6 });
-  b.zone('red', 74, 62, 34, 20);
-  b.prop('text', 90.05, 66, E, { y: 1.6, text: 'VUELVE', w: 1.4 });
-
-  // ===================================================== zonas nuevas, planta 0
-
-  // ---- de la sala de columnas a las oficinas ----
-  b.open(86, 14, 26, 2.5, { lamps: 4 });
-  b.shift(98, 14, 0.5, 2.5, false).shift(104, 11.5, 0.5, 2.5, true, 0, true);
-  b.open(104, 11.5, 2, 2.5).open(104, 9.5, 8, 2);
-
-  // ---- oficinas abandonadas (dos plantas, con un atrio en medio) ----
-  b.open(112, 2, 40, 40, { wall: 2, floorMat: 1, lamps: 4 });
-  b.solid(112, 22, 10, 0.5, 2).solid(140, 10, 0.5, 12, 2).solid(118, 32, 0.5, 10, 2);
-  for (let x = 115; x < 150; x += 7) {
-    for (let z = 5; z < 40; z += 7) {
-      if (x > 123 && x < 141 && z > 11 && z < 29) continue; // el atrio
-      if (x > 142 && z > 21) continue; // la escalera
-      b.prop('partition', x, z - 1.2, 0, { w: 3.6 }).block(x - 1.8, z - 1.3, 3.6, 0.3);
-      b.prop('desk', x, z + 0.6, N, { solid: [1.6, 0.8] }).prop('chair', x + 0.2, z + 1.8, (x * 1.3) % 6);
-    }
+  let redOut: Port;
+  {
+    const { X, Z } = sq(RED, B);
+    b.open(X + 16.75, Z, 2.5, 6, { wall: 4, lamps: 3 });
+    b.open(X + 6, Z + 6, 20, 6, { wall: 4, floorMat: 3, lamps: 3.5 });
+    b.open(X + 24, Z + 12, 2, 2, { floorMat: 3 });
+    b.open(X, Z + 14, 32, 3.5, { wall: 4, floorMat: 3, lamps: false });
+    for (let x = X + 1.5; x < X + 32; x += 3) b.lamp(x, Z + 15.75);
+    b.red(X + 16.75, Z, 2.5, 6).red(X + 6, Z + 6, 20, 6).red(X, Z + 12, 32, 8);
+    b.shift(X + 24, Z + 12, 2, 2, false, 4);
+    b.loop({ axis: 'x', x0: X + 10, x1: X + 22, z0: Z + 14, z1: Z + 17.5 });
+    for (const dx of [6, 12, 18, 24, 30]) b.prop('door2wall', X + dx, Z + 17.45, Math.PI);
+    for (const dx of [3, 9, 21, 27]) b.prop('door2wall', X + dx, Z + 14.05, 0);
+    b.prop('text', X + 15, Z + 17.44, Math.PI, { y: 2.1, text: 'SOLO LA PUERTA BLANCA ES DE VERDAD', w: 3.6 });
+    b.zone('red', X, Z, 32, 20);
+    b.prop('text', X + 16.8, Z + 4, Math.PI / 2, { y: 1.6, text: 'VUELVE', w: 1.4 });
+    redOut = { bx: 14, bz: 20, dir: DS, p: X + 18, w: 2.5 };
+    p0.push(redOut);
   }
-  b.prop('vending', 112.6, 30, E, { solid: [0.9, 0.85] }).prop('cooler', 151.6, 4, W, { solid: [0.4, 0.4] });
-  b.prop('cabinet', 151.6, 12, W, { solid: [0.6, 0.5] }).prop('cabinet', 151.6, 13, W, { solid: [0.6, 0.5] });
-  b.prop('plant', 124, 30, 0, { solid: [0.5, 0.5] }).prop('chairstack', 146, 4, 0.3, { solid: [0.6, 0.6] });
-  b.prop('tile', 130, 36, 0.4).prop('hole', 130, 36, 0, { y: 2.8 });
-  b.item('agua', 113, 40).item('pila', 150, 30);
-  b.note(112.05, 18, E, 'Post-it amarillo', 'La escalera del fondo sube a otra planta de oficinas igual que esta. Desde allí arriba se ve el patio de abajo.\n\nNo te asomes mucho: no hay barandillas en todas partes.');
-  b.lair('figure', 148, 6).lair('figure', 116, 38);
-  // la escalera que sube a la planta de oficinas de arriba
-  b.ramp(146, 24, 2, 12, 2, 0, UP0.floor, true);
 
-  // ---- del apagón y las oficinas al gran atrio ----
-  b.open(108, 50, 4, 2.5, { dark: true });
-  b.open(130, 42, 2.5, 4, { lamps: false });
-
-  // ---- el gran atrio: suelo hundido, balcón alrededor y caída libre al centro ----
-  b.open(112, 46, 40, 40, { wall: 1, floorMat: 2, lamps: 6 });
-  b.ramp(118, 49, 28, 3, 3, -2.4, 0, true);
-  b.open(118, 52, 28, 28, { floor: -2.4, floorMat: 0, lamps: 6 });
-  b.ramp(118, 80, 28, 3, 2, -2.4, 0, true);
-  b.deep(124, 58, 16, 16, 0.1);
-  b.prop('text', 112.05, 60, E, { y: 1.6, text: 'MIRA ARRIBA', w: 2 });
-  b.item('vendas', 132, 66).item('agua', 120, 76);
-  b.lair('figure', 145, 70);
-
-  // ---- pasillos sin fin, al este (con desniveles) ----
-  b.open(152, 20, 4, 2.5);
-  b.corridor([[156, 21], [186, 21]], 2.5);
-  b.corridor([[160, 4], [160, 96]], 2.5);
-  b.corridor([[172, 4], [172, 60]], 2.5);
-  b.corridor([[184, 4], [184, 96]], 2.5);
-  b.corridor([[160, 4], [184, 4]], 2.5);
-  b.corridor([[160, 40], [172, 40]], 2.5);
-  b.corridor([[172, 60], [184, 60]], 2.5);
-  b.corridor([[160, 78], [184, 78]], 2.5);
-  b.corridor([[160, 96], [184, 96]], 2.5);
-  // tramos elevados con escalones
-  b.ramp(158.75, 44, 2.5, 4, 2, 0, 1.2, true, 4.2).open(158.75, 48, 2.5, 10, { floor: 1.2, ceil: 4.2 }).ramp(158.75, 58, 2.5, 4, 3, 0, 1.2, true, 4.2);
-  b.ramp(182.75, 64, 2.5, 4, 2, 0, -1.2, true, 2).open(182.75, 68, 2.5, 6, { floor: -1.2, ceil: 1.8 }).ramp(182.75, 74, 2.5, 4, 3, 0, -1.2, true, 2);
-  b.shift(170.75, 29, 2.5, 0.5, true).shift(158.75, 70, 2.5, 0.5, false, 0, true);
-  b.shift(178, 58.75, 0.5, 2.5, false).shift(182.75, 40, 2.5, 0.5, true, 0, true);
-  b.dark(170, 44, 4, 16);
-  b.lair('figure', 172, 52).lair('figure', 184, 88).lair('figure', 160, 90);
-  b.item('barrita', 184, 30).item('agua', 160, 66);
-  b.prop('text', 184.05, 10, E, { y: 1.6, text: 'NO ESTABA AQUÍ ANTES', w: 2.8 });
-
-  // ---- sala altísima con escaleras que acaban en la pared ----
-  b.open(14, 80, 2.5, 6);
-  b.open(4, 86, 30, 30, { ceil: 9, wall: 0, lamps: 5 });
-  b.ramp(6, 90, 2.5, 18, 2, 0, 6, true, 9);
-  b.solid(4, 108, 8, 8);
-  b.prop('door2wall', 7.25, 107.95, N, { y: 6 }).prop('door2wall', 33.95, 100, W, { y: 4.5 }).prop('door2wall', 20, 86.05, S, { y: 6.5 });
-  for (const [x, z] of [[14, 96], [24, 96], [14, 106], [24, 106]]) b.solid(x, z, 1.2, 1.2);
-  b.note(4.05, 88, E, 'Garabato a lápiz', 'Las escaleras no llevan a ninguna parte.\nLas puertas de arriba tampoco.\nNo subas.');
-  b.lair('figure', 28, 112);
-  b.item('pila', 30, 90);
-
-  // ---- Las Caídas: terrazas que bajan hacia el este ----
-  b.open(34, 100, 10, 2.5);
-  b.open(44, 88, 16, 40, { ceil: 3.2, floorMat: 2, lamps: 4 });
-  b.open(60, 88, 16, 40, { floor: -1.5, ceil: 3.2, floorMat: 2, lamps: 4 });
-  b.open(76, 88, 16, 40, { floor: -3, ceil: 3.2, floorMat: 0, lamps: 4.5 });
-  b.open(92, 88, 16, 40, { floor: -4.5, ceil: 3.2, floorMat: 0, lamps: 5 });
-  b.ramp(58, 92, 4, 3, 1, -1.5, 0, true, 3.2);
-  b.ramp(74, 110, 4, 3, 1, -3, -1.5, true, 3.2);
-  b.ramp(90, 120, 4, 3, 1, -4.5, -3, true, 3.2);
-  for (const [x, z] of [[52, 96], [52, 116], [68, 100], [68, 120], [84, 96], [84, 116], [100, 104]]) b.solid(x, z, 0.6, 0.6);
-  b.dark(92, 88, 16, 14);
-  b.prop('text', 59.95, 106, W, { y: 1.6, text: 'NO MIRES ABAJO', w: 2.4 });
-  b.note(44.05, 120, E, 'Hoja doblada', 'Las terrazas bajan y bajan. Cada salto parece pequeño hasta que miras atrás y no puedes volver a subir.\n\nUsa las escaleras.');
-  b.lair('figure', 104, 124).lair('figure', 70, 90);
-  b.item('agua', 66, 126).item('vendas', 98, 92);
-
-  // ---- la salida: la puerta de mantenimiento y la escalera que baja ----
-  b.open(108, 117, 6, 2.5, { floor: -4.5, ceil: -1.7 });
-  b.open(114, 110, 16, 16, { floor: -4.5, ceil: -1.5, wall: 3, ceilMat: 1, lamps: 5 });
-  b.prop('machine', 114.45, 114, E, { solid: [0.8, 2.4] }).prop('cabinet', 125, 110.45, S, { solid: [0.6, 0.5] });
-  b.door(129.95, 117.25, W, { look: 'steel', locked: false, sign: 'MANTENIMIENTO' });
-  b.open(130, 116, 2, 2.5, { floor: -4.5, ceil: -1.7 });
-  b.ramp(132, 116, 18, 2.5, 1, -7, -4.5, true, -1.7);
-  b.open(150, 114, 5, 6, { floor: -7, ceil: -4.2, wall: 3, lamps: false }).lamp(152.5, 117, { flicker: true });
-  b.ramp(151, 120, 2.5, 18, 3, -9.5, -7, true, -4.2);
-  b.open(148, 138, 10, 8, { floor: -9.5, ceil: -6.7, wall: 3, lamps: false }).lamp(153, 142, { flicker: true });
-  b.exit(153, 143.5, S, 'NIVEL 1', true);
-  b.note(129.95, 114, W, 'Cartel oxidado', 'MANTENIMIENTO\nSolo personal autorizado.\n\nDebajo, a rotulador: «baja hasta que el papel amarillo se acabe».');
-
-  // ===================================================== planta 1 (arriba)
-  b.storey(1);
-  // rellano de la escalera del laberinto y pasillo hacia la pasarela
-  b.hole(38, 24, 2, 10);
-  b.open(38, 34, 6, 2, { ...UP0, lamps: 3 });
-
-  // ---- pasarela sobre los agujeros: cruz de pasillos y caída libre al resto ----
-  b.open(44, 34, 26, 22, { ...UP0, wall: 0, lamps: 4 });
-  b.hole(44, 36, 26, 20);
-  b.open(44, 34, 14, 2, UP0).open(56, 34, 2, 22, UP0).open(44, 44, 26, 2, UP0);
-  for (const [x, z, r, w] of [[50, 36.05, 0, 6], [63, 43.95, N, 8], [63, 46.05, 0, 8], [55.95, 52, W, 6]] as const) b.prop('railing', x, z, r, { w });
-  b.note(44.05, 35, E, 'Nota pegada a la barandilla', 'Abajo están los agujeros. Desde aquí parecen pequeños.\nLa barandilla se acaba de golpe.');
-  b.lair('figure', 68, 45);
-
-  // ---- la planta de arriba de la sala de columnas: con el suelo roto ----
-  b.open(56, 28, 2, 6, { ...UP0, lamps: false });
-  b.open(52, 4, 34, 24, { ...UP0, wall: 0, floorMat: 2, lamps: 4 });
-  for (const [x, z] of [[60, 11], [72, 20], [78, 8], [66, 23]]) b.hole(x, z, 2, 2);
-  for (let x = 58; x < 86; x += 9) for (let z = 7; z < 26; z += 9) b.solid(x, z, 0.6, 0.6);
-  b.prop('text', 52.05, 12, E, { y: 1.6, text: 'EL SUELO CEDE', w: 2.4 });
-  b.prop('tile', 61, 14, 0.3).prop('tile', 73, 18, 1.2);
-  b.item('agua', 84, 26).item('pila', 54, 6);
-  b.lair('figure', 82, 6);
-  // pasillo hacia las oficinas de arriba
-  b.open(86, 8, 26, 2.5, { ...UP0, lamps: 4 });
-
-  // ---- oficinas de arriba, con el atrio y la escalera ----
-  b.open(112, 2, 40, 40, { ...UP0, wall: 2, floorMat: 1, lamps: 4 });
-  b.hole(126, 14, 12, 12);
-  b.hole(146, 24, 2, 12);
-  for (const [x, z, r, w] of [[132, 13.95, N, 12], [132, 26.05, 0, 8], [125.95, 20, W, 12], [138.05, 18, E, 6]] as const) b.prop('railing', x, z, r, { w });
-  b.solid(112, 30, 12, 0.5, 2).solid(140, 2, 0.5, 8, 2);
-  for (const [x, z] of [[116, 6], [122, 6], [146, 8], [116, 36], [122, 36], [140, 36]]) {
-    b.prop('desk', x, z, N, { solid: [1.6, 0.8] }).prop('chair', x, z + 1.2, (x * 0.7) % 6);
+  // ---- la puerta de MANTENIMIENTO y la escalera que baja al Nivel 1 ----
+  {
+    const { X, Z } = sq(EXIT, B);
+    b.open(X, Z + 1.25, 1.2, 1.5, { ceil: 2.4, wall: 3, lamps: false });
+    b.door(X + 0.1, Z + 2.25, -Math.PI / 2, { look: 'steel', locked: false, sign: 'MANTENIMIENTO' });
+    b.ramp(X + 1.2, Z + 1.25, 9.6, 1.5, 1, -3.4, 0, true, 2.4);
+    b.open(X + 10.8, Z + 1.25, 1.2, 6, { floor: -3.4, ceil: -1, wall: 3, lamps: false }).lamp(X + 11.4, Z + 4.5, { flicker: true });
+    b.ramp(X + 1.2, Z + 5.75, 9.6, 1.5, 0, -6.8, -3.4, true, -1);
+    b.open(X + 0.25, Z + 5.75, 0.95, 1.5, { floor: -6.8, ceil: -4.4, wall: 3, lamps: false }).lamp(X + 4, Z + 6.5, { flicker: true });
+    b.exit(X + 0.6, Z + 6.5, -Math.PI / 2, 'NIVEL 1', true);
+    b.note(X + 2, Z + 1.55, 0, 'Cartel oxidado', 'MANTENIMIENTO\nSolo personal autorizado.\n\nDebajo, a rotulador: «baja hasta que el papel amarillo se acabe».');
+    p0.push({ bx: 29, bz: 12, dir: DE, p: Z + 2.25, w: 1.2 });
   }
-  // sala de reuniones
-  b.prop('table', 116, 26, 0, { solid: [1.6, 1] }).prop('chair', 114.8, 26, E).prop('chair', 117.2, 26, W);
-  b.prop('cabinet', 151.6, 30, W, { solid: [0.6, 0.5] }).prop('cabinet', 151.6, 31, W, { solid: [0.6, 0.5] }).prop('plant', 142, 3, 0);
-  b.note(151.95, 20, W, 'Nota en el tablón', 'Desde la barandilla del patio se ve la planta de abajo.\nAlguien saltó. Abajo no había nadie.');
-  b.item('barrita', 150, 40).item('vendas', 113, 3);
-  b.lair('figure', 150, 4);
-  // pasillo al balcón del gran atrio
-  b.open(130, 42, 2.5, 4, { ...UP0, lamps: false });
 
-  // ---- balcón del gran atrio (caída libre al suelo hundido) ----
-  b.open(112, 46, 40, 40, { floor: UP0.floor, ceil: 9, wall: 1, floorMat: 2, lamps: 6 });
-  b.hole(115, 49, 34, 34);
-  for (const [x, z, r, w] of [[124, 48.95, N, 10], [146, 48.95, N, 4], [114.95, 60, W, 12], [149.05, 74, E, 10], [132, 83.05, 0, 14]] as const) b.prop('railing', x, z, r, { w });
-  for (const [x, z] of [[115, 49], [148, 49], [115, 82], [148, 82]]) b.solid(x, z, 1, 1);
-  b.storey(0);
-  for (const [x, z] of [[115, 49], [148, 49], [115, 82], [148, 82]]) b.solid(x, z, 1, 1);
+  // ---- escaleras entre plantas ----
+  for (const st of STAIRS) {
+    const s = stairwell(b, B, st, 0, F1, 0);
+    p0.push(s.p0);
+    p1.push(s.p1);
+  }
+
+  // ---- el laberinto de abajo ----
+  const stairRects = STAIRS.map((s) => ({ x: s.x, z: s.z, w: 2, h: 1 }));
+  const reserved0 = [PILLARS, PITS, ABYSS, HALL, TALL, RED, EXIT, ...stairRects];
+  const reserved1 = [PITS, ABYSS, TALL, ...stairRects];
+  const m0 = maze(b, R, {
+    ox: 0,
+    oz: 0,
+    B,
+    nx: NX,
+    nz: NZ,
+    storey: 0,
+    floor: 0,
+    regions: [
+      { x: 0, z: 0, w: NX, h: NZ, style: L0_YELLOW },
+      { x: 0, z: 7, w: 10, h: 10, style: L0_ARCHES },
+      { x: 24, z: 0, w: 12, h: 11, style: L0_OFFICE },
+      { x: 21, z: 19, w: 15, h: 9, style: L0_BLACKOUT },
+    ],
+    reserved: reserved0,
+    ports: p0,
+    loops: 0.12,
+    force: new Map([['1,1', 'room']]),
+    single: new Set(['1,1']),
+    shifts: 6,
+  });
+
+  // ---- el laberinto de arriba ----
+  const force1 = vertical(b, R, m0, reserved1, 9, 12, false);
   b.storey(1);
-  b.item('agua', 150, 84).item('pila', 113, 84);
-  b.lair('figure', 113, 66);
-
+  const m1 = maze(b, R, {
+    ox: 0,
+    oz: 0,
+    B,
+    nx: NX,
+    nz: NZ,
+    storey: 1,
+    floor: F1,
+    regions: [
+      { x: 0, z: 0, w: NX, h: NZ, style: L0_UPPER },
+      { x: 24, z: 0, w: 12, h: 11, style: { ...L0_OFFICE, room: L0_UPPER.room, hall: L0_UPPER.hall, steps: L0_UPPER.steps } },
+    ],
+    reserved: reserved1,
+    ports: p1,
+    loops: 0.1,
+    force: force1,
+    single: new Set(force1.keys()),
+    shifts: 3,
+  });
   b.storey(0);
+
+  // la puerta blanca de las Habitaciones Rojas saca al pasillo de fuera
+  {
+    const out = m0.at(redOut.bx, redOut.bz)!;
+    const c = mid(out);
+    const { X, Z } = sq(RED, B);
+    b.door(X + 15, Z + 14.05, 0, { look: 'white', locked: false, to: { x: c.x, z: c.z, ry: Math.PI }, label: 'Abrir la puerta blanca' });
+  }
+
+  // ---- donde te despiertas ----
+  const start = m0.at(1, 1)!;
+  {
+    const r = start.area;
+    b.spawn(r.x + r.w / 2, r.z + r.d / 2, FACE[start.arms[0]?.dir ?? 2]);
+    b.lamp(r.x + r.w / 2, r.z + r.d / 2);
+    b.note(r.x + 0.05, r.z + r.d / 2, Math.PI / 2, 'Nota arrugada', 'Si lees esto, has hecho noclip. Estás en el Nivel 0.\n\nEsto es un laberinto, y encima de este hay otro igual. Hay escaleras, suelos rotos y puertas que dan a salas sin suelo.\n\nPara salir, busca una puerta gris de MANTENIMIENTO. Está lejos. No sé dónde.');
+  }
+
+  scatterItems(b, R, [m0, m1], ['agua', 'agua', 'pila', 'pila', 'barrita', 'vendas'], 26);
+  scatterLairs(b, R, [m0, m1], start, Array.from({ length: 9 }, () => ['figure'] as [EntityKind]));
+  wakes(b, R, [m0, m1], 8);
   return b.build();
 }
 
 // ===========================================================================
 // NIVEL 1 — «La Zona Habitable»
-// Un cruce infinito entre aparcamiento subterráneo y almacén abandonado.
-//  - Llegada: la Sala Manila, llena de notas.
-//  - Sector Aquila: gris, columnas enormes, tuberías del techo que gotean,
-//    charcos, escombros. La Base Alpha de la M.E.G. está aquí.
-//  - Marcas de la M.E.G.: tela de color con el águila, agua y una nota.
-//  - Sector Gild: almacén con estanterías y muchas cajas.
-//  - Sector gótico: arcos y columnas redondas; el Círculo de Ariadna.
-//  - Sector en obras: trabajadores de sombra que no hacen caso a nadie.
-//  - Pasillos: tras puertas con luz verde de SALIDA; estrechos, seguros, con
-//    salas sin sentido (oficina, enfermería, sala acolchada, cuadros...).
-//  - Geometría no euclídea: un pasillo que no acaba si no miras tu referencia.
-//  - Parpadeo: apagones totales en los que salen las criaturas.
-//  - Salida: un pasillo que sigue más de lo normal y baja al Nivel 2.
+// Un laberinto de hormigón entre aparcamiento y almacén: pasillos anchos y
+// estrechos, cuartos de almacenaje con cajas, charcos y goteras. Dos plantas
+// unidas por escaleras y forjados rotos. Piezas: la Sala Manila (llegada), la
+// Base Alpha de la M.E.G. (zona segura), el pasillo que no acaba, el sector en
+// obras, el almacén Gild, el sector gótico con el Círculo de Ariadna, un
+// aparcamiento bajo y el depósito inundado con la escalera al Nivel 2.
+// Zona de pasillos seguros (blancos y estrechos) al este.
 // Paredes: 0 hormigón gris · 1 hormigón blanco · 2 bloques con franja
 //          3 ladrillo · 4 verde M.E.G. · 5 piedra gótica · 6 manila
 // Suelos: 0 hormigón · 1 pintado · 2 goma · 3 baldosa. Techos: 0 hormigón · 1 placas
 // ===========================================================================
+
+const L1_CONCRETE: Style = {
+  wall: [0, 0, 1, 2],
+  floorMat: [0, 0, 1],
+  ceilMat: [0],
+  room: [3, 3.6],
+  hall: [2.8, 3.4],
+  widths: [1.6, 2, 2.5, 3, 4],
+  doors: [1.4, 2, 2.5],
+  rooms: 0.45,
+  merge: 0.35,
+  dark: 0.12,
+  lamp: 0.7,
+  flicker: 0.15,
+  steps: [0],
+  wet: 0.15,
+  straight: 0.6,
+  decor: L1_DECOR,
+  ends: L1_ENDS,
+};
+const L1_SAFE: Style = { ...L1_CONCRETE, wall: [1], floorMat: [3, 1], ceilMat: [1], room: [2.6, 2.8], hall: [2.5, 2.6], widths: [1.2, 1.4, 1.6], doors: [0.9, 1.1], rooms: 0.55, merge: 0.1, dark: 0.05, lamp: 0.85, wet: 0 };
+const L1_WET: Style = { ...L1_CONCRETE, wet: 0.5, deep: 0.2, dark: 0.2 };
+const L1_UPPER: Style = { ...L1_CONCRETE, wall: [2, 0], floorMat: [1, 0], ceilMat: [0, 1], room: [2.8, 3.2], hall: [2.6, 3], rooms: 0.5, dark: 0.2 };
+
 function level1(): LevelMap {
-  const b = new Builder(1, LEVELS[1], 200, 172, { ceil: 5.5 });
+  const B = 5;
+  const NX = 32;
+  const NZ = 26;
+  const F1 = 4.2;
+  const b = new Builder(1, LEVELS[1], NX * B, NZ * B, { ceil: 3.4 });
+  b.storey(1, 7.4).storey(0);
+  const R = makeRng(2027);
 
-  // ---- la Sala Manila ----
-  b.open(2, 2, 8, 7, { ceil: 3, wall: 6, floorMat: 3, ceilMat: 1, lamps: 3 }).spawn(5, 6);
-  b.open(10, 4.5, 2, 2, { ceil: 3 });
-  b.note(2.05, 4, E, 'Nota clavada en la pared', 'Si estás leyendo esto, has hecho noclip. Saliste del Nivel 0 por una pared que parpadeaba y ahora estás en el Nivel 1, la Zona Habitable.\n\nNo estás solo. Aquí hay gente.');
-  b.note(2.05, 7, E, 'Nota con letra apretada', 'Busca telas de colores con el águila de la M.E.G. Suelen dejar agua de almendras y una nota al lado.\n\nLa Base Alpha está al este de este sector. Las patrullas visten de amarillo lima.');
-  b.note(6, 2.05, S, 'Nota escrita a toda prisa', 'Cuando se apaguen TODAS las luces (lo llamamos Parpadeo), NO enciendas la linterna en los salones. Busca la luz verde de una salida y métete en los pasillos. Ahí casi nunca entra nada.\n\nY no corras: oyen muy bien.');
-  b.note(9.95, 3, W, 'Nota a lápiz', 'Las distancias aquí mienten. Elige una referencia (una columna pintada, un panel eléctrico, una caja) y camina hacia ella sin dejar de mirarla.');
-  b.item('agua', 8.5, 8.2);
+  const MANILA = { x: 1, z: 1, w: 2, h: 2 };
+  const ALPHA = { x: 6, z: 1, w: 5, h: 4 };
+  const LOOP = { x: 14, z: 3, w: 6, h: 1 };
+  const BUILD = { x: 22, z: 1, w: 4, h: 4 };
+  const GILD = { x: 2, z: 9, w: 5, h: 4 };
+  const GOTHIC = { x: 12, z: 10, w: 4, h: 4 };
+  const PARK = { x: 2, z: 18, w: 5, h: 4 };
+  const DEPOT = { x: 25, z: 20, w: 4, h: 3 };
+  const STAIRS: Stair[] = [
+    { x: 9, z: 7, up: 0 },
+    { x: 17, z: 6, up: 1 },
+    { x: 28, z: 7, up: 0 },
+    { x: 10, z: 17, up: 1 },
+    { x: 19, z: 19, up: 0 },
+    { x: 14, z: 23, up: 1 },
+    { x: 23, z: 13, up: 0 },
+    { x: 4, z: 15, up: 1 },
+  ];
+  const p0: Port[] = [];
+  const p1: Port[] = [];
 
-  // ---- sector Aquila ----
-  b.open(12, 2, 58, 48, { ceil: 5.5, lamps: 7 });
-  for (let x = 18; x < 70; x += 8) for (let z = 8; z < 50; z += 8) b.solid(x - 0.6, z - 0.6, 1.2, 1.2);
-  // tuberías del techo que gotean y dejan charcos
-  for (const [x, z] of [[22, 12], [38, 20], [54, 14], [30, 36], [46, 42], [62, 30]]) {
-    b.prop('drip', x, z, 0, { y: 5.4 }).wet(x - 1.5, z - 1.2, 3, 2.4);
+  // ---- la Sala Manila (llegada) ----
+  {
+    const { X, Z } = sq(MANILA, B);
+    b.open(X + 0.25, Z + 0.25, 9.5, 9.5, { ceil: 3, wall: 6, floorMat: 3, ceilMat: 1, lamps: 3 });
+    b.spawn(X + 4, Z + 6, 0);
+    b.note(X + 0.55, Z + 3, Math.PI / 2, 'Nota clavada en la pared', 'Si estás leyendo esto, has hecho noclip. Bajaste del Nivel 0 por una escalera que no se acababa y ahora estás en el Nivel 1, la Zona Habitable.\n\nNo estás solo. Aquí hay gente.');
+    b.note(X + 0.55, Z + 7, Math.PI / 2, 'Nota con letra apretada', 'Busca telas de colores con el águila de la M.E.G. Suelen dejar agua de almendras al lado.\n\nLa Base Alpha está al este de aquí. Las patrullas visten de amarillo lima.');
+    b.note(X + 5, Z + 0.55, 0, 'Nota escrita a toda prisa', 'Cuando se apaguen TODAS las luces (lo llamamos Parpadeo), NO enciendas la linterna. Quédate quieto.\n\nY no corras: oyen muy bien.');
+    b.note(X + 9.95, Z + 3, -Math.PI / 2, 'Nota a lápiz', 'Esto es un laberinto de almacenes. Arriba hay otro. Las distancias mienten: elige una referencia y no la pierdas.');
+    b.item('agua', X + 8, Z + 8.5);
+    p0.push(...ports([[3, 1, DW], [1, 3, DN]]));
   }
-  b.prop('pipe', 41, 12, E, { y: 5.2, w: 56 }).prop('pipe', 41, 36, E, { y: 5.0, w: 56 });
-  // escombros: madera, embalajes y metal
-  for (const [x, z, r] of [[26, 26, 0.3], [50, 8, 1.2], [60, 44, 2.1], [16, 40, 0.8]]) b.prop('debris', x, z, r, { solid: [1.6, 1.2] });
-  b.crate(34, 28, 0.2, 'comida').crate(58, 22, 1.1, 'herramientas').crate(14, 47, 0.5, 'mixto');
-  // marca de la M.E.G.
-  b.prop('megcloth', 69.95, 6, W, { y: 2 }).item('agua', 69, 6.5);
-  b.note(69.95, 7.6, W, 'Nota atada a una tela lima', '¡Hola, viajero! Esta agua es para ti, cortesía de la M.E.G.\n\nSigue los pasillos hasta ver gente: te llevaremos a un lugar seguro. Deja la botella vacía aquí, por favor. ¡Suerte!', true, 1.3);
-  // una columna pintada de naranja: referencia para el pasillo que no acaba
-  b.prop('paint', 66.61, 32, E, { y: 0, h: 5.5 }); // cara este de la columna
-  b.lair('hound', 30, 44).lair('smiler', 66, 46).lair('duller', 12.6, 30).lair('duller', 12.6, 18);
-  b.lair('skinstealer', 48, 30, ['¿Hola?', '¿Hay alguien ahí?', 'Me he perdido…', 'Hola. Hola. Hola.']);
-  b.dark(60, 40, 10, 10);
 
-  // ---- Base Alpha de la M.E.G. ----
-  b.open(70, 9.5, 2, 3.5, { ceil: 3.2 });
-  b.open(72, 2, 26, 22, { ceil: 3.2, wall: 4, floorMat: 3, lamps: 4 }).zone('safe', 72, 2, 26, 22);
-  b.solid(84, 2, 0.5, 9, 4).solid(84, 15, 0.5, 9, 4);
-  b.prop('megflag', 72.05, 5, E, { y: 1.8 }).prop('megflag', 97.95, 12, W, { y: 1.8 });
-  b.npc({ kind: 'meg', x: 74, z: 11, ry: W, lines: ['¡Eh! Tranquilo, estás a salvo. Esto es la Base Alpha de la M.E.G.', 'Si se apagan las luces, no enciendas la linterna en los salones.', 'Las cajas aparecen cuando no miras. Coge lo que te haga falta.'] });
-  b.npc({ kind: 'meg', x: 90, z: 5, ry: S, lines: ['Si te muerde un Hound, véndate rápido.', 'Recuerda: la sangre roja, vivo. La sangre clara, aléjate.', 'Bebe agua de almendras: calma la cabeza.'] });
-  b.npc({ kind: 'meg', x: 92, z: 20, ry: N, lines: ['Para bajar al Nivel 2, cruza el sector gótico hacia el sur: el depósito inundado.', 'Al sur hay un sector en obras. No te acerques a los trabajadores.', 'Allí abajo hace calor. Lleva pilas.'] });
-  b.prop('cot', 77, 3.5, S, { solid: [2, 0.9] }).prop('cot', 80, 3.5, S, { solid: [2, 0.9] }).prop('cot', 77, 22.5, N, { solid: [2, 0.9] });
-  b.prop('meg', 90, 9, S, { solid: [2, 1] }).prop('radio', 96, 3, S, { solid: [0.5, 0.5] }).prop('tent', 79, 13, 0.3, { solid: [2.4, 2.4] });
-  b.crate(95, 22, 0, 'medico').crate(87, 22, 0.1, 'comida');
-  b.note(97.95, 16, W, 'Tablón de la M.E.G.', 'GUÍA RÁPIDA DE ENTIDADES\n\nSmilers: les atrae la luz. Apágala, mírales y aléjate despacio. Si corres o haces ruido, atacan.\n\nHounds: mírales a los ojos y grita (tecla G). No aguantarán mucho.\n\nSkin-Stealers: alguien solo que llora y pide ayuda... no te acerques. Aléjate con calma.\n\nDullers: si oyes arañar dentro de una pared, apártate de ella.\n\nClumps: no ven. Agáchate (C) y no hagas ruido.');
+  // ---- Base Alpha de la M.E.G. (zona segura) ----
+  {
+    const { X, Z, W, D } = sq(ALPHA, B);
+    b.open(X + 0.25, Z + 0.25, W - 0.5, D - 0.5, { ceil: 3.2, wall: 4, floorMat: 3, lamps: 4 }).zone('safe', X, Z, W, D);
+    b.solid(X + 12, Z + 0.25, 0.5, 7, 4).solid(X + 12, Z + 12, 0.5, 7.75, 4);
+    b.prop('megflag', X + 0.55, Z + 4, Math.PI / 2, { y: 1.8 }).prop('megflag', X + W - 0.05, Z + 10, -Math.PI / 2, { y: 1.8 });
+    b.npc({ kind: 'meg', x: X + 3, z: Z + 10, ry: -Math.PI / 2, lines: ['¡Eh! Tranquilo, estás a salvo. Esto es la Base Alpha de la M.E.G.', 'Si se apagan las luces, no enciendas la linterna en los pasillos.', 'Las cajas aparecen cuando no miras. Coge lo que te haga falta.'] });
+    b.npc({ kind: 'meg', x: X + 18, z: Z + 4, ry: 0, lines: ['Si te muerde un Hound, véndate rápido.', 'Arriba hay otro almacén. Hay forjados rotos: mira dónde pisas.', 'Bebe agua de almendras: calma la cabeza.'] });
+    b.npc({ kind: 'meg', x: X + 20, z: Z + 16, ry: Math.PI, lines: ['Para bajar al Nivel 2, busca el depósito inundado. Al sureste, muy lejos de aquí.', 'Al este hay un sector en obras. No te acerques a los trabajadores.', 'Allí abajo hace calor. Lleva pilas.'] });
+    b.prop('cot', X + 4, Z + 1.5, 0, { solid: [2, 0.9] }).prop('cot', X + 7, Z + 1.5, 0, { solid: [2, 0.9] }).prop('cot', X + 4, Z + 18.5, Math.PI, { solid: [2, 0.9] });
+    b.prop('meg', X + 18, Z + 8, 0, { solid: [2, 1] }).prop('radio', X + 23, Z + 1.5, 0, { solid: [0.5, 0.5] }).prop('tent', X + 7, Z + 11, 0.3, { solid: [2.4, 2.4] });
+    b.crate(X + 22, Z + 18.5, 0, 'medico').crate(X + 15, Z + 18.5, 0.1, 'comida');
+    b.note(X + W - 0.05, Z + 14, -Math.PI / 2, 'Tablón de la M.E.G.', 'GUÍA RÁPIDA DE ENTIDADES\n\nSmilers: les atrae la luz. Apágala, mírales y aléjate despacio.\n\nHounds: mírales a los ojos y grita (tecla G).\n\nSkin-Stealers: alguien solo que llora y pide ayuda... no te acerques.\n\nDullers: si oyes arañar dentro de una pared, apártate de ella.\n\nClumps: no ven. Agáchate (C) y no hagas ruido.');
+    p0.push(...ports([[5, 2, DE], [8, 5, DN, X + 14], [11, 3, DW]]));
+  }
 
-  // ---- pasillo de hormigón que no acaba (no euclídeo) ----
-  b.open(70, 30, 30, 3, { ceil: 3.5, lamps: 5, wall: 0 });
-  b.loop({ axis: 'x', x0: 73, x1: 96, z0: 30, z1: 33, oneWay: 1, landmark: { x: 98.5, z: 30.2 } });
-  b.prop('panel', 98.5, 30.05, S, { y: 1 });
-  b.note(70.5, 30.05, S, 'Garabato en la pared', 'Si el pasillo no se acaba, mira el panel eléctrico del fondo y NO apartes la vista mientras andas.', true, 1.6);
+  // ---- el pasillo de hormigón que no acaba ----
+  {
+    const { X, Z } = sq(LOOP, B);
+    b.open(X, Z + 1, 30, 3, { ceil: 3.5, lamps: 5, wall: 0 });
+    b.loop({ axis: 'x', x0: X + 3, x1: X + 26, z0: Z + 1, z1: Z + 4, oneWay: 1, landmark: { x: X + 28.5, z: Z + 1.2 } });
+    b.prop('panel', X + 28.5, Z + 1.05, 0, { y: 1 });
+    b.note(X + 0.5, Z + 1.05, 0, 'Garabato en la pared', 'Si el pasillo no se acaba, mira el panel eléctrico del fondo y NO apartes la vista mientras andas.', true, 1.6);
+    p0.push(...ports([[13, 3, DE], [20, 3, DW]]));
+  }
 
   // ---- sector en obras ----
-  b.open(100, 26, 18, 24, { ceil: 5, wall: 2, lamps: 6 });
-  b.solid(106, 34, 0.5, 8, 2).solid(110, 44, 6, 0.5, 2);
-  b.prop('scaffold', 104, 30, 0, { solid: [3, 1.2] }).prop('scaffold', 113, 46, E, { solid: [3, 1.2] });
-  for (const [x, z] of [[103, 40], [108, 47], [115, 30]]) b.prop('cone', x, z, 0);
-  b.npc({ kind: 'worker', x: 104, z: 33, ry: N, lines: [], path: [[104, 33], [104, 42], [102, 42]] });
-  b.npc({ kind: 'worker', x: 112, z: 42, ry: E, lines: [], path: [[108, 42], [116, 42], [116, 36]] });
-  b.npc({ kind: 'worker', x: 114, z: 36, ry: W, lines: [] });
-  b.note(100.5, 26.05, S, 'Cartel torcido', 'PELIGRO — OBRAS\nNo te acerques a los trabajadores. No contestan y no se apartan.', true, 1.8);
-  b.crate(116, 48, 0.4, 'herramientas');
+  {
+    const { X, Z } = sq(BUILD, B);
+    b.open(X + 0.25, Z + 0.25, 19.5, 19.5, { ceil: 5, wall: 2, lamps: 6 });
+    b.solid(X + 6, Z + 8, 0.5, 8, 2).solid(X + 10, Z + 16, 6, 0.5, 2);
+    b.prop('scaffold', X + 4, Z + 4, 0, { solid: [3, 1.2] }).prop('scaffold', X + 15, Z + 18, Math.PI / 2, { solid: [3, 1.2] });
+    for (const [x, z] of [[X + 3, Z + 14], [X + 8, Z + 18], [X + 16, Z + 4]]) b.prop('cone', x, z, 0);
+    b.npc({ kind: 'worker', x: X + 4, z: Z + 7, ry: Math.PI, lines: [], path: [[X + 4, Z + 7], [X + 4, Z + 15], [X + 2, Z + 15]] });
+    b.npc({ kind: 'worker', x: X + 12, z: Z + 13, ry: Math.PI / 2, lines: [], path: [[X + 8, Z + 13], [X + 17, Z + 13], [X + 17, Z + 8]] });
+    b.npc({ kind: 'worker', x: X + 16, z: Z + 9, ry: -Math.PI / 2, lines: [] });
+    b.note(X + 0.5, Z + 0.55, 0, 'Cartel torcido', 'PELIGRO — OBRAS\nNo te acerques a los trabajadores. No contestan y no se apartan.', true, 1.8);
+    b.crate(X + 18, Z + 2, 0.4, 'herramientas');
+    p0.push(...ports([[21, 2, DE], [23, 5, DN]]));
+  }
 
-  // ---- sector Gild (almacén con estanterías) ----
-  b.solid(12, 50, 58, 0.5, 2).open(20, 50, 12, 0.5).open(44, 50, 8, 0.5);
-  b.open(12, 50.5, 44, 43.5, { ceil: 6, wall: 2, floorMat: 1, lamps: 6 });
-  for (const x of [16, 22, 28, 34, 40, 46]) {
-    for (const z of [56, 72]) {
-      b.prop('shelf', x, z + 4, 0, { solid: [1.2, 8], d: 8 });
-      b.crate(x, z + 1.5 + (x % 3), 0, x % 2 ? 'comida' : 'mixto', true);
+  // ---- almacén Gild ----
+  {
+    const { X, Z, W, D } = sq(GILD, B);
+    b.open(X + 0.25, Z + 0.25, W - 0.5, D - 0.5, { ceil: 6, wall: 2, floorMat: 1, lamps: 6 });
+    for (const x of [X + 4, X + 9, X + 14, X + 19]) {
+      b.prop('shelf', x, Z + 6, 0, { solid: [1.2, 6], d: 6 });
+      b.prop('shelf', x, Z + 14, 0, { solid: [1.2, 6], d: 6 });
+      b.crate(x, Z + 4 + (x % 3), 0, x % 2 ? 'comida' : 'mixto', true);
     }
+    b.prop('forklift', X + 22, Z + 17, 0.6, { solid: [1.4, 2.4] });
+    b.note(X + 0.55, Z + 10, Math.PI / 2, 'Guía de cajas (Recolección M.E.G.)', 'Las cajas aparecen a tu espalda o después de un Parpadeo, y se esfuman si dejas de mirarlas.\n\nMira lo que hay antes de meter la mano: a veces hay cristales.');
+    b.lair('clump', X + 12, Z + 10);
+    p0.push(...ports([[4, 8, DS], [7, 11, DW], [3, 13, DN]]));
   }
-  b.crate(52, 88, 0.3, 'medico').crate(18, 90, 1.2, 'mixto').crate(50, 60, 0.6, 'comida');
-  b.prop('forklift', 48, 88, 0.6, { solid: [1.4, 2.4] }).prop('pallet', 30, 90, 0.2, { solid: [1.2, 1] });
-  b.note(12.05, 66, E, 'Guía de cajas (Recolección M.E.G.)', 'Las cajas aparecen a tu espalda o después de un Parpadeo, y se esfuman si dejas de mirarlas.\n\nMira lo que hay antes de meter la mano: a veces hay cristales.\n\nPrioriza agua, latas, vendas y pilas. No cargues con lo que no necesites.');
-  b.ramp(52, 60, 2.5, 24, 3, 0, 6.5, true, 10); // escalera a la entreplanta
-  b.lair('smiler', 54, 92).lair('clump', 44, 66).lair('duller', 12.6, 80).lair('hound', 30, 64);
-  b.dark(46, 84, 10, 10);
 
-  // ---- sector gótico ----
-  b.open(56, 54, 0.5, 6, { wall: 5 });
-  b.open(56.5, 50, 41.5, 44, { ceil: 7, wall: 5, lamps: 6 });
-  for (let x = 62; x < 98; x += 7) for (let z = 56; z < 94; z += 7) if (!(x >= 83 && z >= 82)) b.prop('roundpillar', x, z, 0, { solid: [1, 1], h: 7 });
-  b.solid(76, 50, 0.5, 30, 5);
-  for (const z of [56, 70]) b.arch(76, z, 0.5, 3, 4.5, E);
-  // el Círculo de Ariadna: un pequeño puesto de curas
-  b.open(84, 84, 12, 9, { ceil: 3.5, wall: 5, floorMat: 3, lamps: 3 }).solid(83.5, 84, 13, 0.5, 5).open(88, 84, 3, 0.5);
-  b.solid(83.5, 84, 0.5, 10, 5).solid(96, 84, 0.5, 10, 5).solid(84, 93, 12, 1, 5);
-  b.prop('bed', 90, 89, S, { solid: [1, 2.1] }).prop('table', 86, 91, 0, { solid: [1.6, 1] });
-  b.crate(94, 91, 0, 'medico');
-  b.note(84.05, 88, E, 'Círculo de Ariadna — Equipo Hipócrates', 'Si estás herido, coge lo que necesites del botiquín. Vuelve a buscarnos cuando puedas: siempre hace falta gente que sepa curar.');
-  b.lair('hound', 66, 76).lair('hound', 90, 62).lair('smiler', 96, 52);
-
-  // ---- los pasillos (seguros) ----
-  // puertas dobles con luz verde de SALIDA (con un cuadro en el suelo delante)
-  b.open(98, 74, 2, 2.5, { ceil: 3 });
-  b.door(97.95, 75.25, W, { look: 'double', sign: 'SALIDA', locked: false, to: undefined });
-  b.prop('floorpainting', 96, 75.2, 0.3, { w: 0.8, h: 0.6 });
-  const cor = { ceil: 2.6, wall: 1, ceilMat: 1, lamps: 5 };
-  b.corridor([[101, 75], [108, 75], [108, 63], [116, 63]], 2, cor);
-  b.corridor([[108, 75], [108, 86], [116, 86], [116, 92]], 2, cor);
-  b.corridor([[101, 75], [101, 90], [104, 90]], 2, cor);
-  // salas sin sentido
-  b.open(110, 64.5, 7, 5.5, { ceil: 2.6, wall: 1, ceilMat: 1, lamps: false }).open(112, 64, 1.5, 0.5, { ceil: 2.6 }); // oficina con ordenador viejo
-  b.lamp(113.5, 67, { y: 2.2 }).prop('desk', 113.5, 68.5, N, { solid: [1.6, 0.8] }).prop('chair', 113.2, 67.2, 0.3).prop('bulb', 113.5, 67, 0, { y: 2.6 });
-  b.open(109.5, 77, 6, 6, { ceil: 2.6, wall: 3, lamps: 4 }).open(109, 79, 0.5, 1.5, { ceil: 2.6 }); // sala de ladrillo
-  b.open(109.5, 87.5, 5, 5.5, { ceil: 2.8, wall: 1, floorMat: 3, lamps: 4 }).open(111, 87, 1.5, 0.5, { ceil: 2.8 }); // enfermería
-  b.prop('bed', 113, 90.5, E, { solid: [2.1, 1] }).prop('table', 110.8, 89.2, 0, { solid: [1.4, 0.8] }).item('vendas', 111, 91.8);
-  b.open(102.5, 78, 4.5, 5, { ceil: 2.6, wall: 1, floorMat: 2, lamps: 3 }).open(102, 80, 0.5, 1.5, { ceil: 2.6 }); // sala acolchada con una silla medio hundida en el suelo
-  b.prop('chair', 105, 80.5, 0.7, { y: -0.25 }).prop('padding', 108.95, 81.75, W, { w: 2.5 });
-  b.open(102, 66, 4.5, 6, { ceil: 2.6, wall: 1, lamps: 3 }).open(106.5, 68, 0.5, 1.5, { ceil: 2.6 }); // sala de cuadros (en las paredes y en el suelo)
-  b.prop('painting', 102.05, 68, E, { y: 1.5 }).prop('painting', 104.5, 66.05, S, { y: 1.5 }).prop('floorpainting', 104, 70, 0.4).prop('floorpainting', 105.2, 68.5, 1.9);
-  // pasillo largo: la Skin-Stealer llora al fondo, con un rastro de sangre
-  b.corridor([[104, 90], [104, 94]], 2, cor);
-  b.prop('blood', 104, 92.5, 0.2).prop('blood', 104, 91, 1.4);
-  b.lair('skinstealer', 104, 93.6, ['¿Hola?', 'Necesito ayuda, por favor.', 'Está todo suelto…', 'Ayúdame… ayú-da-me.', 'No me dejes aquí.']);
-  b.note(100.05, 84, E, 'Nota de los Nómadas', 'Los pasillos son seguros, pero no te pierdas. Para dormir, busca una sala del tamaño de un dormitorio.\n\nNo uses los cerrojos: desaparecen cuando los miras.');
-  b.note(104.95, 92, W, 'Nota manchada', 'La sangre roja, vivo.\nLa sangre clara, aléjate.');
-  // al fondo, el pasillo se tuerce y sale al aparcamiento
-  b.corridor([[116, 63], [116, 56], [121, 56]], 2, { ...cor, lamps: 6 });
-  b.open(121, 54.5, 3, 3, { ceil: 2.6, wall: 1 });
-  b.note(118, 55.05, S, 'Nota en el pasillo', 'La salida al Nivel 2 ya no está aquí. Ahora se baja por el depósito inundado, al sur del sector gótico: una escalera en la esquina sureste que se hunde en el agua.');
-
-  // ================================================== zonas nuevas (planta baja)
-  // ---- el aparcamiento de tres plantas (P0 aquí; P1 y P2 encima) ----
-  const P0 = { ceil: 3.4, wall: 2, floorMat: 1, lamps: 8 };
-  b.open(118, 36, 6, 3, { ceil: 3.4, wall: 2 }); // desde las obras
-  b.open(124, 2, 72, 60, P0);
-  for (let x = 132; x < 196; x += 10) for (let z = 10; z < 62; z += 10) if (!(x > 184 && z < 42) && !(x < 136 && z > 20)) b.solid(x - 0.4, z - 0.4, 0.8, 0.8);
-  // rampa de coches a la P1 (con su muro)
-  b.ramp(188, 10, 6, 30, 2, 0, 3.8, false, 7.2).solid(186.5, 10, 1.5, 28, 2);
-  // coches y plazas
-  for (const [x, z, r] of [[140, 6, 0], [143, 6, 0], [152, 6, 0], [168, 6, 0.08], [137, 56, N], [150, 56, N], [158, 56, N + 0.1], [174, 30, E], [148, 30, 0.3]] as const) {
-    b.prop('car', x, z, r, { solid: [r === E ? 4.3 : 1.8, r === E ? 1.8 : 4.3] });
+  // ---- sector gótico y el Círculo de Ariadna ----
+  {
+    const { X, Z } = sq(GOTHIC, B);
+    b.open(X + 0.25, Z + 0.25, 19.5, 19.5, { ceil: 7, wall: 5, lamps: 5 });
+    for (let x = X + 3; x < X + 20; x += 5) for (let z = Z + 3; z < Z + 20; z += 5) if (!(x > X + 11 && z > Z + 11)) b.prop('roundpillar', x, z, 0, { solid: [1, 1], h: 7 });
+    b.solid(X + 11.5, Z + 11.5, 8.25, 0.5, 5).solid(X + 11.5, Z + 11.5, 0.5, 8.25, 5).open(X + 11.5, Z + 15, 0.5, 1.6, { ceil: 3 });
+    b.open(X + 12, Z + 12, 7.75, 7.75, { ceil: 3.5, wall: 5, floorMat: 3, lamps: 3 });
+    b.prop('bed', X + 16, Z + 15, 0, { solid: [1, 2.1] }).crate(X + 18, Z + 18.5, 0, 'medico');
+    b.note(X + 12.05, Z + 18, Math.PI / 2, 'Círculo de Ariadna — Equipo Hipócrates', 'Si estás herido, coge lo que necesites del botiquín.');
+    b.lair('hound', X + 5, Z + 15);
+    p0.push(...ports([[11, 12, DE], [13, 9, DS], [14, 14, DN], [16, 11, DW]]));
   }
-  for (let x = 138; x < 182; x += 2.8) b.prop('parklines', x, 6, 0).prop('parklines', x, 56, 0);
-  b.dark(160, 40, 24, 22);
-  b.prop('text', 124.05, 20, E, { y: 1.6, text: 'P0 — SALIDA ↑', w: 2.6 });
-  b.crate(194, 58, 0.3, 'mixto').item('pila', 176, 58);
-  b.lair('smiler', 172, 52).lair('clump', 130, 58);
-  b.note(124.05, 40, E, 'Ticket de aparcamiento', 'Entrada: --:--\nSalida: --:--\n\nPor detrás, a boli: «Arriba del todo no hay techo. Hay más techo.»');
 
-  // ---- el hangar: nave altísima con galería y pasarelas a 6 m ----
-  b.open(150, 62, 4, 4, { ceil: 3.4 });
-  b.open(124, 66, 72, 64, { ceil: 5.6, wall: 0, floorMat: 0, lamps: 9 });
-  b.ramp(124, 100, 2.5, 26, 3, 0, 6, true, 15).ramp(193.5, 74, 2.5, 26, 2, 0, 6, true, 15);
-  for (const [x, z, r] of [[136, 76, 0], [139, 76, 0], [136, 118, 0.05], [176, 80, E], [182, 112, 0], [185, 112, 0], [148, 108, E], [168, 120, 0.1]] as const) {
-    b.prop('container', x, z, r, { solid: r === E ? [6, 2.4] : [2.4, 6] });
+  // ---- aparcamiento bajo ----
+  {
+    const { X, Z, W, D } = sq(PARK, B);
+    b.open(X + 0.25, Z + 0.25, W - 0.5, D - 0.5, { ceil: 2.6, wall: 2, floorMat: 1, lamps: 6 });
+    for (let x = X + 5; x < X + W - 2; x += 5) for (const z of [Z + 6, Z + 14]) b.solid(x - 0.4, z - 0.4, 0.8, 0.8, 2);
+    for (const [dx, dz, r] of [[3, 3, 0], [8, 3, 0.05], [13, 17, Math.PI], [21, 17, Math.PI], [17, 10, Math.PI / 2]] as const) {
+      b.prop('car', X + dx, Z + dz, r, { solid: r === Math.PI / 2 ? [4.3, 1.8] : [1.8, 4.3] });
+    }
+    for (let x = X + 2; x < X + W - 2; x += 2.8) b.prop('parklines', x, Z + 3, 0);
+    b.dark(X + 12, Z + 0.25, 12.75, D - 0.5);
+    b.lair('smiler', X + 20, Z + 10);
+    b.prop('text', X + 0.55, Z + 10, Math.PI / 2, { y: 1.5, text: 'P-1', w: 1 });
+    p0.push(...ports([[4, 17, DS], [7, 20, DW]]));
   }
-  b.prop('forklift', 152, 84, 0.4, { solid: [1.4, 2.4] }).prop('pallet', 170, 100, 0.2, { solid: [1.2, 1] }).prop('scaffold', 130, 70, 0, { solid: [3, 1.2] });
-  b.crate(156, 124, 0.6, 'comida').crate(190, 70, 0, 'herramientas');
-  b.lair('hound', 166, 88).lair('clump', 186, 126);
-  b.note(126.5, 66.05, S, 'Pintado en la puerta del hangar', 'SI TE CAES DE LA PASARELA, NO GRITES.\nSUBE POR LAS ESCALERAS DE LAS ESQUINAS.', true, 1.6);
-  // del hangar al depósito inundado
-  b.ramp(116, 118, 8, 3, 0, -2, 0, true, 5);
 
-  // ---- bloque de viviendas (dos plantas con patio) ----
-  const R0 = { ceil: 3, wall: 3, floorMat: 3, ceilMat: 1, lamps: 4.5 };
-  b.open(29, 94, 3, 18, { ceil: 3, wall: 3 }); // del almacén Gild al bloque
-  b.open(18, 112, 24, 40, R0);
-  b.open(22, 116, 16, 32, { ceil: 3, floorMat: 0, lamps: false }).wet(22, 116, 16, 32).deep(27, 126, 6, 8, 0.12);
-  b.ramp(26, 148, 12, 4, 0, 0, 3.5, true, 6.5);
-  for (const z of [112, 123, 134, 145]) {
-    b.open(4, z, 12, 10, R0).open(16, z + 4, 2, 2, { ceil: 2.4 });
-    b.open(44, z, 12, 10, R0).open(42, z + 4, 2, 2, { ceil: 2.4 });
+  // ---- el depósito inundado y la escalera al Nivel 2 ----
+  {
+    const { X, Z } = sq(DEPOT, B);
+    b.open(X + 6, Z, 2, 2, { ceil: 3, wall: 0 });
+    b.ramp(X + 6, Z + 2, 2, 4, 3, -1.5, 0, true, 3);
+    b.open(X + 0.25, Z + 6, 19.5, 8.75, { floor: -1.5, ceil: 3, wall: 0, lamps: 5 });
+    b.open(X + 0.25, Z + 0.25, 5.5, 5.75, { floor: -1.5, ceil: 3, wall: 0, lamps: false });
+    b.deep(X + 0.5, Z + 0.5, 19, 14, 0.15);
+    for (const [x, z] of [[X + 5, Z + 10], [X + 11, Z + 10]]) b.solid(x - 0.5, z - 0.5, 1, 1);
+    b.prop('debris', X + 14, Z + 8, 1.2, { y: -1.6, solid: [1.6, 1.2] }).prop('barrel', X + 3, Z + 13, 0, { solid: [0.7, 0.7] });
+    b.ramp(X + 16, Z + 2, 2, 4, 2, -4, -1.5, true, 0.5);
+    b.open(X + 16, Z + 0.25, 2, 1.75, { floor: -4, ceil: -1.6, wall: 0, lamps: false }).lamp(X + 17, Z + 1, { flicker: true });
+    b.exit(X + 17, Z + 0.6, Math.PI, 'NIVEL 2', true);
+    b.note(X + 15.95, Z + 5, -Math.PI / 2, 'Nota en la escalera', 'Esta escalera baja más de lo que debería. Al fondo empieza el Nivel 2: túneles, calor y muy poca comida.');
+    b.lair('clump', X + 3, Z + 3);
+    p0.push(...ports([[26, 19, DS, X + 7, 2]]));
   }
-  const flat = (x: number, z: number, k: number) => {
-    b.prop('bed', x + 2, z + 2, S, { solid: [1, 2.1] }).prop('table', x + 7, z + 6, 0, { solid: [1.4, 0.8] }).prop('chair', x + 7, z + 7, (k * 1.7) % 6);
-    if (k % 2) b.prop('cabinet', x + 11.6, z + 2, W, { solid: [0.6, 0.5] });
-    else b.prop('painting', x + 0.05, z + 6, E, { y: 1.5 });
-  };
-  [112, 123, 134, 145].forEach((z, k) => {
-    flat(4, z, k);
-    flat(44, z, k + 1);
+
+  for (const st of STAIRS) {
+    const s = stairwell(b, B, st, 0, F1, 0);
+    p0.push(s.p0);
+    p1.push(s.p1);
+  }
+
+  const stairRects = STAIRS.map((s) => ({ x: s.x, z: s.z, w: 2, h: 1 }));
+  const reserved0 = [MANILA, ALPHA, LOOP, BUILD, GILD, GOTHIC, PARK, DEPOT, ...stairRects];
+  const reserved1 = [BUILD, GILD, GOTHIC, ...stairRects];
+  const m0 = maze(b, R, {
+    ox: 0,
+    oz: 0,
+    B,
+    nx: NX,
+    nz: NZ,
+    storey: 0,
+    floor: 0,
+    regions: [
+      { x: 0, z: 0, w: NX, h: NZ, style: L1_CONCRETE },
+      { x: 0, z: 0, w: 14, h: 8, style: L1_WET },
+      { x: 20, z: 8, w: 12, h: 9, style: L1_SAFE },
+    ],
+    reserved: reserved0,
+    ports: p0,
+    loops: 0.14,
   });
-  b.prop('plant', 30, 132, 0, { solid: [0.5, 0.5] }).prop('foldchair', 25, 120, 0.7).prop('blood', 46, 140, 0.4);
-  b.item('lata', 6, 114).item('vendas', 54, 154).item('agua', 10, 147);
-  b.lair('skinstealer', 50, 116, ['¿Vecino?', '¿Me abres?', 'Se me ha olvidado la llave…', 'Ábreme. Ábreme. Ábreme.']);
-  b.lair('duller', 4.6, 128).lair('hound', 34, 150);
-  b.note(32, 111.95, N, 'Buzón lleno de cartas', 'Todas las cartas van dirigidas al mismo piso. Ninguna tiene remitente.\n\nEn una pone: «sube a la azotea del patio y cruza la pasarela por encima del agua».');
-
-  // ---- el depósito inundado (y la escalera que baja al Nivel 2) ----
-  b.open(80, 94, 3, 4, { ceil: 3.2, wall: 0 });
-  b.ramp(80, 98, 3, 6, 3, -2, 0, true, 3.2);
-  b.open(64, 104, 42, 62, { floor: -2, ceil: 5.5, wall: 0, floorMat: 0, lamps: 8 });
-  b.open(106, 104, 10, 46, { floor: -2, ceil: 5.5, floorMat: 0, lamps: 8 });
-  b.deep(66, 110, 36, 50, 0.15).deep(106, 110, 8, 36, 0.15);
-  for (let x = 72; x < 116; x += 12) for (let z = 112; z < 166; z += 12) if (!(x > 104 && z > 146)) b.solid(x - 0.5, z - 0.5, 1, 1);
-  for (const [x, z, r] of [[70, 118, 0.3], [96, 140, 1.2], [84, 158, 2.4], [110, 112, 0.8]] as const) b.prop('debris', x, z, r, { y: -2.1, solid: [1.6, 1.2] });
-  b.prop('barrel', 90, 108, 0, { solid: [0.7, 0.7] }).prop('barrel', 91, 108.8, 0, { solid: [0.7, 0.7] });
-  b.dark(64, 150, 20, 16);
-  b.ramp(108, 150, 3, 14, 3, -6, -2, true, 1);
-  b.open(106, 164, 8, 6, { floor: -6, ceil: -3, wall: 0, lamps: false }).lamp(110, 167, { flicker: true });
-  b.exit(110, 169.5, S, 'NIVEL 2', true);
-  b.prop('text', 109.5, 149.95, N, { y: 0.6, text: 'NIVEL 2 ↓', w: 2 });
-  b.lair('smiler', 74, 156).lair('clump', 100, 120);
-  b.item('bengala', 112, 130).crate(66, 106, 0.2, 'medico');
-  b.note(105.95, 150.5, W, 'Nota en la escalera', 'Esta escalera baja más de lo que debería. Al fondo empieza el Nivel 2: túneles, calor y muy poca comida.');
-
-  // ====================================================== planta 1 (arriba)
-  // ---- entreplanta del almacén Gild: galería y pasarela sobre las estanterías ----
+  const force1 = vertical(b, R, m0, reserved1, 8, 10, false);
   b.storey(1);
-  b.open(12, 50.5, 44, 43.5, { floor: 6.5, ceil: 10, wall: 2, floorMat: 2, lamps: 6 });
-  b.hole(16, 54, 36, 36);
-  b.open(16, 68, 36, 2, { floor: 6.5, ceil: 10 });
-  b.hole(52, 60, 2.5, 24);
-  for (const [x, z, r, w] of [[34, 67.95, N, 30], [34, 70.05, 0, 30], [34, 54.05, 0, 30], [34, 89.95, N, 30], [16.05, 72, W, 16]] as const) b.prop('railing', x, z, r, { w });
-  b.crate(14, 52, 0.4, 'mixto').crate(54, 92, 1.1, 'comida').item('pila', 36, 69);
-  b.prop('megcloth', 12.05, 60, E, { y: 8 }).item('agua', 13, 61);
-  b.lair('hound', 14, 88);
-  b.note(55.95, 52, W, 'Nota en la entreplanta', 'Desde aquí arriba se ven las cajas que aparecen entre las estanterías. Y lo que se mueve entre ellas.');
-  // escalera de la entreplanta al bloque de viviendas
-  b.ramp(40, 94, 2.5, 10, 3, 3.5, 6.5, true, 9.5);
-  b.open(39.5, 104, 3, 8, { floor: 3.5, ceil: 6.5, wall: 3 });
-
-  // ---- viviendas, planta de arriba: balcones sobre el patio ----
-  const R1 = { floor: 3.5, ceil: 6.5, wall: 3, floorMat: 3, ceilMat: 1, lamps: 4.5 };
-  b.open(18, 112, 24, 40, R1);
-  b.open(22, 116, 16, 32, { floor: 3.5, ceil: 11, lamps: false });
-  b.hole(22, 116, 16, 32).hole(26, 148, 12, 4);
-  for (const [x, z, r, w] of [[30, 115.95, N, 16], [21.95, 132, W, 32], [38.05, 132, E, 32]] as const) b.prop('railing', x, z, r, { w });
-  for (const z of [112, 123, 134, 145]) {
-    b.open(4, z, 12, 10, R1).open(16, z + 4, 2, 2, { floor: 3.5, ceil: 5.9 });
-    b.open(44, z, 12, 10, R1).open(42, z + 4, 2, 2, { floor: 3.5, ceil: 5.9 });
-  }
-  [112, 123, 134, 145].forEach((z, k) => b.prop('bed', 6, z + 2, S, { solid: [1, 2.1] }).prop('chair', 50 + (k % 2), z + 5, k));
-  b.item('barrita', 8, 140).crate(54, 114, 0.5, 'mixto');
-  b.lair('skinstealer', 8, 150, ['¿Hay alguien arriba?', 'Te he oído.', 'Baja, por favor.']);
-  b.note(41.95, 125, W, 'Escrito en el marco de la puerta', 'La pasarela del depósito sale de este piso. No mires el agua: a veces devuelve la mirada.', true, 4.9);
-  // salida a la pasarela del depósito
-  b.ramp(56, 127, 8, 2, 0, 3.5, 6, true, 9);
-
-  // ---- la pasarela sobre el depósito inundado ----
-  b.open(64, 104, 52, 46, { floor: 6, ceil: 12, lamps: false }).open(64, 150, 42, 16, { floor: 6, ceil: 12, lamps: false });
-  b.hole(64, 104, 52, 46).hole(64, 150, 42, 16);
-  b.open(64, 127, 52, 2, { floor: 6, ceil: 12, lamps: 6 }).open(89, 110, 2, 17, { floor: 6, ceil: 12, lamps: 6 });
-  b.hole(89, 116, 2, 2); // un tramo hundido: se cae al agua
-  for (let x = 72; x < 116; x += 12) for (let z = 112; z < 166; z += 12) if (!(x > 104 && z > 146)) b.solid(x - 0.5, z - 0.5, 1, 1);
-  for (const [x, z, r, w] of [[90, 126.95, N, 50], [90, 129.05, 0, 50], [88.95, 120, W, 16], [91.05, 120, E, 16]] as const) b.prop('railing', x, z, r, { w });
-  b.item('vendas', 90, 120);
-  b.note(55.95, 125.5, W, 'Cartel colgando', 'PASARELA EN MAL ESTADO\nUNA PERSONA CADA VEZ', true, 5);
-
-  // ---- el hangar visto desde arriba: galería perimetral y dos pasarelas ----
-  b.open(116, 127, 8, 2, { floor: 6, ceil: 12, lamps: false });
-  b.open(124, 66, 72, 64, { floor: 6, ceil: 15, wall: 0, floorMat: 1, lamps: 8 });
-  b.hole(128, 70, 64, 56).hole(124, 100, 2.5, 26).hole(193.5, 74, 2.5, 26);
-  b.open(128, 97, 64, 2, { floor: 6, ceil: 15 }).open(159, 70, 2, 56, { floor: 6, ceil: 15 });
-  for (const [x, z, r, w] of [[143, 96.95, N, 28], [143, 99.05, 0, 28], [176, 96.95, N, 30], [176, 99.05, 0, 30], [158.95, 83, W, 26], [161.05, 83, E, 26], [158.95, 113, W, 26], [161.05, 113, E, 26]] as const) {
-    b.prop('railing', x, z, r, { w });
-  }
-  b.crate(194, 128, 0.2, 'herramientas').item('agua', 126, 68);
-  b.lair('hound', 194, 68).lair('smiler', 160, 126);
-
-  // ---- aparcamiento P1 ----
-  const P1 = { floor: 3.8, ceil: 7.2, wall: 2, floorMat: 1, lamps: 8 };
-  b.open(124, 2, 72, 60, P1);
-  b.hole(188, 10, 6, 30).solid(186.5, 10, 1.5, 28, 2);
-  b.ramp(126, 22, 6, 30, 3, 3.8, 7.6, false, 11).solid(132, 24, 1.5, 28, 2);
-  for (let x = 142; x < 186; x += 10) for (let z = 10; z < 62; z += 10) b.solid(x - 0.4, z - 0.4, 0.8, 0.8);
-  b.hole(163, 43, 6, 5).hole(144, 34, 4, 4);
-  for (const [x, z, r] of [[146, 26, 0.2], [150, 14, E], [170, 56, N], [178, 18, 0]] as const) b.prop('car', x, z, r, { solid: [r === E ? 4.3 : 1.8, r === E ? 1.8 : 4.3] });
-  b.prop('cone', 162, 42, 0).prop('cone', 169.5, 48.5, 0).prop('cone', 143, 33, 0);
-  b.prop('text', 186.45, 46, W, { y: 5.4, text: 'P1', w: 1.2 });
-  b.dark(136, 30, 20, 20);
-  b.item('lata', 182, 50).crate(144, 58, 0.7, 'comida');
-  b.lair('hound', 150, 40).lair('duller', 195.4, 30);
-  b.note(166, 42.95, N, 'Nota junto al hueco', 'El suelo se vino abajo con un coche encima. El coche no está abajo.');
-
-  // ====================================================== planta 2 (azotea)
-  b.storey(2);
-  const P2 = { floor: 7.6, ceil: 13, wall: 2, floorMat: 1, lamps: 10 };
-  b.open(124, 2, 72, 60, P2);
-  b.hole(126, 22, 6, 30).solid(132, 24, 1.5, 28, 2);
-  b.hole(154, 14, 8, 5).hole(174, 32, 8, 4);
-  for (const [x, z, r] of [[160, 8, 0.4], [184, 50, N], [150, 48, E]] as const) b.prop('car', x, z, r, { solid: [r === E ? 4.3 : 1.8, r === E ? 1.8 : 4.3] });
-  b.prop('megflag', 195.95, 30, W, { y: 9.4 }).prop('tent', 186, 12, 0.3, { solid: [2.4, 2.4] }).prop('radio', 190, 8, S, { solid: [0.5, 0.5] });
-  b.crate(192, 14, 0, 'medico').item('bengala', 184, 10).item('agua', 188, 16);
-  b.note(195.95, 34, W, 'Puesto avanzado de la M.E.G. (abandonado)', 'Desde aquí arriba se oye todo el sector. Si algo sube por la rampa, se oye antes de verlo.\n\nDejamos un botiquín. No vuelvas a bajar por el hueco del centro: hay más caída de la que parece.');
-  b.dark(124, 2, 20, 20);
-  b.lair('smiler', 140, 10);
-
+  const m1 = maze(b, R, {
+    ox: 0,
+    oz: 0,
+    B,
+    nx: NX,
+    nz: NZ,
+    storey: 1,
+    floor: F1,
+    regions: [{ x: 0, z: 0, w: NX, h: NZ, style: L1_UPPER }],
+    reserved: reserved1,
+    ports: p1,
+    loops: 0.12,
+    force: force1,
+    single: new Set(force1.keys()),
+  });
   b.storey(0);
+
+  const start = m0.at(3, 1) ?? m0.list[0];
+  scatterItems(b, R, [m0, m1], ['agua', 'pila', 'barrita', 'vendas', 'lata', 'bengala'], 24);
+  scatterLairs(b, R, [m0, m1], start, [
+    ['hound'],
+    ['hound'],
+    ['smiler'],
+    ['smiler'],
+    ['duller'],
+    ['duller'],
+    ['clump'],
+    ['skinstealer', ['¿Hola?', '¿Hay alguien ahí?', 'Me he perdido…', 'Hola. Hola. Hola.']],
+    ['skinstealer', ['¿Vecino?', 'Ayúdame… ayú-da-me.', 'No me dejes aquí.']],
+  ]);
+  wakes(b, R, [m0, m1], 6);
   return b.build();
 }
 
 // ===========================================================================
 // NIVEL 2 — «Pipe Dreams»
-// Túneles de mantenimiento euclídeos, estrechos, que giran a 45° y miden
-// múltiplos de 5 m. Paredes de hormigón polvoriento o ladrillo, tapadas por
-// tuberías y máquinas que ya no funcionan. Luces escasas, cableadas en serie
-// (si una falla, se apaga todo un tramo) y alguna luz violeta de emergencia.
-//  - Puertas de acero: casi todas cerradas. Unas dan a salas, otras a un
-//    pasillo que vuelve a la misma puerta y otras... al Vacío.
-//  - Ventanas al final de algunos túneles: no te acerques.
-//  - Smilers por todas partes en lo oscuro, Clumps en las esquinas, Hounds
-//    en manada, Facelings en grupo, polillas y ratas.
+// Túneles de mantenimiento estrechos y calurosos, en dos alturas: los de
+// abajo y los túneles altos, con rejillas sueltas que caen a los de abajo.
+// Luces escasas en serie, violetas de emergencia, puertas de acero cerradas y
+// ventanas al final de algunos túneles. Piezas: la sala de máquinas, la sala
+// de calderas (con galería), el campamento abandonado, el pozo sin fondo y la
+// salida al Nivel 3. Algunas puertas llevan a sitios sueltos: un almacén, un
+// pasillo que vuelve a la misma puerta y el Vacío.
 // Paredes: 0 hormigón polvoriento · 1 ladrillo marrón · 2 ladrillo negro · 3 metal oxidado
 // Suelos: 0 hormigón sucio · 1 rejilla
 // ===========================================================================
 
-/** Túnel con esquinas a 45° (paneles diagonales en cada giro). */
-function tunnel(b: Builder, pts: [number, number][], o: Parameters<Builder['open']>[4] = {}, wall = 0) {
-  b.corridor(pts, 2, o);
-  for (let k = 1; k < pts.length - 1; k++) {
-    const [px, pz] = pts[k];
-    const d1 = [Math.sign(px - pts[k - 1][0]), Math.sign(pz - pts[k - 1][1])];
-    const d2 = [Math.sign(pts[k + 1][0] - px), Math.sign(pts[k + 1][1] - pz)];
-    if (d1[0] * d2[0] + d1[1] * d2[1] !== 0) continue;
-    const c = 1;
-    const ox = px + d1[0] - d2[0];
-    const oz = pz + d1[1] - d2[1];
-    const fx = -d1[0] + d2[0];
-    const fz = -d1[1] + d2[1];
-    b.diag(ox + (fx * c) / 2, oz + (fz * c) / 2, Math.atan2(fx, fz), c * Math.SQRT2, wall);
-  }
-}
+const L2_TUNNELS: Style = {
+  wall: [0, 0, 1, 2, 3],
+  floorMat: [0, 0, 1],
+  room: [2.6, 3.2],
+  hall: [2.35, 2.6],
+  widths: [1.3, 1.5, 1.6, 1.8, 2.1],
+  doors: [1.1, 1.3],
+  rooms: 0.14,
+  merge: 0.4,
+  dark: 0.45,
+  lamp: 0.55,
+  flicker: 0.5,
+  steps: [0, 0, 0, 0.25, -0.25],
+  straight: 0.7,
+  wet: 0.1,
+  decor: L2_DECOR,
+  ends: L2_ENDS,
+};
+const L2_DEEP: Style = { ...L2_TUNNELS, dark: 0.75, lamp: 0.25 };
+const L2_HIGH: Style = { ...L2_TUNNELS, wall: [3, 0], floorMat: [1], room: [2.5, 2.9], hall: [2.3, 2.5], rooms: 0.1, steps: [0, 0, 0.25] };
 
 function level2(): LevelMap {
-  const b = new Builder(2, LEVELS[2], 232, 142, { ceil: 2.6 });
-  const dark = { dark: true };
-  const lit = { lamps: 6 };
+  const B = 4;
+  const NX = 40;
+  const NZ = 28;
+  const F1 = 3.9;
+  const b = new Builder(2, LEVELS[2], 200, NZ * B, { ceil: 2.6 });
+  b.storey(1, 6.4).storey(0);
+  const R = makeRng(3011);
 
-  // ---- llegada ----
-  b.open(2, 2, 8, 6, { lamps: 3, floorMat: 1, wall: 1 }).spawn(4, 5);
-  b.prop('text', 2.05, 4, E, { y: 1.7, text: 'NIVEL 2', w: 1.6 });
+  const MACHINE = { x: 8, z: 6, w: 3, h: 3 };
+  const BOILER = { x: 22, z: 4, w: 6, h: 5 };
+  const CAMP = { x: 4, z: 16, w: 2, h: 2 };
+  const PIT = { x: 30, z: 18, w: 3, h: 3 };
+  const EXIT = { x: 36, z: 22, w: 2, h: 1 };
+  const STAIRS: Stair[] = [
+    { x: 5, z: 10, up: 0 },
+    { x: 14, z: 3, up: 1 },
+    { x: 18, z: 14, up: 0 },
+    { x: 26, z: 20, up: 1 },
+    { x: 34, z: 8, up: 0 },
+    { x: 12, z: 24, up: 1 },
+    { x: 36, z: 15, up: 0 },
+  ];
+  const p0: Port[] = [];
+  const p1: Port[] = [];
 
-  // ---- túneles de arriba ----
-  tunnel(b, [[5, 5], [45, 5]], lit);
-  tunnel(b, [[45, 5], [45, 25], [70, 25]], dark);
-  tunnel(b, [[15, 5], [15, 35]], lit, 1);
-  tunnel(b, [[15, 20], [45, 20]], dark);
-  tunnel(b, [[70, 10], [70, 45]], lit);
-  tunnel(b, [[45, 5], [90, 5], [90, 25]], dark, 2);
-  tunnel(b, [[70, 15], [90, 15]], dark);
-  tunnel(b, [[30, 20], [30, 40]], lit);
-  tunnel(b, [[25, 20], [25, 10]], dark);
-  b.window(25, 9.05, S);
-  // sala de máquinas
-  b.open(50, 9, 14, 11, { ceil: 4.5, wall: 3, floorMat: 1, lamps: 5 }).open(46, 11, 4, 2).open(64, 15, 5, 2);
-  b.prop('tank', 53, 12, 0, { solid: [2.4, 2.4] }).prop('tank', 60, 12, 0, { solid: [2.4, 2.4] }).prop('tank', 53, 17.5, 0, { solid: [2.4, 2.4] });
-  b.prop('machine', 63.6, 10.5, W, { solid: [0.8, 2.4] }).prop('gauge', 50.05, 15, E, { y: 1.5 }).prop('valve', 50.05, 18, E, { y: 1.2 });
-  b.vent(57, 18.5, 6).item('agua', 60, 18.5);
-
-  // ---- escaleras a los túneles de abajo y un salto sin vuelta ----
-  b.ramp(14, 36, 2, 8, 3, -2.5, 0, true);
-  b.ramp(69, 45, 2, 4, 3, -2.5, 0, true);
-  b.open(29, 41, 2, 8, { floor: -2.5, dark: true });
-
-  // ---- túneles de abajo ----
-  const low = { floor: -2.5, dark: true };
-  tunnel(b, [[15, 45], [15, 70], [55, 70]], low, 1);
-  tunnel(b, [[30, 50], [85, 50], [85, 75]], low, 2);
-  tunnel(b, [[55, 50], [55, 70]], { floor: -2.5, lamps: 6 });
-  tunnel(b, [[25, 70], [25, 60]], low);
-  b.window(25, 59.05, S);
-  tunnel(b, [[85, 60], [104, 60]], low);
-  // restos de un campamento abandonado (Aiding Stragglers)
-  b.open(36, 55, 10, 7, { floor: -2.5, ceil: -0.2, wall: 1, floorMat: 1, lamps: 4 }).open(40, 51, 2, 4, { floor: -2.5, dark: true });
-  b.prop('cot', 38.5, 57, E, { solid: [0.9, 2] }).prop('table', 43, 59, 0.2, { solid: [1.6, 1] }).prop('foldchair', 43, 57.8, 0.5);
-  b.crate(44.5, 56, 0, 'comida');
-  b.note(36.05, 58, E, 'Diario arrugado', 'Día 40. Vinieron por los túneles de abajo, en manada. Primero el gruñido, luego el ruido de las uñas en el hormigón.\n\nSi lees esto: los Hounds no aguantan que les mires, pero solo un momento. Grita y corre.');
-
-  // ---- luces: tramos en serie y alguna violeta de emergencia ----
-  for (const [x, z] of [[45, 12], [45, 22], [60, 25], [80, 5], [90, 18], [80, 15], [20, 20], [38, 20]]) b.lamp(x, z, { flicker: true });
-  for (const [x, z, y] of [[25, 14, 2.3], [90, 10, 2.3], [15, 62, -0.2], [70, 50, -0.2], [85, 68, -0.2], [30, 46, -0.2]]) b.prop('violet', x, z, 0, { y });
-
-  // ---- puertas de acero ----
-  // cerradas (algunas con ventanuco que da a lo negro)
-  for (const [x, z, r, win] of [[44.05, 15, E, 1], [15.95, 28, W, 0], [70.95, 35, W, 1], [30.95, 30, W, 0], [60, 4.05, S, 1], [84.05, 58, E, 0], [55.95, 64, W, 1]] as const) {
-    b.door(x, z, r, { look: (x * 3) % 2 ? 'white' : 'steel', locked: true, window: !!win });
+  // ---- sala de máquinas ----
+  {
+    const { X, Z } = sq(MACHINE, B);
+    b.open(X + 0.25, Z + 0.25, 11.5, 11.5, { ceil: 4.5, wall: 3, floorMat: 1, lamps: 5 });
+    for (const [x, z] of [[X + 3, Z + 3], [X + 8, Z + 3], [X + 3, Z + 8.5]]) b.prop('tank', x, z, 0, { solid: [2.4, 2.4] });
+    b.prop('machine', X + 11.6, Z + 7, -Math.PI / 2, { solid: [0.8, 2.4] }).prop('gauge', X + 0.55, Z + 6, Math.PI / 2, { y: 1.5 }).prop('valve', X + 0.55, Z + 9, Math.PI / 2, { y: 1.2 });
+    b.vent(X + 7, Z + 9, 6).item('agua', X + 9, Z + 10.5);
+    p0.push(...ports([[7, 7, DE], [11, 7, DW], [9, 9, DN]]));
   }
-  // a una sala con cajas y ordenadores
-  b.door(46, 4.05, S, { look: 'steel', locked: false, to: { x: 38, z: 90, ry: N }, label: 'Abrir la puerta' });
-  b.open(34, 86, 10, 9, { ceil: 2.8, wall: 0, floorMat: 0, lamps: 4 });
-  b.door(38, 94.95, N, { look: 'steel', locked: false, to: { x: 46, z: 6, ry: S } });
-  b.prop('pc', 35, 87, S, { solid: [1.2, 0.8] }).prop('pc', 37, 87, S, { solid: [1.2, 0.8] }).crate(42, 88, 0, 'herramientas').crate(42, 92, 0.4, 'comida');
-  // a un pasillo de oficina que vuelve a la misma puerta
-  b.door(89.05, 20, E, { look: 'white', locked: false, to: { x: 35, z: 101.75, ry: E }, label: 'Abrir la puerta' });
-  b.open(34, 100, 26, 3.5, { ceil: 2.8, wall: 0, floorMat: 0, lamps: 4 });
-  b.door(59.95, 101.75, W, { look: 'white', locked: false, to: { x: 90, z: 20, ry: W }, label: 'Abrir la puerta' });
-  // al Vacío
-  b.door(70.95, 40, W, { look: 'steel', locked: false, window: true, to: { x: 17, z: 111, ry: S }, label: 'Abrir la puerta (por el ventanuco se ve todo negro)' });
-  b.open(2, 84, 28, 56, { ceil: 6, dark: true, floorMat: 0 }).zone('void', 2, 84, 28, 56);
-  b.door(17, 110, N, { look: 'steel', locked: false, to: { x: 70, z: 40, ry: E }, label: 'Volver por la puerta' });
-  b.note(69.05, 42, E, 'Escrito con rotulador', 'NO ABRAS LAS PUERTAS QUE DAN A LO NEGRO.\nDentro no hay nada. Nada de nada.\nY la puerta se aleja.', true, 1.4);
 
-  // ---- objetos sueltos por los túneles ----
-  for (const [x, z, r, y] of [[10, 4.6, 0, 0], [40, 19.6, 0, 0], [69.6, 30, E, 0], [14.6, 52, E, -2.5], [50, 49.6, 0, -2.5], [85.4, 66, E, -2.5]] as const) b.prop('trolley', x, z, r, { y, solid: [1.2, 0.7] });
-  for (const [x, z, y] of [[46.4, 25.6, 0], [90.6, 7, 0], [55.6, 66, -2.5], [14.4, 64, -2.5]] as const) b.prop('barrel', x, z, 0, { y, solid: [0.7, 0.7] });
-  for (const [x, z, t, y] of [[20, 4.4, 'toolbox', 0], [70, 20, 'ladder', 0], [33, 50.4, 'woodpile', -2.5], [75, 50.4, 'cords', -2.5], [15, 30, 'glass', 0], [60, 70.4, 'paper', -2.5], [86, 5.4, 'foldchair', 0]] as const) b.prop(t, x, z, (x * 0.7) % 3, { y });
-  b.prop('wires', 40, 20, 0).prop('wires', 15, 46, 0, { y: -2.5 }).prop('wires', 70, 36, 0);
-  b.prop('machine', 15.95, 12, W, { solid: [0.8, 2.4] }).prop('machine', 44.05, 25, E, { solid: [0.8, 2.4] }).prop('machine', 85.95, 55, W, { y: -2.5, solid: [0.8, 2.4] });
-  for (const [x, z] of [[26, 5], [45, 16], [70, 30], [15, 55], [44, 70], [85, 65]]) b.vent(x, z);
-  b.prop('text', 54.05, 52, E, { y: -0.9, text: 'OFFICE SPACE EL3A →', w: 3 });
-  b.note(15.95, 8, W, 'Nota en una tubería', 'Las luces van en serie: si una se rompe, se apaga todo el tramo.\nLleva siempre pilas. Y no te acerques a las ventanas del final de los túneles.');
-  b.note(85.95, 64, W, 'Nota de un trabajador de la B.N.T.G.', 'Desde el apagón los Smilers no se han ido. Viven en lo oscuro y vienen a la luz.\n\nLos Clumps esperan en las esquinas. Si oyes pasos que no son tuyos, quédate quieto.', true, -1.1);
-
-  // ---- objetos ----
-  b.item('pila', 25, 12.5).item('vendas', 90, 23).item('agua', 25, 66).item('pila', 80, 15.5).item('barrita', 30, 39).item('bengala', 55, 60).item('lata', 85, 72);
-
-  // ---- criaturas ----
-  b.lair('smiler', 35, 5).lair('smiler', 70, 38).lair('smiler', 22, 70).lair('smiler', 90, 22).lair('smiler', 80, 50);
-  b.lair('clump', 45, 24).lair('clump', 15, 69).lair('clump', 84, 51);
-  b.lair('hound', 50, 70).lair('hound', 52, 69);
-  b.lair('faceling', 35, 50).lair('faceling', 36.5, 50).lair('faceling', 66, 50);
-  for (const [x, z] of [[45, 12], [80, 5], [55, 60], [15, 48]]) b.critter('moth', x, z);
-  for (const [x, z] of [[20, 70], [60, 50], [70, 20], [30, 5]]) b.critter('rat', x, z);
-
-  // ================================================== zonas nuevas (planta baja)
-  // ---- hacia el este: del laberinto viejo a la sala de calderas ----
-  tunnel(b, [[90, 5], [136, 5]], dark, 2);
-  tunnel(b, [[90, 25], [116, 25], [116, 40]], lit, 1);
-  b.ramp(115, 40, 2, 10, 3, -2.5, 0, true);
-  b.lamp(110, 25, { flicker: true }).prop('violet', 128, 5, 0, { y: 2.3 });
-  b.prop('trolley', 100, 24.4, 0, { solid: [1.2, 0.7] }).prop('barrel', 134, 6.4, 0, { solid: [0.7, 0.7] });
-  b.note(116.95, 32, W, 'Nota pegada con cinta', 'Al este hay una sala de calderas enorme. Las calderas siguen calientes aunque nadie las enciende.\n\nArriba hay pasarelas. Abajo, por el sur, la cisterna: no te caigas.');
-
-  // ---- sala de bombas (hundida) ----
-  b.open(104, 50, 24, 28, { floor: -2.5, ceil: 6, wall: 3, floorMat: 1, lamps: 6 });
-  for (const [x, z] of [[110, 56], [110, 66], [120, 56], [120, 66]]) b.prop('tank', x, z, 0, { y: -2.5, solid: [2.4, 2.4] });
-  b.prop('machine', 127.6, 72, W, { y: -2.5, solid: [0.8, 2.4] }).prop('gauge', 104.05, 70, E, { y: -1 }).prop('valve', 104.05, 74, E, { y: -1.3 });
-  b.prop('pipe', 116, 51, E, { y: 4.6, w: 24 }).prop('pipe', 116, 77, E, { y: 4.2, w: 24 });
-  b.wet(112, 70, 8, 6).item('pila', 125, 52);
-  b.lair('clump', 105, 76).lair('smiler', 126, 60);
-  tunnel(b, [[128, 64], [140, 64]], { floor: -2.5, dark: true }, 3);
-  b.ramp(140, 63, 8, 2, 0, -2.5, 0, true).open(148, 56, 4, 9, { lamps: false });
-
-  // ---- la sala de calderas: nave de 14 m con galería y pasarelas ----
-  b.open(136, 4, 56, 52, { ceil: 4.6, wall: 3, floorMat: 1, lamps: 7 });
-  b.ramp(189.5, 10, 2.5, 20, 2, 0, 5, true, 9.5).ramp(160, 53, 20, 2.5, 0, 0, 5, true, 9.5);
-  for (const [x, z] of [[148, 14], [148, 42], [178, 14], [178, 42], [152, 28], [174, 28]]) {
-    b.prop('tank', x - 1.2, z, 0, { solid: [2.4, 2.4] }).prop('tank', x + 1.2, z, 0, { solid: [2.4, 2.4] });
-    b.prop('gauge', x, z - 1.25, N, { y: 1.5 });
+  // ---- la sala de calderas: galería arriba y calderas abajo ----
+  {
+    const { X, Z, W, D } = sq(BOILER, B);
+    b.open(X + 0.25, Z + 0.25, W - 0.5, D - 0.5, { ceil: 3.4, wall: 3, floorMat: 1, lamps: 5 });
+    for (const [x, z] of [[X + 7, Z + 7], [X + 7, Z + 13], [X + 17, Z + 7], [X + 17, Z + 13]]) {
+      b.prop('tank', x - 1.2, z, 0, { solid: [2.4, 2.4] }).prop('tank', x + 1.2, z, 0, { solid: [2.4, 2.4] });
+    }
+    b.storey(1);
+    b.open(X + 0.25, Z + 0.25, W - 0.5, D - 0.5, { floor: F1, ceil: F1 + 4.5, wall: 3, floorMat: 1, lamps: 5 });
+    b.hole(X + 3, Z + 3, W - 6, D - 6);
+    b.open(X + 3, Z + D / 2 - 1, W - 6, 2, { floor: F1, ceil: F1 + 4.5, lamps: 5 });
+    b.hole(X + 8, Z + D / 2 - 1, 2, 1);
+    b.prop('railing', X + W / 2, Z + D / 2 - 1.05, Math.PI, { w: W - 6 }).prop('railing', X + W / 2, Z + D / 2 + 1.05, 0, { w: W - 6 });
+    b.note(X + W - 0.05, Z + 4, -Math.PI / 2, 'Nota en la barandilla', 'Desde aquí arriba se ve todo. Ellos también te ven a ti.\n\nFalta una rejilla en la pasarela.', true, F1 + 1.5);
+    b.storey(0);
+    b.lair('hound', X + 12, Z + 4).lair('hound', X + 13, Z + 5);
+    b.prop('text', X + 0.55, Z + 15, Math.PI / 2, { y: 1.8, text: 'CALDERAS — NO TOCAR', w: 3.2 });
+    p0.push(...ports([[21, 6, DE], [28, 6, DW], [24, 9, DN], [25, 3, DS]]));
+    p1.push(...ports([[21, 5, DE], [28, 7, DW]]));
   }
-  for (const z of [10, 46]) b.prop('pipe', 164, z, E, { y: 3.8, w: 50 });
-  b.prop('machine', 136.45, 20, E, { solid: [0.8, 2.4] }).prop('machine', 136.45, 36, E, { solid: [0.8, 2.4] });
-  b.wet(158, 24, 12, 8).item('agua', 186, 52).crate(140, 52, 0.3, 'herramientas');
-  b.lair('hound', 164, 18).lair('hound', 166, 19).lair('smiler', 186, 6).lair('faceling', 150, 50);
-  for (const [x, z] of [[164, 30], [140, 10]]) b.critter('moth', x, z);
-  b.critter('rat', 188, 40);
-  b.prop('text', 136.05, 46, E, { y: 1.8, text: 'CALDERAS — NO TOCAR', w: 3.2 });
 
-  // ---- la red de túneles del este ----
-  tunnel(b, [[190, 44], [226, 44]], lit, 2);
-  tunnel(b, [[204, 5], [204, 132]], dark);
-  tunnel(b, [[226, 5], [226, 132]], dark, 1);
-  tunnel(b, [[204, 5], [226, 5]], lit);
-  tunnel(b, [[204, 80], [226, 80]], lit, 2);
-  tunnel(b, [[204, 110], [226, 110]], dark);
-  tunnel(b, [[204, 132], [226, 132]], lit);
-  tunnel(b, [[215, 110], [215, 124]], { lamps: 7 }, 1);
-  tunnel(b, [[204, 20], [214, 20]], dark);
-  b.window(214.95, 20, W);
-  for (const [x, z] of [[204, 30], [226, 60], [204, 96], [226, 120], [215, 5]]) b.lamp(x, z, { flicker: true });
-  for (const [x, z] of [[204, 64], [226, 96], [215, 132]]) b.prop('violet', x, z, 0, { y: 2.3 });
-  b.prop('trolley', 226.6, 30, E, { solid: [0.7, 1.2] }).prop('barrel', 203.4, 88, 0, { solid: [0.7, 0.7] }).prop('ladder', 226, 70, 0.4);
-  for (const [x, z] of [[204, 50], [226, 100]]) b.vent(x, z);
-  b.door(203.05, 70, E, { look: 'steel', locked: true, window: true }).door(226.95, 24, W, { look: 'white', locked: true });
-  b.item('vendas', 226, 8).item('barrita', 204, 120).item('lata', 216, 80);
-  b.lair('smiler', 226, 88).lair('clump', 204, 131).lair('hound', 215, 44).lair('faceling', 222, 110).lair('faceling', 223.5, 110);
-  for (const [x, z] of [[204, 100], [226, 50]]) b.critter('rat', x, z);
+  // ---- campamento abandonado ----
+  {
+    const { X, Z } = sq(CAMP, B);
+    b.open(X + 0.25, Z + 0.25, 7.5, 7.5, { ceil: 2.6, wall: 1, floorMat: 1, lamps: 3 });
+    b.prop('cot', X + 1.5, Z + 3, Math.PI / 2, { solid: [0.9, 2] }).prop('table', X + 5.5, Z + 5, 0.2, { solid: [1.6, 1] }).prop('foldchair', X + 5.5, Z + 3.8, 0.5);
+    b.crate(X + 6.5, Z + 1.5, 0, 'comida');
+    b.note(X + 0.55, Z + 6, Math.PI / 2, 'Diario arrugado', 'Día 40. Vinieron por los túneles de abajo, en manada. Primero el gruñido, luego el ruido de las uñas en el hormigón.\n\nSi lees esto: los Hounds no aguantan que les mires, pero solo un momento. Grita y corre.');
+    p0.push(...ports([[4, 15, DS], [6, 17, DW]]));
+  }
 
-  // ---- la cisterna: una sima de 6 m bajo los túneles, con una pasarela ----
-  tunnel(b, [[85, 75], [85, 100], [100, 100]], low, 2);
-  b.open(100, 90, 56, 44, { floor: -9, ceil: -3, wall: 0, floorMat: 0, lamps: 9 });
-  b.deep(102, 92, 52, 40, 0.15);
-  for (let x = 112; x < 156; x += 14) for (const z of [94, 108, 122]) b.solid(x - 0.6, z - 0.6, 1.2, 1.2);
-  for (const [x, z, r] of [[106, 118, 0.6], [140, 128, 2.2], [128, 96, 1.4]] as const) b.prop('debris', x, z, r, { y: -9.1, solid: [1.6, 1.2] });
-  b.ramp(156, 128, 16, 3, 0, -9, -2.5, true, 1);
-  b.open(156, 99, 8, 2, { floor: -2.5, dark: true });
-  tunnel(b, [[163, 100], [163, 129.5]], low, 2);
-  tunnel(b, [[163, 129.5], [190, 129.5]], { floor: -2.5, lamps: 7 }, 2);
-  b.ramp(190, 128.5, 13, 2, 0, -2.5, 0, true);
-  b.item('bengala', 150, 130).crate(104, 132, 0.4, 'medico');
-  b.lair('hound', 120, 115).lair('hound', 122, 116).lair('smiler', 150, 94);
-  b.note(84.05, 92, E, 'Diario de un trabajador', 'La cisterna se llenó y se vació. Ahora solo queda un charco enorme y la pasarela.\n\nSi te caes, sube por la escalera de la esquina sureste. Si oyes uñas, no mires atrás.');
+  // ---- el pozo sin fondo ----
+  {
+    shaftRoom(b, B, PIT, F1, { wall: 3, abyss: true, floorMat: 1 });
+    const { X, Z } = sq(PIT, B);
+    b.prop('text', X + 0.55, Z + 6, Math.PI / 2, { y: 1.7, text: '↓ ABAJO NO', w: 1.8 });
+    p0.push(...ports([[29, 19, DE], [31, 17, DS]]));
+    p1.push(...ports([[33, 19, DW]]));
+  }
 
-  // ====================================================== planta 1 (arriba)
+  // ---- salida al Nivel 3 ----
+  {
+    const { X, Z } = sq(EXIT, B);
+    b.open(X, Z + 1.2, 7.6, 1.6, { ceil: 2.4, wall: 2, lamps: false }).lamp(X + 6, Z + 2, { flicker: true });
+    b.exit(X + 7.55, Z + 2, -Math.PI / 2, 'SALIDA → NIVEL 3');
+    b.note(X + 6, Z + 1.25, 0, 'Nota en la puerta', 'Por aquí se llega al Nivel 3, la Estación Eléctrica. Más calor y más máquinas. Buena suerte.');
+    p0.push({ bx: 35, bz: 22, dir: DE, p: Z + 2, w: 1.6 });
+  }
+
+  for (const st of STAIRS) {
+    const s = stairwell(b, B, st, 0, F1, 3);
+    p0.push(s.p0);
+    p1.push(s.p1);
+  }
+
+  const stairRects = STAIRS.map((s) => ({ x: s.x, z: s.z, w: 2, h: 1 }));
+  const reserved0 = [MACHINE, BOILER, CAMP, PIT, EXIT, ...stairRects];
+  const reserved1 = [MACHINE, BOILER, PIT, ...stairRects];
+  const m0 = maze(b, R, {
+    ox: 0,
+    oz: 0,
+    B,
+    nx: NX,
+    nz: NZ,
+    storey: 0,
+    floor: 0,
+    regions: [
+      { x: 0, z: 0, w: NX, h: NZ, style: L2_TUNNELS },
+      { x: 0, z: 18, w: 22, h: 10, style: L2_DEEP },
+    ],
+    reserved: reserved0,
+    ports: p0,
+    loops: 0.1,
+    force: new Map([['1,1', 'room']]),
+    single: new Set(['1,1']),
+  });
+  const force1 = vertical(b, R, m0, reserved1, 4, 16, true);
   b.storey(1);
-  // ---- galería y pasarelas de la sala de calderas ----
-  b.open(136, 4, 56, 52, { floor: 5, ceil: 9.5, wall: 3, floorMat: 1, lamps: 6 });
-  b.hole(140, 8, 48, 44).hole(189.5, 10, 2.5, 20).hole(160, 53, 20, 2.5);
-  b.open(140, 27, 48, 2, { floor: 5, ceil: 9.5 }).open(163, 8, 2, 44, { floor: 5, ceil: 9.5 });
-  b.hole(150, 27, 2, 2); // una rejilla que falta
-  for (const [x, z, r, w] of [[145, 26.95, N, 10], [145, 29.05, 0, 10], [175, 26.95, N, 24], [175, 29.05, 0, 24], [162.95, 17, W, 18], [165.05, 17, E, 18], [162.95, 40, W, 22], [165.05, 40, E, 22]] as const) {
-    b.prop('railing', x, z, r, { w });
-  }
-  b.prop('valve', 191.55, 40, W, { y: 6.2 }).item('pila', 164, 52).crate(190, 54, 0.2, 'comida');
-  b.lair('smiler', 140, 54).lair('clump', 164, 9);
-  b.note(191.95, 34, W, 'Nota en la barandilla', 'Desde aquí arriba se ve todo. Ellos también te ven a ti.\n\nFalta una rejilla en la pasarela del oeste.', true, 6.5);
-
-  // ---- los túneles altos: pasan por encima de los de abajo, con rejillas rotas ----
-  const high = { floor: 5, ceil: 7.6 };
-  tunnel(b, [[138, 10], [100, 10], [100, 30], [30, 30], [30, 8]], { ...high, lamps: 7 }, 3);
-  b.window(30, 7.05, S);
-  b.hole(29, 22, 1, 2).hole(69, 29, 2, 1).hole(99, 24, 1, 2);
-  b.prop('pipe', 65, 30, E, { y: 7.3, w: 70 }).prop('wires', 60, 30, 0, { y: 5 });
-  b.item('agua', 100, 12).item('barrita', 40, 30);
-  b.lair('smiler', 64, 30).lair('faceling', 100, 28);
-  b.note(100.95, 18, W, 'Garabato en la tubería', 'LAS REJILLAS ESTÁN SUELTAS.\nSI PISAS UNA, ACABAS EN LOS TÚNELES DE ABAJO.', true, 6.4);
-
-  // ---- la pasarela de la cisterna (a la altura de los túneles de abajo) ----
-  b.open(100, 90, 56, 44, { floor: -2.5, ceil: 4, lamps: false });
-  b.hole(100, 90, 56, 44);
-  b.open(100, 99, 56, 2, { floor: -2.5, ceil: 4, lamps: 7 });
-  b.hole(128, 99, 2, 1);
-  for (let x = 112; x < 156; x += 14) for (const z of [94, 108, 122]) b.solid(x - 0.6, z - 0.6, 1.2, 1.2);
-  for (const [x, z, r, w] of [[114, 98.95, N, 26], [114, 101.05, 0, 26], [143, 98.95, N, 26], [143, 101.05, 0, 26]] as const) b.prop('railing', x, z, r, { w });
-
+  const m1 = maze(b, R, {
+    ox: 0,
+    oz: 0,
+    B,
+    nx: NX,
+    nz: NZ,
+    storey: 1,
+    floor: F1,
+    regions: [{ x: 0, z: 0, w: NX, h: NZ, style: L2_HIGH }],
+    reserved: reserved1,
+    ports: p1,
+    loops: 0.08,
+    force: force1,
+    single: new Set(force1.keys()),
+  });
   b.storey(0);
 
-  // ---- salida ----
-  b.exit(215, 124.95, N, 'SALIDA → NIVEL 3');
-  b.note(214.05, 122, E, 'Nota en la puerta', 'Por aquí se llega al Nivel 3, la Estación Eléctrica. Más calor y más máquinas. Buena suerte.', true);
+  // ---- llegada ----
+  const start = m0.at(1, 1)!;
+  {
+    const r = start.area;
+    b.spawn(r.x + r.w / 2, r.z + r.d / 2, FACE[start.arms[0]?.dir ?? 0]);
+    b.lamp(r.x + r.w / 2, r.z + r.d / 2);
+    b.prop('text', r.x + 0.05, r.z + r.d / 2, Math.PI / 2, { y: 1.7, text: 'NIVEL 2', w: 1.6 });
+    b.note(r.x + r.w / 2, r.z + 0.05, 0, 'Nota en una tubería', 'Las luces van en serie: si una se rompe, se apaga todo el tramo.\nLleva siempre pilas. Y no te acerques a las ventanas del final de los túneles.\n\nLa salida está muy lejos. Hay túneles encima de túneles.');
+  }
 
+  // ---- puertas a sitios sueltos (al este del mapa) ----
+  {
+    const near = m0.dist(start);
+    const ends = m0.ends.filter((k) => k.kind === 'hall' && (near.get(k) ?? 0) > 10);
+    const [e1, e2, e3] = take(R, ends, 3);
+    const doorAt = (k: Block) => {
+      const d = k.arms[0].dir;
+      const od = OPP[d];
+      const r = k.area;
+      const x = od === 0 ? r.x + r.w - 0.05 : od === 1 ? r.x + 0.05 : r.x + r.w / 2;
+      const z = od === 2 ? r.z + r.d - 0.05 : od === 3 ? r.z + 0.05 : r.z + r.d / 2;
+      const ry = FACE[d];
+      return { x, z, ry, front: { x: x + Math.sin(ry) * 1.2, z: z + Math.cos(ry) * 1.2, ry } };
+    };
+    // un almacén con cajas y ordenadores
+    if (e1) {
+      const d = doorAt(e1);
+      b.door(d.x, d.z, d.ry, { look: 'steel', locked: false, to: { x: 171, z: 70, ry: Math.PI }, label: 'Abrir la puerta' });
+      b.open(166, 64, 10, 9, { ceil: 2.8, wall: 0, floorMat: 0, lamps: 4 });
+      b.door(171, 72.95, Math.PI, { look: 'steel', locked: false, to: d.front });
+      b.prop('pc', 167, 65, 0, { solid: [1.2, 0.8] }).prop('pc', 169, 65, 0, { solid: [1.2, 0.8] }).crate(174, 66, 0, 'herramientas').crate(174, 70, 0.4, 'comida');
+    }
+    // un pasillo de oficina que vuelve a la misma puerta
+    if (e2) {
+      const d = doorAt(e2);
+      b.door(d.x, d.z, d.ry, { look: 'white', locked: false, to: { x: 167, z: 79.75, ry: Math.PI / 2 }, label: 'Abrir la puerta' });
+      b.open(166, 78, 26, 3.5, { ceil: 2.8, wall: 0, floorMat: 0, lamps: 4 });
+      b.door(191.95, 79.75, -Math.PI / 2, { look: 'white', locked: false, to: d.front, label: 'Abrir la puerta' });
+    }
+    // al Vacío
+    if (e3) {
+      const d = doorAt(e3);
+      b.door(d.x, d.z, d.ry, { look: 'steel', locked: false, window: true, to: { x: 180, z: 31, ry: 0 }, label: 'Abrir la puerta (por el ventanuco se ve todo negro)' });
+      b.open(166, 4, 28, 56, { ceil: 6, dark: true, floorMat: 0 }).zone('void', 166, 4, 28, 56);
+      b.door(180, 30, Math.PI, { look: 'steel', locked: false, to: d.front, label: 'Volver por la puerta' });
+    }
+  }
+
+  scatterItems(b, R, [m0, m1], ['pila', 'pila', 'vendas', 'agua', 'barrita', 'bengala', 'lata'], 22);
+  scatterLairs(b, R, [m0, m1], start, [
+    ['smiler'],
+    ['smiler'],
+    ['smiler'],
+    ['smiler'],
+    ['clump'],
+    ['clump'],
+    ['clump'],
+    ['hound'],
+    ['hound'],
+    ['faceling'],
+    ['faceling'],
+    ['faceling'],
+  ]);
+  for (const m of [m0, m1]) {
+    b.storey(m.o.storey);
+    for (const k of take(R, solidGround(m), 5)) b.critter(R() < 0.5 ? 'moth' : 'rat', mid(k).x, mid(k).z);
+  }
+  b.storey(0);
+  wakes(b, R, [m0, m1], 6);
   return b.build();
 }
 

@@ -9,13 +9,14 @@ lore de la wiki de los Backrooms:
 
 | Nivel | Nombre | Qué hay |
 |---|---|---|
-| 0 | El Umbral | Salas de papel amarillo y moqueta húmeda que **cambian cuando nadie mira** (cambio periférico). Sala de columnas enorme con **otra planta encima con el suelo roto**, **agujeros sin fondo** (caer es morir) vistos desde una pasarela, zona de arcos, **zona de apagón**, las **Habitaciones Rojas**, **oficinas de dos plantas** con patio interior, un **gran atrio** hundido con balcón y caída libre, pasillos sin fin con desniveles, una sala altísima con escaleras que acaban en la pared y **Las Caídas** (terrazas que bajan). Se sale por la puerta de **MANTENIMIENTO**: una escalera que baja y baja hasta el Nivel 1. |
-| 1 | La Zona Habitable | Sector **Aquila**, **Base Alpha** de la M.E.G. (zona segura), un **pasillo que no acaba**, sector en obras con **trabajadores sombra**, sector **Gild** de estanterías con **entreplanta** encima, sector **gótico** con el Círculo de Ariadna, los **pasillos** seguros, un **aparcamiento de tres plantas** con rampas y forjados hundidos, un **hangar** con galería y pasarelas a 6 m, un **bloque de viviendas** de dos plantas con patio, y el **depósito inundado** con una pasarela por encima. Se baja al Nivel 2 por la escalera del depósito. **Parpadeos**: apagones totales. |
-| 2 | Pipe Dreams | Túneles estrechos que giran a 45°, en tres alturas: los de abajo, los de siempre y los **túneles altos** con rejillas sueltas que caen a los de abajo. Una **sala de bombas** hundida, una **sala de calderas** con pasarelas, la **cisterna** (una sima con una pasarela) y la red de túneles del este. Fluorescentes **en serie**, luces violetas, puertas de acero, una que vuelve sobre sí misma y otra que da **al Vacío**. |
+| 0 | El Umbral | Un **laberinto** de papel amarillo y moqueta húmeda en **dos plantas**: salas pequeñas, pasillos estrechos y anchos que se tuercen, callejones sin salida y salas raras (puertas falsas, una cama sola, escaleras que acaban en el techo, techos bajísimos…). Paredes que **cambian cuando nadie mira**. Piezas: la sala de columnas, la sala de los agujeros con una pasarela encima, **la caída infinita** (un pozo con pisos y pisos hacia abajo: si caes, despiertas en otra parte), el pasillo larguísimo, la sala altísima, zonas de arcos, oficinas y apagón, y las **Habitaciones Rojas**. Se sale por la puerta de **MANTENIMIENTO**, lejos del inicio. |
+| 1 | La Zona Habitable | Laberinto de **hormigón** en dos plantas: almacenes, cuartos con cajas, charcos y goteras. Piezas: la Sala Manila, la **Base Alpha** de la M.E.G. (zona segura), el **pasillo que no acaba**, el sector en obras con **trabajadores sombra**, el almacén **Gild**, el sector **gótico**, un aparcamiento bajo, los pasillos seguros y el **depósito inundado** con la escalera al Nivel 2. **Parpadeos**: apagones totales. |
+| 2 | Pipe Dreams | Laberinto de **túneles** estrechos y calurosos en dos alturas, con tuberías, rejillas sueltas que caen a los túneles de abajo, luces **en serie**, violetas de emergencia, puertas de acero y ventanas al final de los túneles. Piezas: sala de máquinas, sala de calderas con pasarela, campamento abandonado, un pozo sin fondo y la salida al Nivel 3. Algunas puertas llevan a sitios sueltos: un almacén, un pasillo que vuelve a la misma puerta y **el Vacío**. |
 
-Los niveles tienen **plantas unas encima de otras**: los huecos del suelo
-caen a la planta de abajo (la caída hace daño) y las escaleras suben a la de
-arriba.
+Los niveles se generan con un **laberinto con semilla fija** (todos los
+jugadores ven el mismo): salas pequeñas, pasillos, bucles y callejones, en dos
+plantas unidas por escaleras, suelos rotos y puertas que dan a una sala sin
+suelo (caes a la de abajo). Las salas míticas son piezas hechas a mano.
 
 ## Criaturas
 
@@ -72,25 +73,29 @@ juego.
 
 ## Editar los niveles
 
-Los niveles están en [`src/levels.ts`](src/levels.ts), escritos con un
-constructor en metros (cada casilla mide 0,5 m). Algunos ejemplos:
+Los niveles están en [`src/levels.ts`](src/levels.ts). Cada uno tiene:
+
+- **Estilos** de laberinto (`Style`): paredes y suelos, altura de los techos,
+  anchos de pasillo y de puerta, cuántas salas, cuántas a oscuras, desniveles y
+  qué decoración llevan las salas y los callejones (ver
+  [`src/decor.ts`](src/decor.ts)).
+- **Piezas** hechas a mano en bloques reservados, con el constructor en metros
+  (cada casilla mide 0,5 m), y las **puertas** (`ports`) por las que el
+  laberinto entra en ellas.
+- **Escaleras** entre plantas (`stairwell`) y la elección de **suelos rotos y
+  salas sin suelo** (`vertical`).
+- La **semilla** (`makeRng`): cámbiala para tener otro laberinto.
+
+El generador está en [`src/maze.ts`](src/maze.ts). Ejemplos del constructor:
 
 ```ts
 b.open(20, 2, 26, 20, { ceil: 3.2 });            // sala de 26 × 20 m con techo a 3,2 m
-b.open(27, 8, 12, 8, { floor: -0.75 });          // zona hundida
 b.ramp(27, 6.5, 12, 1.5, 3, -0.75, 0, true);     // escalera que sube hacia el norte
 b.pit(46, 46, 4, 3);                             // agujero
-b.prop('desk', 12, 46, Math.PI, { solid: [1.6, 0.8] });
-b.crate(44, 6, 0.3, 'comida');                   // caja (comida, medico, herramientas o mixto)
-b.lair('hound', 48, 72);                         // guarida de una criatura
-b.note(2.05, 5, Math.PI / 2, 'Título', 'Texto'); // nota en la pared
-b.door(46, 4.05, 0, { to: { x: 106, z: 8, ry: Math.PI } }); // puerta que lleva a otro sitio
-b.shift(26, 12, 2, 0.5, true);                   // pared que aparece y desaparece
-b.zone('safe', 72, 2, 26, 22);                   // zona segura (también red, void, meeting)
-b.exit(153, 143.5, 0, 'NIVEL 1', true);          // salida al andar por ella
+b.zone('abyss', 55, 55, 6, 6);                   // caída infinita (se despierta en otro sitio)
 b.storey(1);                                     // pasa a construir la planta de arriba
-b.open(44, 34, 26, 22, { floor: 4.6, ceil: 7.4 }); // sala en la planta de arriba
 b.hole(44, 36, 26, 20);                          // hueco que cae a la planta de abajo
+b.exit(153, 143.5, 0, 'NIVEL 1', true);          // salida al andar por ella
 ```
 
 Los parámetros de cada nivel (luces, niebla, cansancio, apagones…) están en
@@ -148,7 +153,9 @@ Cada push a `main` se publica en GitHub Pages con
 
 ```
 src/
-├── levels.ts     # diseño de los tres niveles
+├── levels.ts     # diseño de los tres niveles (estilos, piezas, escaleras)
+├── maze.ts       # generador de laberintos con semilla
+├── decor.ts      # decoración de salas y callejones
 ├── world.ts      # rejilla con alturas, constructor, colisiones, luz y caminos
 ├── level3d.ts    # construye la escena 3D de un nivel
 ├── props.ts      # muebles y objetos de decoración

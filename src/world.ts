@@ -131,7 +131,7 @@ export interface Npc {
 
 /** Zona marcada para efectos (sala de encuentro, zona segura, etc.). */
 export interface Zone {
-  kind: 'meeting' | 'safe' | 'void' | 'red' | 'whisper';
+  kind: 'meeting' | 'safe' | 'void' | 'red' | 'whisper' | 'abyss';
   x: number;
   z: number;
   w: number;
@@ -236,6 +236,8 @@ export interface LevelMap {
   windows: { x: number; y: number; z: number; ry: number; s?: number }[];
   /** Puntos donde viven bichos ambientales (polillas, ratas). */
   critters: { kind: 'moth' | 'rat'; x: number; z: number; s?: number }[];
+  /** Sitios donde se despierta tras caer al vacío. */
+  wakes: { x: number; z: number; s: number }[];
   /** Bloque de "cambio periférico" al que pertenece cada casilla (-1 = ninguno). */
   shiftCell: Int16Array;
   /** Luz por casilla: [fija, parpadeante] intercalados. */
@@ -587,6 +589,7 @@ export class Builder {
       diags: [],
       windows: [],
       critters: [],
+      wakes: [],
       shiftCell: new Int16Array(n).fill(-1),
       light: new Float32Array(n * 2),
       dark: new Uint8Array(n),
@@ -865,6 +868,12 @@ export class Builder {
 
   window(x: number, z: number, ry: number): this {
     this.map.windows.push({ x, y: NaN, z, ry, s: this.cur });
+    return this;
+  }
+
+  /** Sitio donde se despierta tras caer al vacío. */
+  wake(x: number, z: number): this {
+    this.map.wakes.push({ x, z, s: this.cur });
     return this;
   }
 
