@@ -661,6 +661,8 @@ export class Builder {
       m.rampRise[i] = 0;
       if (o.floorMat !== undefined) m.floorMat[i] = o.floorMat;
       if (o.ceilMat !== undefined) m.ceilMat[i] = o.ceilMat;
+      // (también en lo abierto: es el material de los escalones y de lo que cuelga del techo)
+      if (o.wall !== undefined) m.wallMat[i] = o.wall;
     });
     if (o.wall !== undefined) this.wallMat(x - CELL, z - CELL, w + 2 * CELL, d + 2 * CELL, o.wall);
     const s = o.lamps ?? m.def.lampSpacing;

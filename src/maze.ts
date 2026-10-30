@@ -6,7 +6,7 @@
 //
 // Todo sale de una semilla fija: todos los jugadores ven el mismo laberinto.
 
-import type { Builder } from './world';
+import { F_SOLID, cellOf, flagsAt, type Builder } from './world';
 
 export type Rng = () => number;
 
@@ -311,8 +311,12 @@ export function maze(b: Builder, R: Rng, o: MazeOpts): Maze {
       else if (a.dir === 1) r = { x: X - over, z: a.p - hw, w: from.x - X + over, d: a.w };
       else if (a.dir === 2) r = { x: a.p - hw, z: from.z + from.d, w: a.w, d: Z + B + over - (from.z + from.d) };
       else r = { x: a.p - hw, z: Z - over, w: a.w, d: from.z - Z + over };
-      if (room && s.arches && !isPort && r.w > 0.01 && r.d > 0.01) {
+      // arco en las puertas de las salas (uno por paso: si las dos son salas, lo pone la del oeste o la del norte)
+      const other = at(blk.bx + DX[a.dir], blk.bz + DZ[a.dir]);
+      const archHere = room && s.arches && !isPort && (other?.kind === 'hall' || a.dir === 0 || a.dir === 2);
+      if (archHere && r.w > 0.01 && r.d > 0.01) {
         open(r);
+        r = snap(r);
         b.arch(r.x, r.z, r.w, r.d, Math.min(2.2, blk.ceil - blk.floor - 0.2), a.dir < 2 ? Math.PI / 2 : 0);
       } else open(r);
     };
@@ -451,7 +455,11 @@ export function wallSpots(c: Ctx, gap = 1.0): { x: number; z: number; ry: number
       const x = x0 + ax * t;
       const z = z0 + az * t;
       const blocked = c.doors.some((d) => d.dir === doorDir && Math.abs((ax ? x : z) - d.p) < d.w / 2 + gap);
-      if (!blocked) out.push({ x, z, ry, side });
+      // tiene que haber pared de verdad detrás (en todo el ancho), si no, quedaría flotando
+      const bx = x - Math.sin(ry) * 0.25;
+      const bz = z - Math.cos(ry) * 0.25;
+      const wall = [-0.45, 0, 0.45].every((o) => flagsAt(c.b.map, cellOf(bx + ax * o), cellOf(bz + az * o)) & F_SOLID);
+      if (!blocked && wall) out.push({ x, z, ry, side });
     }
   });
   return out;

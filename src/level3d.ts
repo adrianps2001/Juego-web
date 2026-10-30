@@ -421,7 +421,7 @@ export class Level3D {
             face(pit ? pitMat : wallMats[0], bottom, bottom, o0, o1);
           }
           // techo más bajo en la vecina: cara que cuelga (en un pozo la pone la planta de arriba)
-          if (!shaft && m.ceil[j] < ceil - 0.005) face(wallMats[0], m.ceil[j], m.ceil[j], ceil, ceil);
+          if (!shaft && m.ceil[j] < ceil - 0.005) face(wallMats[m.wallMat[j]] ?? wallMats[0], m.ceil[j], m.ceil[j], ceil, ceil);
         }
       }
     }

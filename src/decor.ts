@@ -2,6 +2,7 @@
 // Cada decoración recibe la sala (rectángulo), sus puertas y el generador
 // aleatorio con semilla, y pone muebles, notas o pintadas.
 
+import { F_SOLID, cellOf, flagsAt } from './world';
 import { between, inward, pick, take, wallSpots, type Ctx, type Decor } from './maze';
 
 const fits = (c: Ctx, w: number) => c.room.w >= w && c.room.d >= w;
@@ -86,7 +87,7 @@ const stairsToNowhere: Decor = (c) => {
   // en la pared oeste, si no hay puerta
   if (c.doors.some((d) => d.dir === 1)) return;
   c.b.ramp(r.x, r.z + 0.25, 1, 3, 3, c.floor, c.floor + 1.2, true, c.ceil);
-  c.b.prop('door2wall', r.x + 0.5, r.z + 0.05, 0, { y: c.floor + 1.2 });
+  if ([0, 0.45].every((o) => flagsAt(c.b.map, cellOf(r.x + 0.1 + o), cellOf(r.z - 0.25)) & F_SOLID)) c.b.prop('door2wall', r.x + 0.5, r.z + 0.05, 0, { y: c.floor + 1.2 });
 };
 
 /** Un charco y una gotera. */

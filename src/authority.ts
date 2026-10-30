@@ -359,8 +359,8 @@ export class Authority {
       const spec = SPEC[lair.kind];
       const minDist = lair.kind === 'faceling' || lair.kind === 'duller' || lair.kind === 'skinstealer' ? 0 : lair.kind === 'figure' ? 12 : 7;
       if (near > spec.wake || near < minDist) continue;
-      // no todas las guaridas tienen a alguien dentro (la mitad de las veces, nada)
-      if (Math.random() < 0.5) {
+      // no todas las guaridas tienen a alguien dentro (a veces, nada)
+      if (Math.random() < 0.35) {
         lair.cooldown = 45 + Math.random() * 45;
         continue;
       }
@@ -495,7 +495,8 @@ export class Authority {
       }
     }
     if (!target) {
-      // vuelve a su sitio
+      // acecha por lo oscuro hacia donde hay gente; si no, vuelve a su sitio
+      if (this.prowl(e, here, map, spec.walk, dt, mask)) return;
       e.anim = Anim.Idle;
       if (Math.hypot(e.x - e.lair.x, e.z - e.lair.z) > 0.5) {
         e.anim = Anim.Walk;
@@ -607,7 +608,7 @@ export class Authority {
       return;
     }
     e.stare = 0;
-    this.wander(e, map, spec.walk, 10, dt);
+    if (!this.prowl(e, here, map, spec.walk * 1.4, dt)) this.wander(e, map, spec.walk, 10, dt);
   }
 
   /** Faceling: pasea en grupo sin molestar, salvo que le deslumbres o le agobies. */
@@ -641,7 +642,7 @@ export class Authority {
       e.ry = turn(e.ry, faceTo(e, near.p), dt * 1.5);
       return;
     }
-    this.wander(e, map, spec.walk, 12, dt);
+    if (!this.prowl(e, here, map, spec.walk, dt)) this.wander(e, map, spec.walk, 12, dt);
   }
 
   /**
@@ -726,7 +727,8 @@ export class Authority {
       if (e.timer > 2.5) this.setMode(e, 'wander');
       return;
     }
-    // sin nada que oír, vuelve a su esquina
+    // sin nada que oír, va tanteando hacia donde hay gente (o vuelve a su esquina)
+    if (this.prowl(e, here, map, spec.walk, dt)) return;
     if (Math.hypot(e.x - e.lair.x, e.z - e.lair.z) > 0.5) {
       e.anim = Anim.Walk;
       this.follow(e, this.field(map, e.lair.x, e.lair.z, false), e.lair, map, spec.walk, dt);
@@ -887,6 +889,27 @@ export class Authority {
   }
 
   /** Paseo sin rumbo cerca de su guarida. */
+  /**
+   * Merodear: en el laberinto casi nunca se ve a nadie de lejos, así que la
+   * criatura va despacio por los pasillos hacia el jugador más cercano de su
+   * planta (sin saber dónde está exactamente) hasta tenerlo cerca; entonces ya
+   * le ve u oye con normalidad. Devuelve false si no hay nadie a quien buscar.
+   */
+  private prowl(e: Entity, here: Player[], map: LevelMap, speed: number, dt: number, mask?: Uint8Array): boolean {
+    const near = closest(e, here);
+    if (!near || near.d > 50) return false;
+    if (near.d < 7) {
+      e.anim = Anim.Idle;
+      this.steer(e, e.x, e.z, 0, dt, map);
+      e.ry = turn(e.ry, faceTo(e, near.p), dt * 2);
+      return true;
+    }
+    if (e.mode !== 'wander') this.setMode(e, 'wander');
+    e.anim = Anim.Walk;
+    if (!this.follow(e, this.field(map, near.p.x, near.p.z, false), near.p, map, speed, dt, mask)) return false;
+    return true;
+  }
+
   private wander(e: Entity, map: LevelMap, speed: number, radius: number, dt: number) {
     if (e.mode !== 'wander') this.setMode(e, 'wander');
     if (!e.goal || Math.hypot(e.goal.x - e.x, e.goal.z - e.z) < 0.4 || e.timer > 12) {

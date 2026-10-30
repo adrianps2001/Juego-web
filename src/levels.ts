@@ -7,7 +7,7 @@
 // tema del nivel (ver textures.ts).
 
 import { L0_DECOR, L0_ENDS, L1_DECOR, L1_ENDS, L2_DECOR, L2_ENDS } from './decor';
-import { FACE, OPP, between, makeRng, maze, pick, take, type Block, type Maze, type Port, type Rng, type Style } from './maze';
+import { FACE, OPP, between, makeRng, maze, pick, take, wallSpots, type Block, type Maze, type Port, type Rng, type Style } from './maze';
 import { Builder, F_PIT, F_SOLID, cellOf, flagsAt, type EntityKind, type ItemKind, type LevelDef, type LevelMap } from './world';
 
 
@@ -183,7 +183,7 @@ function vertical(b: Builder, R: Rng, m0: Maze, reserved1: BRect[], drops: numbe
 }
 
 function scatterItems(b: Builder, R: Rng, mazes: Maze[], kinds: ItemKind[], n: number) {
-  const spots = mazes.flatMap((m) => [...m.ends, ...take(R, m.rooms, 8)].map((k) => ({ k, s: m.o.storey })));
+  const spots = mazes.flatMap((m) => [...m.ends, ...take(R, m.rooms, 20)].map((k) => ({ k, s: m.o.storey })));
   for (const { k, s } of take(R, spots, n)) {
     if (k.kind !== 'hall' && k.kind !== 'room') continue;
     const c = mid(k);
@@ -308,7 +308,7 @@ function level0(): LevelMap {
     b.shift(X + 9.25, Z + 7.25, 1, 1, false).shift(X + 12.25, Z + 10.25, 1, 1, true, 0, true);
     b.item('agua', X + 4, Z + 13).item('barrita', X + 20, Z + 3);
     b.lair('figure', X + 21, Z + 13);
-    b.prop('text', X + 0.55, Z + 5, Math.PI / 2, { y: 1.6, text: 'LAS COLUMNAS SE MUEVEN', w: 3 });
+    b.prop('text', X + 0.55, Z + 13, Math.PI / 2, { y: 1.6, text: 'LAS COLUMNAS SE MUEVEN', w: 3 });
     p0.push(...ports([[5, 2, DE], [12, 3, DW], [8, 5, DN], [10, 5, DN], [9, 0, DS]]));
   }
 
@@ -325,7 +325,6 @@ function level0(): LevelMap {
     for (const [x, z, r, w] of [[X + 2.6, Z + 4.95, Math.PI, 4.7], [X + 11.5, Z + 4.95, Math.PI, 8.5], [X + 2.6, Z + 7.05, 0, 4.7], [X + 11.5, Z + 7.05, 0, 8.5], [X + 4.95, Z + 2.6, -Math.PI / 2, 4.7], [X + 7.05, Z + 2.6, Math.PI / 2, 4.7], [X + 4.95, Z + 11.5, -Math.PI / 2, 8.5]] as const) {
       b.prop('railing', x, z, r, { w });
     }
-    b.note(X + 0.55, Z + 6.5, Math.PI / 2, 'Nota pegada a la barandilla', 'Abajo están los agujeros. Desde aquí parecen pequeños.\nLa barandilla se acaba de golpe.');
     b.storey(0);
     p0.push(...ports([[17, 10, DE], [22, 10, DW], [20, 7, DS], [20, 12, DN]]));
     p1.push(...ports([[17, 9, DE], [22, 9, DW], [19, 7, DS], [19, 12, DN]]));
@@ -335,10 +334,10 @@ function level0(): LevelMap {
   {
     const { X, Z } = sq(ABYSS, B);
     shaftRoom(b, B, ABYSS, F1, { wall: 0, abyss: true });
-    b.prop('text', X + 0.55, Z + 6, Math.PI / 2, { y: 1.7, text: 'NO TE ASOMES', w: 2.2 });
+    b.prop('text', X + 0.55, Z + 9.5, Math.PI / 2, { y: 1.7, text: 'NO TE ASOMES', w: 2.2 });
     b.note(X + 11.95, Z + 1.5, -Math.PI / 2, 'Nota temblorosa', 'Me asomé. Se ven pisos y pisos hacia abajo, todos iguales, todos con la luz encendida.\n\nEn uno de ellos había alguien mirando hacia arriba.');
     b.storey(1);
-    b.prop('text', X + 0.55, Z + 6, Math.PI / 2, { y: F1 + 1.6, text: 'NO SALTES', w: 1.8 });
+    b.prop('text', X + 0.55, Z + 9.5, Math.PI / 2, { y: F1 + 1.6, text: 'NO SALTES', w: 1.8 });
     b.storey(0);
     p0.push(...ports([[12, 14, DE], [16, 14, DW], [14, 12, DS], [14, 16, DN]]));
     p1.push(...ports([[12, 14, DE], [14, 12, DS]]));
@@ -353,7 +352,7 @@ function level0(): LevelMap {
     const side = ports([[5, 17, DS], [11, 17, DS], [8, 19, DN], [15, 19, DN]]);
     stubs(b, B, side, 1, { ceil: 2.4 });
     p0.push(...side, ...ports([[1, 18, DE], [18, 18, DW]]));
-    b.note(X + W - 0.05, Z + 2, -Math.PI / 2, 'Nota al final del pasillo', 'El pasillo siempre es más largo a la vuelta.');
+    b.note(X + W - 2, Z + 1.05, 0, 'Nota al final del pasillo', 'El pasillo siempre es más largo a la vuelta.');
     b.lair('figure', X + W - 4, Z + 2);
   }
 
@@ -475,11 +474,12 @@ function level0(): LevelMap {
     const r = start.area;
     b.spawn(r.x + r.w / 2, r.z + r.d / 2, FACE[start.arms[0]?.dir ?? 2]);
     b.lamp(r.x + r.w / 2, r.z + r.d / 2);
-    b.note(r.x + 0.05, r.z + r.d / 2, Math.PI / 2, 'Nota arrugada', 'Si lees esto, has hecho noclip. Estás en el Nivel 0.\n\nEsto es un laberinto, y encima de este hay otro igual. Hay escaleras, suelos rotos y puertas que dan a salas sin suelo.\n\nPara salir, busca una puerta gris de MANTENIMIENTO. Está lejos. No sé dónde.');
+    const w = wallSpots({ b, R, block: start, room: r, floor: start.floor, ceil: start.ceil, doors: start.arms, storey: 0 }, 0.4)[0];
+    if (w) b.note(w.x + Math.sin(w.ry) * 0.05, w.z + Math.cos(w.ry) * 0.05, w.ry, 'Nota arrugada', 'Si lees esto, has hecho noclip. Estás en el Nivel 0.\n\nEsto es un laberinto, y encima de este hay otro igual. Hay escaleras, suelos rotos y puertas que dan a salas sin suelo.\n\nPara salir, busca una puerta gris de MANTENIMIENTO. Está lejos. No sé dónde.');
   }
 
-  scatterItems(b, R, [m0, m1], ['agua', 'agua', 'pila', 'pila', 'barrita', 'vendas'], 26);
-  scatterLairs(b, R, [m0, m1], start, Array.from({ length: 9 }, () => ['figure'] as [EntityKind]));
+  scatterItems(b, R, [m0, m1], ['agua', 'agua', 'pila', 'pila', 'barrita', 'vendas', 'lata'], 42);
+  scatterLairs(b, R, [m0, m1], start, [...Array.from({ length: 22 }, () => ['figure'] as [EntityKind]), ['smiler'], ['smiler'], ['smiler']]);
   wakes(b, R, [m0, m1], 8);
   return b.build();
 }
@@ -559,7 +559,7 @@ function level1(): LevelMap {
     b.note(X + 0.55, Z + 3, Math.PI / 2, 'Nota clavada en la pared', 'Si estás leyendo esto, has hecho noclip. Bajaste del Nivel 0 por una escalera que no se acababa y ahora estás en el Nivel 1, la Zona Habitable.\n\nNo estás solo. Aquí hay gente.');
     b.note(X + 0.55, Z + 7, Math.PI / 2, 'Nota con letra apretada', 'Busca telas de colores con el águila de la M.E.G. Suelen dejar agua de almendras al lado.\n\nLa Base Alpha está al este de aquí. Las patrullas visten de amarillo lima.');
     b.note(X + 5, Z + 0.55, 0, 'Nota escrita a toda prisa', 'Cuando se apaguen TODAS las luces (lo llamamos Parpadeo), NO enciendas la linterna. Quédate quieto.\n\nY no corras: oyen muy bien.');
-    b.note(X + 9.95, Z + 3, -Math.PI / 2, 'Nota a lápiz', 'Esto es un laberinto de almacenes. Arriba hay otro. Las distancias mienten: elige una referencia y no la pierdas.');
+    b.note(X + 9.95, Z + 4.5, -Math.PI / 2, 'Nota a lápiz', 'Esto es un laberinto de almacenes. Arriba hay otro. Las distancias mienten: elige una referencia y no la pierdas.');
     b.item('agua', X + 8, Z + 8.5);
     p0.push(...ports([[3, 1, DW], [1, 3, DN]]));
   }
@@ -661,7 +661,7 @@ function level1(): LevelMap {
     b.ramp(X + 16, Z + 2, 2, 4, 2, -4, -1.5, true, 0.5);
     b.open(X + 16, Z + 0.25, 2, 1.75, { floor: -4, ceil: -1.6, wall: 0, lamps: false }).lamp(X + 17, Z + 1, { flicker: true });
     b.exit(X + 17, Z + 0.6, Math.PI, 'NIVEL 2', true);
-    b.note(X + 15.95, Z + 5, -Math.PI / 2, 'Nota en la escalera', 'Esta escalera baja más de lo que debería. Al fondo empieza el Nivel 2: túneles, calor y muy poca comida.');
+    b.note(X + 16.05, Z + 5, Math.PI / 2, 'Nota en la escalera', 'Esta escalera baja más de lo que debería. Al fondo empieza el Nivel 2: túneles, calor y muy poca comida.');
     b.lair('clump', X + 3, Z + 3);
     p0.push(...ports([[26, 19, DS, X + 7, 2]]));
   }
@@ -712,15 +712,27 @@ function level1(): LevelMap {
   b.storey(0);
 
   const start = m0.at(3, 1) ?? m0.list[0];
-  scatterItems(b, R, [m0, m1], ['agua', 'pila', 'barrita', 'vendas', 'lata', 'bengala'], 24);
+  scatterItems(b, R, [m0, m1], ['agua', 'pila', 'barrita', 'vendas', 'lata', 'bengala', 'agua', 'pila'], 40);
   scatterLairs(b, R, [m0, m1], start, [
     ['hound'],
     ['hound'],
+    ['hound'],
+    ['hound'],
+    ['hound'],
     ['smiler'],
     ['smiler'],
+    ['smiler'],
+    ['smiler'],
+    ['smiler'],
+    ['duller'],
+    ['duller'],
     ['duller'],
     ['duller'],
     ['clump'],
+    ['clump'],
+    ['clump'],
+    ['clump'],
+    ['skinstealer', ['¿Hay alguien?', 'Por favor…', 'Te oigo. Ven.']],
     ['skinstealer', ['¿Hola?', '¿Hay alguien ahí?', 'Me he perdido…', 'Hola. Hola. Hola.']],
     ['skinstealer', ['¿Vecino?', 'Ayúdame… ayú-da-me.', 'No me dejes aquí.']],
   ]);
@@ -793,7 +805,7 @@ function level2(): LevelMap {
     const { X, Z } = sq(MACHINE, B);
     b.open(X + 0.25, Z + 0.25, 11.5, 11.5, { ceil: 4.5, wall: 3, floorMat: 1, lamps: 5 });
     for (const [x, z] of [[X + 3, Z + 3], [X + 8, Z + 3], [X + 3, Z + 8.5]]) b.prop('tank', x, z, 0, { solid: [2.4, 2.4] });
-    b.prop('machine', X + 11.6, Z + 7, -Math.PI / 2, { solid: [0.8, 2.4] }).prop('gauge', X + 0.55, Z + 6, Math.PI / 2, { y: 1.5 }).prop('valve', X + 0.55, Z + 9, Math.PI / 2, { y: 1.2 });
+    b.prop('machine', X + 11.6, Z + 7, -Math.PI / 2, { solid: [0.8, 2.4] }).prop('gauge', X + 0.55, Z + 4, Math.PI / 2, { y: 1.5 }).prop('valve', X + 0.55, Z + 9, Math.PI / 2, { y: 1.2 });
     b.vent(X + 7, Z + 9, 6).item('agua', X + 9, Z + 10.5);
     p0.push(...ports([[7, 7, DE], [11, 7, DW], [9, 9, DN]]));
   }
@@ -833,7 +845,7 @@ function level2(): LevelMap {
   {
     shaftRoom(b, B, PIT, F1, { wall: 3, abyss: true, floorMat: 1 });
     const { X, Z } = sq(PIT, B);
-    b.prop('text', X + 0.55, Z + 6, Math.PI / 2, { y: 1.7, text: '↓ ABAJO NO', w: 1.8 });
+    b.prop('text', X + 0.55, Z + 9.5, Math.PI / 2, { y: 1.7, text: '↓ ABAJO NO', w: 1.8 });
     p0.push(...ports([[29, 19, DE], [31, 17, DS]]));
     p1.push(...ports([[33, 19, DW]]));
   }
@@ -899,8 +911,11 @@ function level2(): LevelMap {
     const r = start.area;
     b.spawn(r.x + r.w / 2, r.z + r.d / 2, FACE[start.arms[0]?.dir ?? 0]);
     b.lamp(r.x + r.w / 2, r.z + r.d / 2);
-    b.prop('text', r.x + 0.05, r.z + r.d / 2, Math.PI / 2, { y: 1.7, text: 'NIVEL 2', w: 1.6 });
-    b.note(r.x + r.w / 2, r.z + 0.05, 0, 'Nota en una tubería', 'Las luces van en serie: si una se rompe, se apaga todo el tramo.\nLleva siempre pilas. Y no te acerques a las ventanas del final de los túneles.\n\nLa salida está muy lejos. Hay túneles encima de túneles.');
+    const ws = wallSpots({ b, R, block: start, room: r, floor: start.floor, ceil: start.ceil, doors: start.arms, storey: 0 }, 0.4);
+    const w1 = ws[0];
+    const w2 = ws.find((w) => w.side !== w1?.side);
+    if (w1) b.prop('text', w1.x + Math.sin(w1.ry) * 0.03, w1.z + Math.cos(w1.ry) * 0.03, w1.ry, { y: 1.7, text: 'NIVEL 2', w: 1.6 });
+    if (w2) b.note(w2.x + Math.sin(w2.ry) * 0.05, w2.z + Math.cos(w2.ry) * 0.05, w2.ry, 'Nota en una tubería', 'Las luces van en serie: si una se rompe, se apaga todo el tramo.\nLleva siempre pilas. Y no te acerques a las ventanas del final de los túneles.\n\nLa salida está muy lejos. Hay túneles encima de túneles.');
   }
 
   // ---- puertas a sitios sueltos (al este del mapa) ----
@@ -941,20 +956,12 @@ function level2(): LevelMap {
     }
   }
 
-  scatterItems(b, R, [m0, m1], ['pila', 'pila', 'vendas', 'agua', 'barrita', 'bengala', 'lata'], 22);
+  scatterItems(b, R, [m0, m1], ['pila', 'pila', 'vendas', 'agua', 'barrita', 'bengala', 'lata', 'pila'], 38);
   scatterLairs(b, R, [m0, m1], start, [
-    ['smiler'],
-    ['smiler'],
-    ['smiler'],
-    ['smiler'],
-    ['clump'],
-    ['clump'],
-    ['clump'],
-    ['hound'],
-    ['hound'],
-    ['faceling'],
-    ['faceling'],
-    ['faceling'],
+    ...Array.from({ length: 9 }, () => ['smiler'] as [EntityKind]),
+    ...Array.from({ length: 6 }, () => ['clump'] as [EntityKind]),
+    ...Array.from({ length: 5 }, () => ['hound'] as [EntityKind]),
+    ...Array.from({ length: 5 }, () => ['faceling'] as [EntityKind]),
   ]);
   for (const m of [m0, m1]) {
     b.storey(m.o.storey);
