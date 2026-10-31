@@ -189,6 +189,172 @@ function skinTex(key: string, o: SkinOpts): THREE.Texture {
 /** Material de piel (o tela) con la textura pintada. */
 const skinMat = (key: string, o: SkinOpts, extra: THREE.MeshBasicMaterialParameters = {}) => litMaterial({ map: skinTex(key, o), ...extra }, 0.1);
 
+// ---------------------------------------------------------------- esqueleto
+
+/**
+ * Músculo o miembro de ropa colgando de su pivote (de y = 0 a y = -len): el
+ * radio pasa de r0 a r1 con un vientre muscular en el primer tercio y una
+ * articulación marcada abajo.
+ */
+function muscle(len: number, r0: number, r1: number, belly = 0.18, knob = 0.08, seg = 10): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [new THREE.Vector2(0.0005, -len - r1 * 0.45)];
+  const N = 12;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N; // 0 abajo, 1 arriba
+    let r = r1 + (r0 - r1) * t;
+    r *= 1 + belly * Math.pow(Math.sin(Math.PI * Math.min(1, t * 1.25)), 1.6) + knob * Math.exp(-((t - 0.04) ** 2) / 0.004);
+    pts.push(new THREE.Vector2(r, -len + t * len));
+  }
+  pts.push(new THREE.Vector2(0.0005, r0 * 0.5));
+  return new THREE.LatheGeometry(pts, seg);
+}
+
+/** Pivote vacío en una posición, colgado de un padre. */
+function joint(parent: THREE.Object3D, x = 0, y = 0, z = 0): THREE.Group {
+  const j = new THREE.Group();
+  j.position.set(x, y, z);
+  parent.add(j);
+  return j;
+}
+
+/** Añade una malla a un pivote. */
+function put(parent: THREE.Object3D, geo: THREE.BufferGeometry, mat: THREE.Material): THREE.Mesh {
+  const m = new THREE.Mesh(geo, mat);
+  parent.add(m);
+  return m;
+}
+
+interface Arm {
+  upper: THREE.Group;
+  fore: THREE.Group;
+  hand: THREE.Group;
+}
+interface Leg {
+  thigh: THREE.Group;
+  shin: THREE.Group;
+  foot: THREE.Group;
+}
+
+/** Esqueleto de un bípedo: de la cadera salen la columna y las piernas. */
+interface Rig {
+  root: THREE.Group;
+  hips: THREE.Group;
+  spine: THREE.Group;
+  chest: THREE.Group;
+  neck: THREE.Group;
+  head: THREE.Group;
+  arms: [Arm, Arm];
+  legs: [Leg, Leg];
+  hipY: number;
+}
+
+interface RigSpec {
+  hipY: number; // altura de la cadera
+  hipW: number; // media anchura entre las piernas
+  thigh: number;
+  shin: number;
+  spine: number; // de la cadera al pecho
+  chest: number; // del pecho a los hombros
+  shoulderW: number;
+  upper: number;
+  fore: number;
+  neck: number;
+}
+
+function makeRig(s: RigSpec): Rig {
+  const root = new THREE.Group();
+  const hips = joint(root, 0, s.hipY, 0);
+  const spine = joint(hips, 0, 0.06, 0);
+  const chest = joint(spine, 0, s.spine, 0);
+  const neck = joint(chest, 0, s.chest + 0.02, 0);
+  const head = joint(neck, 0, s.neck, 0);
+  const arm = (side: number): Arm => {
+    const upper = joint(chest, side * s.shoulderW, s.chest - 0.03, 0);
+    upper.userData.y0 = upper.position.y;
+    const fore = joint(upper, 0, -s.upper, 0);
+    const hand = joint(fore, 0, -s.fore, 0);
+    return { upper, fore, hand };
+  };
+  const leg = (side: number): Leg => {
+    const thigh = joint(hips, side * s.hipW, -0.02, 0);
+    const shin = joint(thigh, 0, -s.thigh, 0);
+    const foot = joint(shin, 0, -s.shin, 0);
+    return { thigh, shin, foot };
+  };
+  return { root, hips, spine, chest, neck, head, arms: [arm(-1), arm(1)], legs: [leg(-1), leg(1)], hipY: s.hipY };
+}
+
+/** Manera de andar: cada criatura la suya. */
+interface Gait {
+  stride: number; // amplitud de la zancada (rad)
+  knee: number; // cuánto dobla la rodilla al pasar la pierna
+  arm: number; // balanceo de los brazos
+  elbow: number; // codo doblado al ir hacia delante
+  bob: number; // sube y baja la cadera (m)
+  sway: number; // va de lado a lado (m)
+  twist: number; // gira la cadera (y el pecho al revés)
+  lean: number; // se inclina hacia delante
+}
+
+/** Acerca un valor a su objetivo poco a poco (las poses no saltan de golpe). */
+const ease = (v: number, target: number, k: number) => v + (target - v) * k;
+
+/**
+ * Ciclo de marcha: `phase` avanza con la velocidad y `amt` (0..1) mezcla
+ * entre estar quieto y andar del todo. La rodilla se dobla al adelantar la
+ * pierna, el pie se queda plano en el suelo, la cadera sube y baja dos veces
+ * por ciclo y va de lado a lado, el pecho gira al revés que la cadera y la
+ * cabeza mira al frente.
+ */
+function walk(r: Rig, phase: number, amt: number, g: Gait, k: number, arms = true, extra: { roll?: number; look?: number; nod?: number } = {}) {
+  r.legs.forEach((l, i) => {
+    const p = phase + i * Math.PI;
+    const sw = Math.sin(p);
+    const swing = Math.max(0, Math.cos(p)); // la pierna va hacia delante: se dobla la rodilla
+    const thigh = g.stride * sw * amt + g.lean * amt * 0.4;
+    const shin = -(0.05 + g.knee * swing * swing + 0.12 * Math.max(0, -sw)) * amt;
+    l.thigh.rotation.x = ease(l.thigh.rotation.x, thigh, k);
+    l.shin.rotation.x = ease(l.shin.rotation.x, shin, k);
+    // el pie plano en el suelo, y al despegar se apoya en la punta
+    l.foot.rotation.x = ease(l.foot.rotation.x, -(thigh + shin) * 0.85 + Math.max(0, -Math.cos(p) * sw) * 0.35 * amt, k);
+    if (!arms) return;
+    const a = r.arms[i];
+    a.upper.rotation.x = ease(a.upper.rotation.x, -g.arm * sw * amt, k);
+    a.upper.rotation.z = ease(a.upper.rotation.z, (i ? -1 : 1) * 0.06, k);
+    a.fore.rotation.x = ease(a.fore.rotation.x, 0.1 + g.elbow * (0.5 - 0.5 * sw) * amt, k);
+  });
+  r.hips.position.y = ease(r.hips.position.y, r.hipY - g.bob * amt * (0.5 - 0.5 * Math.cos(2 * phase)) - g.lean * amt * 0.05, k);
+  r.hips.position.x = ease(r.hips.position.x, g.sway * amt * Math.sin(phase), k);
+  r.hips.rotation.y = ease(r.hips.rotation.y, g.twist * amt * Math.sin(phase), k);
+  r.hips.rotation.z = ease(r.hips.rotation.z, -g.sway * 3 * amt * Math.sin(phase) + (extra.roll ?? 0), k);
+  r.spine.rotation.x = ease(r.spine.rotation.x, g.lean * amt, k);
+  r.chest.rotation.y = ease(r.chest.rotation.y, -g.twist * 1.6 * amt * Math.sin(phase), k);
+  r.head.rotation.y = ease(r.head.rotation.y, g.twist * 0.6 * amt * Math.sin(phase) + (extra.look ?? 0), k);
+  r.neck.rotation.x = ease(r.neck.rotation.x, -g.lean * amt * 0.6 + (extra.nod ?? 0), k);
+}
+
+/** Respirar: el pecho se hincha y los hombros suben un poco. */
+function breathe(r: Rig, time: number, depth = 1) {
+  const b = Math.sin(time * 1.7) * depth;
+  r.chest.scale.set(1 + b * 0.012, 1 + b * 0.008, 1 + b * 0.02);
+  for (const a of r.arms) a.upper.position.y = a.upper.userData.y0 + b * 0.004;
+}
+
+/** Cabeza humana: cráneo, mandíbula, pómulos, nariz, cejas y orejas. */
+function humanHead(r: number, o: { nose?: number; jaw?: number; ears?: boolean; brow?: number; long?: number } = {}): THREE.BufferGeometry {
+  const L = o.long ?? 1;
+  const parts = [
+    lumpy(place(new THREE.SphereGeometry(r, 20, 16), 0, 0.01, 0.01, 0, 0, 0, 0.92, 1.08 * L, 1.06), 0.003, 20),
+    place(new THREE.SphereGeometry(r * 0.62, 12, 10), 0, -r * 0.62 * L, -r * 0.28, 0.2, 0, 0, 0.95, 0.85, 1) , // mandíbula y barbilla
+    place(new THREE.SphereGeometry(r * 0.28, 8, 6), -r * 0.5, -r * 0.18, -r * 0.62, 0, 0, 0, 1, 0.7, 0.8), // pómulos
+    place(new THREE.SphereGeometry(r * 0.28, 8, 6), r * 0.5, -r * 0.18, -r * 0.62, 0, 0, 0, 1, 0.7, 0.8),
+    place(new THREE.SphereGeometry(r * 0.55, 10, 6), 0, r * 0.32, -r * 0.62, 0, 0, 0, 1.25, (o.brow ?? 0.3) , 0.55), // cejas
+  ];
+  if (o.nose !== 0) parts.push(place(new THREE.ConeGeometry(r * 0.16 * (o.nose ?? 1), r * 0.5 * (o.nose ?? 1), 6), 0, -r * 0.08, -r * 1.0, -Math.PI / 2 - 0.35, 0, 0, 1, 1, 0.8));
+  if (o.ears) for (const s of [-1, 1]) parts.push(place(new THREE.SphereGeometry(r * 0.22, 8, 6), s * r * 0.95, 0, 0.02, 0, 0, 0, 0.45, 1, 0.8));
+  return merge(parts);
+}
+
 // ---------- jugadores ----------
 
 export interface Humanoid {
@@ -233,140 +399,135 @@ function hang(geo: THREE.BufferGeometry, mat: THREE.Material): THREE.Group {
   return pivot;
 }
 
+/** Geometría de un bloque redondeado (cápsula estirada a lo ancho). */
+function roundedGeo(w: number, h: number, d: number): THREE.BufferGeometry {
+  const r = Math.min(w, d) / 2;
+  return new THREE.CapsuleGeometry(r, Math.max(0.001, h - 2 * r), 4, 12).scale(w / (2 * r), 1, d / (2 * r));
+}
+
+/** Bota: puntera redondeada, caña y suela, desde el tobillo hacia delante. */
+const bootGeo = () =>
+  merge([
+    lumpy(place(new THREE.CapsuleGeometry(0.055, 0.15, 4, 10), 0, -0.035, -0.06, Math.PI / 2, 0, 0, 1.05, 1, 0.8), 0.003, 40),
+    place(new THREE.CylinderGeometry(0.055, 0.06, 0.1, 10), 0, 0.01, 0),
+    place(new THREE.BoxGeometry(0.115, 0.022, 0.25), 0, -0.07, -0.06),
+  ]);
+
+const WALK: Gait = { stride: 0.42, knee: 0.75, arm: 0.35, elbow: 0.35, bob: 0.035, sway: 0.018, twist: 0.12, lean: 0.03 };
+const RUN: Gait = { stride: 0.7, knee: 1.5, arm: 0.75, elbow: 1.0, bob: 0.06, sway: 0.012, twist: 0.2, lean: 0.25 };
+
+interface Explorer {
+  h: Humanoid;
+  rig: Rig;
+}
+
 /**
- * Explorador: chaqueta con capucha, mochila con esterilla, pantalón de bolsillos
- * y botas; la linterna en la mano derecha.
+ * Explorador: chaqueta con capucha, mochila con esterilla, pantalón de
+ * bolsillos y botas; la linterna en la mano derecha. Anda con un ciclo de
+ * marcha completo (rodillas, tobillos, cadera que sube, baja y gira, brazos)
+ * y, quieto, respira y cambia el peso de pierna.
  */
-export function makeHumanoid(color: number, name: string): Humanoid {
-  const shirt = litMaterial({ color }, 0.1);
-  const pants = skinMat('pants', { base: '#3a404c', mottle: '#20242c' }, { color: 0xffffff });
+function makeExplorer(color: number, name: string): Explorer {
+  const jacket = litMaterial({ color }, 0.1);
+  const pants = skinMat('pants', { base: '#3a404c', mottle: '#20242c' });
   const skin = skinMat('human', { base: '#d6a688', mottle: '#b9806a' });
   const dark = litMaterial({ color: 0x1e1e1e }, 0.1);
   const hairMat = litMaterial({ color: 0x2a1d14 }, 0.1);
   const pack = skinMat('canvas', { base: '#5f4d34', mottle: '#3e3222', stitches: '#2a2116' });
   const strap = litMaterial({ color: 0x2b2620 }, 0.1);
+  const r = makeRig({ hipY: 0.91, hipW: 0.095, thigh: 0.44, shin: 0.43, spine: 0.22, chest: 0.26, shoulderW: 0.205, upper: 0.29, fore: 0.27, neck: 0.09 });
 
-  const group = new THREE.Group();
-  const body = new THREE.Group();
-  group.add(body);
-
-  const torso = new THREE.Mesh(
-    cached('h-torso', () => place(trunk([[0.001, -0.31], [0.17, -0.3], [0.165, -0.15], [0.19, 0.05], [0.225, 0.2], [0.2, 0.29], [0.07, 0.33], [0.001, 0.33]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.62)),
-    shirt,
-  );
-  torso.position.y = 1.18;
-  const details = new THREE.Mesh(
-    cached('h-details', () =>
+  put(r.hips, cached('ex-pelvis', () => merge([place(roundedGeo(0.34, 0.2, 0.22), 0, -0.02, 0), place(new THREE.BoxGeometry(0.35, 0.045, 0.235), 0, 0.07, 0)])), pants);
+  put(r.spine, cached('ex-belly', () => place(trunk([[0.001, -0.02], [0.152, -0.02], [0.158, 0.1], [0.172, 0.23], [0.001, 0.24]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.66)), jacket);
+  put(r.chest, cached('ex-chest', () => place(trunk([[0.001, -0.02], [0.172, -0.02], [0.19, 0.11], [0.214, 0.2], [0.19, 0.265], [0.075, 0.3], [0.001, 0.3]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.64)), jacket);
+  put(
+    r.chest,
+    cached('ex-straps', () =>
       merge([
-        place(new THREE.BoxGeometry(0.014, 0.52, 0.012), 0, 1.16, -0.142), // cremallera
-        place(new THREE.TorusGeometry(0.13, 0.045, 6, 14, Math.PI), 0, 1.47, 0.05, -1.2, 0, 0, 1, 1, 0.9), // capucha
-        place(new THREE.BoxGeometry(0.43, 0.05, 0.26), 0, 0.97, 0), // cinturón
-        place(new THREE.BoxGeometry(0.035, 0.46, 0.015), -0.1, 1.24, -0.138, 0.05), // tirantes de la mochila
-        place(new THREE.BoxGeometry(0.035, 0.46, 0.015), 0.1, 1.24, -0.138, 0.05),
+        place(new THREE.BoxGeometry(0.012, 0.3, 0.01), 0, 0.12, -0.132), // cremallera
+        place(new THREE.TorusGeometry(0.11, 0.04, 6, 14, Math.PI), 0, 0.27, 0.05, -1.25, 0, 0, 1, 1, 0.9), // capucha
+        place(new THREE.BoxGeometry(0.035, 0.34, 0.014), -0.095, 0.11, -0.13, 0.06), // tirantes
+        place(new THREE.BoxGeometry(0.035, 0.34, 0.014), 0.095, 0.11, -0.13, 0.06),
+        place(new THREE.BoxGeometry(0.2, 0.025, 0.012), 0, 0.15, -0.135), // cinta del pecho
       ]),
     ),
     strap,
   );
-  const backpack = rounded(0.34, 0.44, 0.17, pack);
-  backpack.position.set(0, 1.2, 0.21);
-  const roll = new THREE.Mesh(cached('h-roll', () => place(new THREE.CylinderGeometry(0.065, 0.065, 0.4, 10), 0, 1.47, 0.24, 0, 0, Math.PI / 2)), litMaterial({ color: 0x4f6a3a }, 0.1));
-  const hips = rounded(0.4, 0.22, 0.24, pants);
-  hips.position.y = 0.86;
-
-  const head = new THREE.Group();
-  head.position.y = 1.6;
-  const skull = new THREE.Mesh(
-    cached('h-skull', () =>
-      merge([
-        place(new THREE.SphereGeometry(0.14, 18, 14), 0, 0, 0, 0, 0, 0, 1, 1.12, 1.05),
-        place(new THREE.SphereGeometry(0.075, 10, 8), 0, -0.09, -0.04, 0, 0, 0, 1.2, 0.8, 1.1), // mandíbula
-        place(new THREE.ConeGeometry(0.022, 0.06, 6), 0, -0.01, -0.155, -Math.PI / 2 - 0.3, 0, 0), // nariz
-        place(new THREE.SphereGeometry(0.03, 8, 6), -0.14, 0, 0, 0, 0, 0, 0.5, 1, 0.8), // orejas
-        place(new THREE.SphereGeometry(0.03, 8, 6), 0.14, 0, 0, 0, 0, 0, 0.5, 1, 0.8),
-      ]),
-    ),
-    skin,
-  );
-  const hair = new THREE.Mesh(
-    cached('h-hair', () => lumpy(place(new THREE.SphereGeometry(0.152, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.56), 0, 0.025, 0.01, 0.3, 0, 0, 1, 1.05, 1.08), 0.008, 30)),
-    hairMat,
-  );
-  const eyes = new THREE.Mesh(
-    cached('h-eyes', () => merge([place(new THREE.SphereGeometry(0.017, 8, 6), -0.05, 0.025, -0.135), place(new THREE.SphereGeometry(0.017, 8, 6), 0.05, 0.025, -0.135), place(new THREE.BoxGeometry(0.05, 0.01, 0.01), -0.05, 0.06, -0.14, 0, 0, 0.1), place(new THREE.BoxGeometry(0.05, 0.01, 0.01), 0.05, 0.06, -0.14, 0, 0, -0.1)])),
+  const packMesh = put(r.chest, cached('ex-pack', () => merge([place(roundedGeo(0.32, 0.4, 0.16), 0, 0.08, 0.19), place(roundedGeo(0.28, 0.1, 0.06), 0, 0.27, 0.22), place(roundedGeo(0.22, 0.14, 0.05), 0, -0.02, 0.27)])), pack);
+  packMesh.renderOrder = 0;
+  put(r.chest, cached('ex-roll', () => place(new THREE.CylinderGeometry(0.06, 0.06, 0.38, 10), 0, 0.34, 0.2, 0, 0, Math.PI / 2)), litMaterial({ color: 0x4f6a3a }, 0.1));
+  put(r.neck, cached('ex-neck', () => place(new THREE.CylinderGeometry(0.05, 0.06, 0.12, 10), 0, 0.03, 0)), skin);
+  put(r.head, cached('ex-head', () => place(humanHead(0.105, { ears: true }), 0, 0.1, 0)), skin);
+  put(r.head, cached('ex-hair', () => lumpy(place(new THREE.SphereGeometry(0.112, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.55), 0, 0.13, 0.012, 0.32, 0, 0, 0.98, 1.05, 1.08), 0.007, 30)), hairMat);
+  put(
+    r.head,
+    cached('ex-eyes', () => merge([-1, 1].flatMap((s) => [place(new THREE.SphereGeometry(0.013, 8, 6), s * 0.038, 0.115, -0.093), place(new THREE.BoxGeometry(0.038, 0.008, 0.01), s * 0.038, 0.143, -0.1, 0, 0, s * -0.12)]))),
     new THREE.MeshBasicMaterial({ color: 0x15100c }),
   );
-  head.add(skull, hair, eyes);
-  const neck = new THREE.Mesh(cached('h-neck', () => new THREE.CylinderGeometry(0.055, 0.065, 0.12, 10)), skin);
-  neck.position.y = 1.5;
-
-  const legGeo = cached('h-leg', () => merge([bone(0.82, 0.09, 0.07, 0.12), place(new THREE.BoxGeometry(0.05, 0.13, 0.11), 0.085, -0.35, 0)]));
-  const bootGeo = cached('h-boot', () => merge([lumpy(place(new THREE.CapsuleGeometry(0.065, 0.16, 4, 10), 0, -0.8, -0.05, Math.PI / 2, 0, 0, 1, 1, 0.75), 0.004, 40), place(new THREE.BoxGeometry(0.13, 0.025, 0.24), 0, -0.85, -0.06)]));
-  const legL = hang(legGeo, pants);
-  legL.position.set(-0.11, 0.86, 0);
-  const legR = hang(legGeo, pants);
-  legR.position.set(0.11, 0.86, 0);
-  for (const leg of [legL, legR]) leg.add(new THREE.Mesh(bootGeo, dark));
-  const armGeo = cached('h-arm', () => bone(0.6, 0.075, 0.058, 0.15));
-  const handGeom = cached('h-hand', () => place(handGeo(4, 0.07, 0.013, 0.05, 0, 0.5), 0, -0.6, 0));
-  const armL = hang(armGeo, shirt);
-  armL.position.set(-0.3, 1.44, 0);
-  const armR = hang(armGeo, shirt);
-  armR.position.set(0.3, 1.44, 0);
-  for (const arm of [armL, armR]) arm.add(new THREE.Mesh(handGeom, skin));
-  // linterna en la mano derecha; el brazo apunta hacia delante
+  for (const l of r.legs) {
+    put(l.thigh, cached('ex-thigh', () => merge([muscle(0.44, 0.088, 0.062, 0.12), place(new THREE.BoxGeometry(0.04, 0.12, 0.1), 0.08, -0.22, 0)])), pants);
+    put(l.shin, cached('ex-shin', () => muscle(0.43, 0.066, 0.048, 0.2)), pants);
+    put(l.foot, cached('ex-boot', bootGeo), dark);
+  }
+  for (const a of r.arms) {
+    put(a.upper, cached('ex-upper', () => muscle(0.29, 0.068, 0.052, 0.14)), jacket);
+    put(a.fore, cached('ex-fore', () => merge([muscle(0.27, 0.056, 0.044, 0.12), place(new THREE.CylinderGeometry(0.05, 0.05, 0.04, 10), 0, -0.25, 0)])), jacket);
+    put(a.hand, cached('ex-hand', () => handGeo(4, 0.075, 0.012, 0.05, 0, 0.5)), skin);
+  }
+  // linterna en la mano derecha, apuntando hacia delante
   const torch = new THREE.Group();
-  const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.2, 10), dark);
+  const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.2, 10), dark);
   tube.rotation.x = Math.PI / 2;
-  const lens = new THREE.Mesh(new THREE.CircleGeometry(0.035, 12), new THREE.MeshBasicMaterial({ color: 0x333333 }));
+  const lens = new THREE.Mesh(new THREE.CircleGeometry(0.033, 12), new THREE.MeshBasicMaterial({ color: 0x333333 }));
   lens.position.z = -0.101;
   lens.rotation.y = Math.PI;
   torch.add(tube, lens);
-  torch.rotation.x = -Math.PI / 2; // alineada con el brazo
-  torch.position.set(0, -0.64, 0);
-  armR.add(torch);
-  armR.rotation.x = 1.4; // brazo hacia delante
-
+  torch.rotation.x = -Math.PI / 2;
+  torch.position.set(0, -0.06, 0);
+  r.arms[1].hand.add(torch);
   const beamGeo = new THREE.ConeGeometry(1.3, 7, 24, 1, true);
   beamGeo.translate(0, -3.5, 0);
   beamGeo.rotateX(-Math.PI / 2);
-  const beam = new THREE.Mesh(
-    beamGeo,
-    new THREE.MeshBasicMaterial({
-      color: 0xfff1c4,
-      transparent: true,
-      opacity: 0.05,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    }),
-  );
+  const beam = new THREE.Mesh(beamGeo, new THREE.MeshBasicMaterial({ color: 0xfff1c4, transparent: true, opacity: 0.05, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
   beam.rotation.x = Math.PI;
   beam.position.z = -0.1;
   beam.visible = false;
   torch.add(beam);
 
-  body.add(torso, details, backpack, roll, hips, neck, head, legL, legR, armL, armR);
+  const group = r.root;
   group.add(makeLabel(name));
-
   let phase = 0;
-  return {
+  let amt = 0;
+  let time = Math.random() * 10;
+  const h: Humanoid = {
     group,
     setLight(on) {
       beam.visible = on;
       (lens.material as THREE.MeshBasicMaterial).color.set(on ? 0xfff6dd : 0x333333);
     },
     animate(dt, speed) {
+      time += dt;
       const moving = speed > 0.3;
-      phase += dt * (moving ? 2.2 + speed * 1.6 : 0);
-      const swing = moving ? Math.sin(phase) * Math.min(0.75, 0.25 + speed * 0.1) : 0;
-      const ease = 1 - Math.exp(-12 * dt);
-      legL.rotation.x += (swing - legL.rotation.x) * ease;
-      legR.rotation.x += (-swing - legR.rotation.x) * ease;
-      armL.rotation.x += (-swing * 0.8 - armL.rotation.x) * ease;
-      armR.rotation.x = 1.4 + Math.sin(phase * 2) * 0.03;
-      body.position.y = moving ? Math.abs(Math.cos(phase)) * 0.04 : 0;
+      amt = ease(amt, moving ? Math.min(1, speed / 2.2) : 0, 1 - Math.exp(-6 * dt));
+      phase += dt * (moving ? 2.4 + speed * 1.5 : 0);
+      const k = 1 - Math.exp(-14 * dt);
+      // quieto: cambia el peso de una pierna a otra y mira alrededor
+      const still = 1 - amt;
+      walk(r, phase, amt, speed > 4 ? RUN : WALK, k, true, { roll: Math.sin(time * 0.45) * 0.025 * still, look: Math.sin(time * 0.3) * 0.3 * still });
+      // la mano derecha sostiene la linterna al frente; con un poco de vaivén
+      const torchArm = r.arms[1];
+      torchArm.upper.rotation.x = ease(torchArm.upper.rotation.x, 1.12 + Math.sin(phase * 2) * 0.04 * amt + Math.sin(time * 1.3) * 0.015, k);
+      torchArm.upper.rotation.z = ease(torchArm.upper.rotation.z, -0.08, k);
+      torchArm.fore.rotation.x = ease(torchArm.fore.rotation.x, 0.32, k);
+      breathe(r, time, still);
     },
   };
+  return { h, rig: r };
+}
+
+/** Explorador (los jugadores). */
+export function makeHumanoid(color: number, name: string): Humanoid {
+  return makeExplorer(color, name).h;
 }
 
 // ---------- enemigos ----------
@@ -536,120 +697,135 @@ export function makeHound(seed: number): EnemyModel {
 
   const upperGeo = cached('hound-upper', () => bone(0.42, 0.06, 0.042, 0.4));
   const lowerGeo = cached('hound-lower', () => bone(0.42, 0.042, 0.03, 0.35));
-  const handG = cached('hound-hand', () => place(handGeo(4, 0.12, 0.012, 0.07, 0.045, 0.3), 0, -0.42, -0.02, Math.PI / 2 * 0.85, 0, 0));
-  const limbs: { upper: THREE.Group; lower: THREE.Group; phase: number }[] = [];
-  for (const [x, z, phase] of [[-0.2, -0.38, 0], [0.2, -0.38, Math.PI], [-0.18, 0.38, Math.PI], [0.18, 0.38, 0]] as const) {
+  const pawGeo = cached('hound-paw', () => place(handGeo(4, 0.12, 0.012, 0.07, 0.045, 0.3), 0, 0, -0.02, (Math.PI / 2) * 0.85, 0, 0));
+  // patas: delante izquierda, delante derecha, detrás izquierda, detrás derecha
+  const limbs: { upper: THREE.Group; lower: THREE.Group; paw: THREE.Group; front: boolean; walk: number; bound: number }[] = [];
+  for (const [x, z, front, walkPh, boundPh] of [[-0.2, -0.38, true, 0.25, 0], [0.2, -0.38, true, 0.75, 0.15], [-0.18, 0.38, false, 0, Math.PI], [0.18, 0.38, false, 0.5, Math.PI + 0.15]] as const) {
     const upper = hang(upperGeo, skin);
     upper.position.set(x, 0, z);
     const lower = hang(lowerGeo, skin);
     lower.position.y = -0.42;
     upper.add(lower);
-    lower.add(new THREE.Mesh(handG, skin));
+    const paw = joint(lower, 0, -0.42, 0);
+    put(paw, pawGeo, skin);
     body.add(upper);
-    limbs.push({ upper, lower, phase });
+    limbs.push({ upper, lower, paw, front, walk: walkPh * Math.PI * 2, bound: boundPh });
   }
 
   let cycle = 0;
+  let amt = 0;
+  let lunge = 0;
   return {
     group,
     eye: 0.85,
     animate(dt, time, anim) {
-      const speed = anim === Anim.Run ? 9 : anim === Anim.Walk || anim === Anim.Flee ? 4.5 : 0;
-      cycle += dt * speed;
-      const amp = anim === Anim.Run ? 0.75 : 0.4;
-      for (const l of limbs) {
-        const s = speed ? Math.sin(cycle + l.phase) : 0;
-        l.upper.rotation.x = s * amp;
-        l.lower.rotation.x = speed ? -Math.max(0, Math.cos(cycle + l.phase)) * amp * 1.2 : 0.15;
-      }
+      const run = anim === Anim.Run || anim === Anim.Flee;
+      const moving = run || anim === Anim.Walk;
       const growl = anim === Anim.Growl || anim === Anim.Attack;
-      body.position.y = 0.75 + (speed ? Math.abs(Math.sin(cycle)) * 0.06 : Math.sin(time * 2 + seed) * 0.01) - (growl ? 0.15 : 0);
-      body.rotation.x = anim === Anim.Run ? -0.08 : growl ? 0.12 : 0;
-      head.rotation.x = growl ? 0.3 + Math.sin(time * 30) * 0.03 : Math.sin(time * 0.8 + seed) * 0.1;
-      head.rotation.y = speed ? 0 : Math.sin(time * 0.5 + seed) * 0.4;
-      jaw.position.y = growl ? -0.17 : -0.12;
-      if (anim === Anim.Attack) head.position.z = -0.6 - Math.abs(Math.sin(time * 12)) * 0.15;
-      else head.position.z = -0.6;
+      const k = 1 - Math.exp(-16 * dt);
+      amt = ease(amt, moving ? 1 : 0, 1 - Math.exp(-7 * dt));
+      cycle += dt * (run ? 10 : moving ? 5 : 0);
+      for (const l of limbs) {
+        // al paso, una pata detrás de otra; a la carrera, a saltos (las de delante juntas y luego las de detrás)
+        const p = cycle + (run ? l.bound : l.walk);
+        const s = Math.sin(p);
+        const lift = Math.max(0, Math.cos(p)); // la pata va hacia delante, en el aire
+        const amp = run ? 0.75 : 0.42;
+        const upper = s * amp * amt + (growl ? (l.front ? -0.25 : 0.35) : 0);
+        // codo hacia atrás en las de delante; corvejón hacia delante en las de detrás
+        const bend = (0.15 + lift * (run ? 1.3 : 0.8)) * amt + (growl ? 0.45 : 0.12 * (1 - amt));
+        const lower = l.front ? -bend : bend;
+        l.upper.rotation.x = ease(l.upper.rotation.x, upper, k);
+        l.lower.rotation.x = ease(l.lower.rotation.x, lower, k);
+        // la mano/pie se queda plana en el suelo y se dobla al despegar
+        l.paw.rotation.x = ease(l.paw.rotation.x, -(upper + lower) * 0.9 + (l.front ? 1 : -1) * lift * 0.5 * amt, k);
+      }
+      // la espalda se dobla y se estira a la carrera; al paso, se balancea
+      const flex = Math.sin(cycle * 1) * amt;
+      const breath = Math.sin(time * (growl ? 9 : 3.2));
+      body.position.y = ease(body.position.y, 0.75 + (run ? Math.abs(Math.sin(cycle)) * 0.1 : moving ? Math.abs(Math.sin(cycle * 2)) * 0.025 : breath * 0.008) - (growl ? 0.17 : 0), k);
+      body.rotation.x = ease(body.rotation.x, (run ? -0.1 + flex * 0.12 : growl ? 0.14 : 0) + Math.sin(time * 40) * 0.01 * (growl ? 1 : 0), k);
+      body.rotation.z = ease(body.rotation.z, moving && !run ? Math.sin(cycle) * 0.04 : 0, k);
+      torso.scale.set(1 + breath * 0.02, 1 + breath * 0.03, 1);
+      // la cabeza: baja y por delante al correr; husmea quieto; tiembla al gruñir
+      head.rotation.x = ease(head.rotation.x, growl ? 0.3 + Math.sin(time * 30) * 0.04 : run ? 0.15 + Math.sin(cycle * 2) * 0.06 : Math.sin(time * 0.8 + seed) * 0.12 + Math.max(0, Math.sin(time * 6)) * 0.03 * (1 - amt), k);
+      head.rotation.y = ease(head.rotation.y, moving ? Math.sin(cycle) * 0.06 : Math.sin(time * 0.5 + seed) * 0.4, k);
+      // jadea quieto; la boca abierta del todo al gruñir
+      jaw.position.y = growl ? -0.17 - Math.abs(Math.sin(time * 14)) * 0.01 : -0.12 - Math.max(0, Math.sin(time * 7)) * 0.02 * (1 - amt);
+      // al atacar se lanza con todo el cuerpo hacia delante
+      lunge = anim === Anim.Attack ? Math.abs(Math.sin(time * 12)) : ease(lunge, 0, k);
+      head.position.z = -0.6 - lunge * 0.15;
+      body.position.z = -lunge * 0.12;
     },
   };
 }
 
 /**
- * Faceling: humanoide alto, de piel pálida como la porcelana, con traje y
- * corbata. La cara es lisa: solo se adivina dónde irían la nariz y las cejas.
+ * Faceling: alguien alto y delgado, de cuello largo, con traje, camisa y
+ * corbata. La piel es pálida como la porcelana y la cara está lisa: solo se
+ * adivina el relieve de la nariz y de las cejas. Quieto no se mueve nada salvo
+ * la cabeza, que se ladea despacio (y a veces da un respingo); anda rígido,
+ * como un maniquí; hostil, echa los brazos al frente y corre a trompicones.
  */
 export function makeFaceling(seed: number): EnemyModel {
   const skin = skinMat('faceling', { base: '#d9d0c4', mottle: '#c7baab', veins: 'rgba(110,120,150,0.22)' });
   const suit = litMaterial({ color: [0x3a3d44, 0x4a3d34, 0x2f3a33][Math.floor(seed) % 3] }, 0.1);
   const shirt = litMaterial({ color: 0xbcb6a8 }, 0.1);
   const black = litMaterial({ color: 0x111111 }, 0.1);
-  const group = new THREE.Group();
-  const body = new THREE.Group();
-  group.add(body);
-  const torso = new THREE.Mesh(cached('face-torso', () => place(trunk([[0.001, -0.42], [0.2, -0.4], [0.18, -0.16], [0.2, 0.08], [0.26, 0.28], [0.21, 0.37], [0.06, 0.42], [0.001, 0.42]]), 0, 1.32, 0, 0, 0, 0, 1, 1, 0.65)), suit);
-  const front = new THREE.Mesh(
-    cached('face-front', () =>
-      merge([
-        place(new THREE.ConeGeometry(0.08, 0.3, 3), 0, 1.56, -0.138, Math.PI, 0, 0, 1, 1, 0.08), // camisa en V
-        place(new THREE.BoxGeometry(0.05, 0.016, 0.03), 0, 1.66, -0.15), // cuello
-      ]),
-    ),
-    shirt,
-  );
-  const tie = new THREE.Mesh(cached('face-tie', () => merge([place(new THREE.BoxGeometry(0.045, 0.32, 0.012), 0, 1.48, -0.148), place(new THREE.BoxGeometry(0.05, 0.05, 0.02), 0, 1.65, -0.15)])), litMaterial({ color: 0x3a1418 }, 0.1));
-  const lapels = new THREE.Mesh(
-    cached('face-lapels', () => merge([place(new THREE.BoxGeometry(0.07, 0.3, 0.015), -0.075, 1.55, -0.14, 0, 0, -0.25), place(new THREE.BoxGeometry(0.07, 0.3, 0.015), 0.075, 1.55, -0.14, 0, 0, 0.25), ...[1.3, 1.18].map((y) => place(new THREE.SphereGeometry(0.012, 6, 4), 0, y, -0.15))])),
-    black,
-  );
-  const neck = new THREE.Mesh(cached('face-neck', () => new THREE.CylinderGeometry(0.05, 0.058, 0.22, 10)), skin);
-  neck.position.y = 1.78;
-  const head = new THREE.Group();
-  head.position.y = 1.95;
-  // cabeza lisa: sin ojos ni boca, solo el relieve de la nariz y las cejas
-  const skull = new THREE.Mesh(
-    cached('face-skull', () =>
-      merge([
-        lumpy(place(new THREE.SphereGeometry(0.13, 22, 16), 0, 0, 0, 0, 0, 0, 0.92, 1.28, 1.02), 0.003, 14),
-        place(new THREE.SphereGeometry(0.03, 8, 6), 0, -0.01, -0.12, 0, 0, 0, 0.7, 1.6, 0.6),
-        place(new THREE.SphereGeometry(0.05, 8, 6), 0, 0.06, -0.105, 0, 0, 0, 1.6, 0.35, 0.5),
-        place(new THREE.SphereGeometry(0.05, 8, 6), 0, -0.12, -0.08, 0, 0, 0, 1, 0.6, 0.8),
-      ]),
-    ),
-    skin,
-  );
-  head.add(skull);
-  const legGeo = cached('face-leg', () => bone(0.95, 0.08, 0.065, 0.1));
-  const shoeGeo = cached('face-shoe', () => lumpy(place(new THREE.CapsuleGeometry(0.055, 0.17, 4, 10), 0, -0.97, -0.06, Math.PI / 2, 0, 0, 1, 0.6, 1), 0.003, 30));
-  const legL = hang(legGeo, suit);
-  legL.position.set(-0.1, 0.98, 0);
-  const legR = hang(legGeo, suit);
-  legR.position.set(0.1, 0.98, 0);
-  for (const leg of [legL, legR]) leg.add(new THREE.Mesh(shoeGeo, black));
-  const armGeo = cached('face-arm', () => bone(0.82, 0.058, 0.045, 0.15));
-  const handG = cached('face-hand', () => merge([place(handGeo(5, 0.12, 0.011, 0.09, 0, 0.45), 0, -0.84, 0), place(new THREE.CylinderGeometry(0.05, 0.05, 0.04, 10), 0, -0.8, 0)]));
-  const armL = hang(armGeo, suit);
-  armL.position.set(-0.28, 1.65, 0);
-  const armR = hang(armGeo, suit);
-  armR.position.set(0.28, 1.65, 0);
-  for (const arm of [armL, armR]) arm.add(new THREE.Mesh(handG, skin));
-  body.add(torso, front, tie, lapels, neck, head, legL, legR, armL, armR);
-  let cycle = seed;
+  const r = makeRig({ hipY: 1.02, hipW: 0.09, thigh: 0.5, shin: 0.49, spine: 0.26, chest: 0.3, shoulderW: 0.205, upper: 0.34, fore: 0.32, neck: 0.16 });
+  put(r.hips, cached('fc-pelvis', () => merge([place(roundedGeo(0.32, 0.2, 0.2), 0, -0.02, 0), place(new THREE.BoxGeometry(0.33, 0.04, 0.21), 0, 0.07, 0)])), suit);
+  put(r.spine, cached('fc-belly', () => place(trunk([[0.001, -0.02], [0.15, -0.02], [0.148, 0.12], [0.16, 0.26], [0.001, 0.27]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.64)), suit);
+  put(r.chest, cached('fc-chest', () => place(trunk([[0.001, -0.02], [0.16, -0.02], [0.18, 0.14], [0.215, 0.25], [0.18, 0.31], [0.06, 0.34], [0.001, 0.34]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.62)), suit);
+  put(r.chest, cached('fc-shirt', () => merge([place(new THREE.ConeGeometry(0.075, 0.28, 3), 0, 0.2, -0.122, Math.PI, 0, 0, 1, 1, 0.08), place(new THREE.TorusGeometry(0.052, 0.012, 4, 12), 0, 0.32, -0.01, Math.PI / 2)])), shirt);
+  put(r.chest, cached('fc-tie', () => merge([place(new THREE.BoxGeometry(0.042, 0.28, 0.01), 0, 0.16, -0.132), place(new THREE.BoxGeometry(0.048, 0.045, 0.02), 0, 0.31, -0.13)])), litMaterial({ color: 0x3a1418 }, 0.1));
+  put(r.chest, cached('fc-lapels', () => merge([place(new THREE.BoxGeometry(0.065, 0.26, 0.012), -0.07, 0.2, -0.125, 0, 0, -0.27), place(new THREE.BoxGeometry(0.065, 0.26, 0.012), 0.07, 0.2, -0.125, 0, 0, 0.27)])), black);
+  put(r.spine, cached('fc-buttons', () => merge([0.06, 0.16].map((y) => place(new THREE.SphereGeometry(0.011, 6, 4), 0, y, -0.105)))), black);
+  put(r.neck, cached('fc-neck', () => place(new THREE.CylinderGeometry(0.042, 0.052, 0.22, 10), 0, 0.07, 0)), skin);
+  // cabeza lisa: sin ojos ni boca
+  put(r.head, cached('fc-head', () => place(humanHead(0.1, { nose: 0.45, brow: 0.18, long: 1.2 }), 0, 0.12, 0)), skin);
+  for (const l of r.legs) {
+    put(l.thigh, cached('fc-thigh', () => merge([muscle(0.5, 0.078, 0.06, 0.06), place(new THREE.BoxGeometry(0.006, 0.48, 0.004), 0, -0.25, -0.075)])), suit);
+    put(l.shin, cached('fc-shin', () => muscle(0.49, 0.062, 0.055, 0.04)), suit);
+    put(l.foot, cached('fc-shoe', () => merge([lumpy(place(new THREE.CapsuleGeometry(0.048, 0.18, 4, 10), 0, -0.035, -0.07, Math.PI / 2, 0, 0, 1, 0.75, 1), 0.002, 40), place(new THREE.BoxGeometry(0.1, 0.015, 0.27), 0, -0.065, -0.07)])), black);
+  }
+  for (const a of r.arms) {
+    put(a.upper, cached('fc-upper', () => muscle(0.34, 0.058, 0.048, 0.08)), suit);
+    put(a.fore, cached('fc-fore', () => merge([muscle(0.32, 0.05, 0.042, 0.06), place(new THREE.CylinderGeometry(0.045, 0.045, 0.035, 10), 0, -0.31, 0)])), suit);
+    put(a.hand, cached('fc-hand', () => handGeo(5, 0.12, 0.011, 0.085, 0, 0.35)), skin);
+  }
+  const STIFF: Gait = { stride: 0.3, knee: 0.22, arm: 0.06, elbow: 0.04, bob: 0.008, sway: 0.004, twist: 0, lean: 0 };
+  const LUNGE: Gait = { stride: 0.62, knee: 1.15, arm: 0, elbow: 0, bob: 0.05, sway: 0.01, twist: 0.05, lean: 0.32 };
+  let phase = seed;
+  let amt = 0;
+  let twitch = 0;
+  let twitchZ = 0;
   return {
-    group,
+    group: r.root,
     eye: 1.95,
     animate(dt, time, anim) {
       const moving = anim === Anim.Walk || anim === Anim.Run || anim === Anim.Flee;
-      cycle += dt * (anim === Anim.Run ? 7 : moving ? 3.2 : 0);
-      const sw = moving ? Math.sin(cycle) * (anim === Anim.Run ? 0.6 : 0.35) : 0;
-      legL.rotation.x = sw;
-      legR.rotation.x = -sw;
       const hostile = anim === Anim.Run || anim === Anim.Attack;
-      armL.rotation.x = hostile ? 1.3 + Math.sin(time * 9) * 0.1 : -sw * 0.6;
-      armR.rotation.x = hostile ? 1.3 + Math.cos(time * 9) * 0.1 : sw * 0.6;
-      // la cabeza se inclina despacio, como si te observara
-      head.rotation.z = Math.sin(time * 0.4 + seed) * 0.25;
-      head.rotation.x = anim === Anim.Idle ? Math.sin(time * 0.3 + seed) * 0.15 : 0;
-      body.position.y = moving ? Math.abs(Math.cos(cycle)) * 0.03 : 0;
+      const k = 1 - Math.exp(-(hostile ? 22 : 10) * dt);
+      amt = ease(amt, moving ? 1 : 0, 1 - Math.exp(-6 * dt));
+      phase += dt * (anim === Anim.Run ? 7.5 : moving ? 3.4 : 0);
+      // a veces, un respingo de la cabeza
+      if ((twitch -= dt) <= 0 && Math.random() < dt * 0.25) {
+        twitch = 0.18;
+        twitchZ = (Math.random() - 0.5) * 0.9;
+      }
+      const tilt = Math.sin(time * 0.4 + seed) * 0.25 + (twitch > 0 ? twitchZ : 0) + (hostile ? 0.35 : 0);
+      walk(r, phase, amt, hostile ? LUNGE : STIFF, k, !hostile, { nod: anim === Anim.Idle ? Math.sin(time * 0.3 + seed) * 0.15 : 0 });
+      r.head.rotation.z = ease(r.head.rotation.z, tilt, twitch > 0 ? 0.6 : k);
+      if (hostile) {
+        // los brazos al frente, temblando, con las manos abiertas
+        r.arms.forEach((a, i) => {
+          a.upper.rotation.x = ease(a.upper.rotation.x, 1.35 + Math.sin(time * 9 + i) * 0.1, k);
+          a.upper.rotation.z = ease(a.upper.rotation.z, (i ? -1 : 1) * 0.1, k);
+          a.fore.rotation.x = ease(a.fore.rotation.x, 0.1 + Math.cos(time * 11 + i) * 0.08, k);
+          a.hand.rotation.x = ease(a.hand.rotation.x, -0.3, k);
+        });
+      } else for (const a of r.arms) a.hand.rotation.x = ease(a.hand.rotation.x, 0, k);
+      breathe(r, time, 0.4 * (1 - amt));
     },
   };
 }
@@ -707,9 +883,12 @@ function stolenFaceTex(): THREE.Texture {
 }
 
 /**
- * Skin-Stealer: alto, flaco y de piel amarillenta y estirada, con los ojos
- * blancos y hundidos y una boca que llega casi a las orejas. Lleva colgando
- * jirones de piel humana (y una cara). Disfrazado es alguien encogido que llora.
+ * Skin-Stealer: casi dos metros y medio de criatura flaca y encorvada, de piel
+ * amarillenta y estirada: costillas, clavículas y rodillas marcadas, ojos
+ * blancos hundidos y una boca de oreja a oreja. Lleva colgando jirones de piel
+ * humana (y una cara). Los brazos le cuelgan hasta las rodillas y se balancean
+ * sueltos al andar; corre echado hacia delante, con las garras por delante.
+ * Disfrazado es alguien con sudadera que llora de rodillas, tapándose la cara.
  */
 export function makeSkinStealer(seed: number): EnemyModel {
   const pale = skinMat('stealer', { base: '#c2b98e', mottle: '#9c9266', veins: 'rgba(110,70,50,0.5)', bruise: '#8a7a48' });
@@ -727,100 +906,95 @@ export function makeSkinStealer(seed: number): EnemyModel {
     cached('ss-back', () => merge([place(trunk([[0.001, -0.3], [0.17, -0.28], [0.2, 0.05], [0.21, 0.2], [0.12, 0.3], [0.001, 0.31]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.75), lumpy(place(new THREE.SphereGeometry(0.13, 12, 8), 0, 0.27, 0.05, 0, 0, 0, 1.1, 1, 1), 0.01, 20)])),
     cloth,
   );
-  back.position.set(0, 0.62, 0.05);
-  back.rotation.x = 0.55;
-  const dHead = new THREE.Mesh(cached('ss-dhead', () => new THREE.SphereGeometry(0.12, 14, 10)), skin);
-  dHead.position.set(0, 0.92, -0.22);
-  dHead.add(new THREE.Mesh(cached('ss-dhair', () => hairGeo(26, 5, 0.12, 0.35, 10)), hairMat));
-  const legs = new THREE.Mesh(
-    cached('ss-legs', () => merge([place(new THREE.CapsuleGeometry(0.075, 0.38, 4, 8), -0.1, 0.12, 0.02, Math.PI / 2), place(new THREE.CapsuleGeometry(0.075, 0.38, 4, 8), 0.1, 0.12, 0.02, Math.PI / 2)])),
+  back.position.set(0, 0.5, -0.02);
+  back.rotation.x = 0.62;
+  const dHead = new THREE.Mesh(cached('ss-dhead', () => humanHead(0.1, { ears: true })), skin);
+  dHead.position.set(0, 0.74, -0.32);
+  dHead.rotation.x = 0.6;
+  dHead.add(new THREE.Mesh(cached('ss-dhair', () => hairGeo(26, 5, 0.11, 0.35, 10)), hairMat));
+  // los brazos (con las manos en la cara) tiemblan con el llanto
+  const arms0 = new THREE.Group();
+  arms0.position.set(0, 0.7, -0.16);
+  arms0.add(
+    new THREE.Mesh(cached('ss-sleeves', () => merge([place(new THREE.CapsuleGeometry(0.052, 0.34, 4, 8), -0.13, -0.08, -0.14, 1.1, 0, 0.5), place(new THREE.CapsuleGeometry(0.052, 0.34, 4, 8), 0.13, -0.08, -0.14, 1.1, 0, -0.5)])), cloth),
+    new THREE.Mesh(cached('ss-hands2', () => merge([place(handGeo(4, 0.06, 0.01, 0.04, 0, 0.6), -0.05, 0.06, -0.25, 2.3, 0, 0.4), place(handGeo(4, 0.06, 0.01, 0.04, 0, 0.6), 0.05, 0.06, -0.25, 2.3, 0, -0.4)])), skin),
+  );
+  // sentada sobre los talones: muslos hacia delante y espinillas en el suelo
+  const legs0 = new THREE.Mesh(
+    cached('ss-kneel', () =>
+      merge([
+        place(roundedGeo(0.34, 0.2, 0.22), 0, 0.24, 0.1),
+        ...[-1, 1].flatMap((s) => [
+          place(new THREE.CapsuleGeometry(0.075, 0.26, 4, 8), s * 0.1, 0.17, -0.08, Math.PI / 2 - 0.25),
+          place(new THREE.CapsuleGeometry(0.06, 0.3, 4, 8), s * 0.1, 0.06, -0.04, Math.PI / 2),
+        ]),
+      ]),
+    ),
     jeans,
   );
-  const shoes = new THREE.Mesh(cached('ss-shoes', () => merge([place(new THREE.BoxGeometry(0.1, 0.07, 0.22), -0.1, 0.05, 0.32), place(new THREE.BoxGeometry(0.1, 0.07, 0.22), 0.1, 0.05, 0.32)])), litMaterial({ color: 0x1a1a1a }, 0.1));
-  const sleeves = new THREE.Mesh(
-    cached('ss-sleeves', () => merge([place(new THREE.CapsuleGeometry(0.055, 0.36, 4, 8), -0.13, 0.78, -0.26, 1.1, 0, 0.5), place(new THREE.CapsuleGeometry(0.055, 0.36, 4, 8), 0.13, 0.78, -0.26, 1.1, 0, -0.5)])),
-    cloth,
-  );
-  const hands = new THREE.Mesh(cached('ss-hands', () => merge([place(handGeo(4, 0.06, 0.01, 0.04, 0, 0.6), -0.05, 0.98, -0.34, 2.6, 0, 0.4), place(handGeo(4, 0.06, 0.01, 0.04, 0, 0.6), 0.05, 0.98, -0.34, 2.6, 0, -0.4)])), skin);
-  disguise.add(back, dHead, legs, shoes, sleeves, hands);
+  const shoes0 = new THREE.Mesh(cached('ss-kneel-shoes', () => merge([-1, 1].map((s) => place(new THREE.BoxGeometry(0.09, 0.06, 0.2), s * 0.1, 0.07, 0.22, -0.9)))), litMaterial({ color: 0x1a1a1a }, 0.1));
+  disguise.add(back, dHead, arms0, legs0, shoes0);
 
   // ---- forma real ----
-  const real = new THREE.Group();
-  const spine = new THREE.Group();
-  spine.position.y = 1.3;
-  real.add(spine);
-  const chest = new THREE.Mesh(
-    cached('ss-chest', () =>
+  const r = makeRig({ hipY: 1.34, hipW: 0.1, thigh: 0.66, shin: 0.64, spine: 0.32, chest: 0.4, shoulderW: 0.21, upper: 0.5, fore: 0.52, neck: 0.15 });
+  const real = r.root;
+  put(r.hips, cached('ss-pelvis', () => merge([lumpy(place(new THREE.SphereGeometry(0.12, 12, 10), 0, -0.01, 0, 0, 0, 0, 1.15, 0.75, 0.8), 0.01, 18), ...[-1, 1].map((s) => place(new THREE.SphereGeometry(0.05, 8, 6), s * 0.11, 0.03, -0.03))])), pale);
+  put(r.spine, cached('ss-belly', () => lumpy(place(trunk([[0.001, -0.02], [0.09, -0.02], [0.08, 0.12], [0.1, 0.24], [0.13, 0.33], [0.001, 0.34]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.7), 0.008, 16, 3)), pale);
+  put(
+    r.chest,
+    cached('ss-torso', () =>
       merge([
-        lumpy(place(trunk([[0.001, -0.06], [0.12, -0.04], [0.09, 0.16], [0.16, 0.42], [0.21, 0.62], [0.2, 0.76], [0.06, 0.86], [0.001, 0.86]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.7), 0.01, 14, 4),
-        place(ribsGeo(6, -0.07, 0.07, 0.17, 0, 0.01), 0, 0.52, 0, Math.PI / 2, 0, 0),
-        place(new THREE.CylinderGeometry(0.04, 0.05, 0.14, 8), 0, 0.92, 0),
-        ...[-1, 1].map((sx) => lumpy(place(new THREE.SphereGeometry(0.075, 10, 8), sx * 0.2, 0.78, 0, 0, 0, sx * 0.4, 1.3, 0.8, 0.8), 0.008, 20)),
-        place(new THREE.CapsuleGeometry(0.03, 0.36, 4, 6), 0, 0.8, -0.02, 0, 0, Math.PI / 2), // clavículas
+        lumpy(place(trunk([[0.001, -0.02], [0.13, -0.02], [0.17, 0.16], [0.2, 0.3], [0.19, 0.38], [0.06, 0.43], [0.001, 0.43]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.68), 0.01, 14, 4),
+        place(ribsGeo(6, -0.08, 0.06, 0.17, 0, 0.01), 0, 0.17, 0, Math.PI / 2, 0, 0),
+        place(new THREE.CapsuleGeometry(0.025, 0.36, 4, 6), 0, 0.37, -0.05, 0, 0, Math.PI / 2), // clavículas
+        ...[-1, 1].map((s) => lumpy(place(new THREE.SphereGeometry(0.07, 10, 8), s * 0.19, 0.36, 0, 0, 0, s * 0.4, 1.2, 0.8, 0.8), 0.008, 20)), // hombros
+        ...[-1, 1].map((s) => place(new THREE.SphereGeometry(0.07, 8, 6), s * 0.08, 0.27, 0.11, 0, 0, 0, 1, 1.4, 0.4)), // omóplatos
       ]),
     ),
     pale,
   );
-  spine.add(chest);
-  // piel humana colgando a jirones (el disfraz que se quita) y una cara
+  // jirones de piel humana colgando y una cara
   for (let i = 0; i < 6; i++) {
-    const flap = new THREE.Mesh(cached(`ss-flap${i % 3}`, () => flapGeo(0.22, 0.45 + (i % 3) * 0.15, i + 11)), skin);
-    const a = (i / 6) * Math.PI * 2;
-    flap.position.set(Math.cos(a) * 0.19, 0.5, Math.sin(a) * 0.15);
+    const flap = put(i < 3 ? r.chest : r.spine, cached(`ss-flap${i % 3}`, () => flapGeo(0.2, 0.4 + (i % 3) * 0.15, i + 11)), skin);
+    const a = (i / 6) * Math.PI * 2 + 0.4;
+    flap.position.set(Math.cos(a) * 0.15, i < 3 ? 0.3 : 0.3, Math.sin(a) * 0.11);
     flap.rotation.y = -a + Math.PI / 2;
-    spine.add(flap);
   }
-  const face = new THREE.Mesh(cached('ss-face', () => new THREE.PlaneGeometry(0.18, 0.24)), litMaterial({ map: stolenFaceTex(), transparent: true, side: THREE.DoubleSide }, 0.1));
-  face.position.set(0.06, 0.18, -0.13);
+  const face = put(r.chest, cached('ss-face', () => new THREE.PlaneGeometry(0.17, 0.23)), litMaterial({ map: stolenFaceTex(), transparent: true, side: THREE.DoubleSide }, 0.1));
+  face.position.set(0.06, 0.12, -0.13);
   face.rotation.set(0.2, Math.PI, 0.25);
-  spine.add(face);
-  const head = new THREE.Group();
-  head.position.y = 1.0;
-  const skull = new THREE.Mesh(
-    cached('ss-skull', () =>
-      merge([
-        lumpy(place(new THREE.SphereGeometry(0.14, 16, 12), 0, 0, 0, 0, 0, 0, 0.8, 1.4, 1), 0.01, 16, 6),
-        place(new THREE.SphereGeometry(0.06, 8, 6), 0, -0.12, -0.04, 0, 0, 0, 1.5, 0.6, 1.4), // mandíbula ancha
-      ]),
-    ),
-    pale,
+  put(r.neck, cached('ss-neck', () => lumpy(place(new THREE.CylinderGeometry(0.036, 0.05, 0.2, 8), 0, 0.06, 0), 0.006, 30)), pale);
+  const headG = new THREE.Group();
+  headG.position.y = 0.12;
+  r.head.add(headG);
+  headG.add(
+    new THREE.Mesh(cached('ss-skull', () => merge([lumpy(place(new THREE.SphereGeometry(0.14, 16, 12), 0, 0, 0, 0, 0, 0, 0.8, 1.4, 1), 0.01, 16, 6), place(new THREE.SphereGeometry(0.06, 8, 6), 0, -0.12, -0.04, 0, 0, 0, 1.5, 0.6, 1.4)])), pale),
+    new THREE.Mesh(cached('ss-holes', () => merge([place(new THREE.SphereGeometry(0.04, 8, 6), -0.05, 0.04, -0.115), place(new THREE.SphereGeometry(0.04, 8, 6), 0.05, 0.04, -0.115), place(new THREE.SphereGeometry(0.1, 12, 6), 0, -0.1, -0.08, 0, 0, 0, 1.15, 0.22, 0.75)])), voidMat()),
+    new THREE.Mesh(cached('eyes0.05|0.016', () => merge([place(new THREE.SphereGeometry(0.016, 8, 6), -0.05), place(new THREE.SphereGeometry(0.016, 8, 6), 0.05)])), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.6, 1.5), fog: false })),
+    new THREE.Mesh(cached('ss-teeth', () => merge([place(teethGeo(14, 0.2, 0.04, 0.005, true, 1.2), 0, -0.085, -0.13), place(teethGeo(13, 0.18, 0.035, 0.005, false, 1.2), 0, -0.115, -0.125)])), tooth),
   );
-  // ojos blancos y hundidos; la boca, de oreja a oreja
-  const holes = new THREE.Mesh(
-    cached('ss-holes', () => merge([place(new THREE.SphereGeometry(0.04, 8, 6), -0.05, 0.04, -0.115), place(new THREE.SphereGeometry(0.04, 8, 6), 0.05, 0.04, -0.115), place(new THREE.SphereGeometry(0.1, 12, 6), 0, -0.1, -0.08, 0, 0, 0, 1.15, 0.22, 0.75)])),
-    voidMat(),
-  );
-  const eyes = new THREE.Mesh(cached('eyes0.05|0.016', () => merge([place(new THREE.SphereGeometry(0.016, 8, 6), -0.05), place(new THREE.SphereGeometry(0.016, 8, 6), 0.05)])), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.6, 1.5), fog: false }));
-  eyes.position.set(0, 0.04, -0.13);
-  const teeth = new THREE.Mesh(cached('ss-teeth', () => merge([place(teethGeo(14, 0.2, 0.04, 0.005, true, 1.2), 0, -0.085, -0.13), place(teethGeo(13, 0.18, 0.035, 0.005, false, 1.2), 0, -0.115, -0.125)])), tooth);
-  head.add(skull, holes, eyes, teeth);
-  spine.add(head);
-  const legsR: THREE.Group[] = [];
-  const thigh = cached('ss-thigh', () => bone(0.68, 0.07, 0.05, 0.3));
-  const shin = cached('ss-shin', () => merge([bone(0.68, 0.05, 0.035, 0.28), place(handGeo(5, 0.12, 0.011, 0.08, 0.03, 1.35), 0, -0.68, 0, 0, Math.PI, 0)]));
-  for (const x of [-0.12, 0.12]) {
-    const upper = hang(thigh, pale);
-    upper.position.set(x, 1.36, 0);
-    const lower = hang(shin, paleDark);
-    lower.position.y = -0.68;
-    upper.add(lower);
-    real.add(upper);
-    legsR.push(upper);
+  headG.children[2].position.set(0, 0.04, -0.13);
+  for (const l of r.legs) {
+    put(l.thigh, cached('ss-thigh', () => muscle(0.66, 0.07, 0.045, 0.1, 0.35)), pale);
+    put(l.shin, cached('ss-shin', () => muscle(0.64, 0.05, 0.032, 0.12, 0.3)), paleDark);
+    put(l.foot, cached('ss-foot', () => merge([place(new THREE.SphereGeometry(0.04, 8, 6), 0, -0.02, 0), place(handGeo(5, 0.13, 0.011, 0.08, 0.03, 1.35), 0, 0, 0.02, 0, Math.PI, 0)])), paleDark);
   }
-  const arms: THREE.Group[] = [];
-  const upperArm = cached('ss-arm', () => bone(0.62, 0.055, 0.042, 0.3));
-  const forearm = cached('ss-forearm', () => merge([bone(0.66, 0.042, 0.03, 0.25), place(handGeo(5, 0.22, 0.01, 0.075, 0.06, 0.35), 0, -0.66, 0)]));
-  for (const x of [-0.24, 0.24]) {
-    const upper = hang(upperArm, pale);
-    upper.position.set(x, 0.8, 0);
-    const lower = hang(forearm, paleDark);
-    lower.position.y = -0.62;
-    upper.add(lower);
-    spine.add(upper);
-    arms.push(upper);
+  for (const a of r.arms) {
+    put(a.upper, cached('ss-upper', () => muscle(0.5, 0.055, 0.04, 0.08, 0.35)), pale);
+    put(a.fore, cached('ss-fore', () => muscle(0.52, 0.042, 0.03, 0.1, 0.3)), paleDark);
+    put(a.hand, cached('ss-hand', () => handGeo(5, 0.24, 0.01, 0.075, 0.06, 0.25)), paleDark);
   }
   group.add(disguise, real);
-  let cycle = seed;
+
+  const STALK: Gait = { stride: 0.5, knee: 1.2, arm: 0.15, elbow: 0.05, bob: 0.06, sway: 0.03, twist: 0.14, lean: 0.38 };
+  const SPRINT: Gait = { stride: 0.85, knee: 1.7, arm: 0, elbow: 0, bob: 0.08, sway: 0.02, twist: 0.2, lean: 0.75 };
+  let phase = seed;
+  let amt = 0;
+  let jerk = 0;
+  let jerkZ = 0;
+  // los brazos se balancean sueltos, con retraso (como un péndulo)
+  const swing = [0, 0];
+  const swingV = [0, 0];
   return {
     group,
     eye: 2.3,
@@ -829,43 +1003,94 @@ export function makeSkinStealer(seed: number): EnemyModel {
       disguise.visible = disguised;
       real.visible = !disguised;
       if (disguised) {
-        // sollozos
-        back.position.y = 0.62 + Math.max(0, Math.sin(time * 9)) * 0.015;
-        dHead.position.y = 0.92 + Math.max(0, Math.sin(time * 9)) * 0.012;
+        // sollozos: los hombros dan sacudidas y la cabeza tiembla; a veces levanta un poco la vista
+        const sob = Math.max(0, Math.sin(time * 9)) * (0.6 + 0.4 * Math.sin(time * 0.7));
+        back.position.y = 0.5 + sob * 0.018;
+        back.rotation.z = Math.sin(time * 19) * 0.012 * sob;
+        dHead.position.y = 0.74 + sob * 0.014;
+        dHead.rotation.x = 0.6 - Math.max(0, Math.sin(time * 0.35 + seed) - 0.85) * 3;
+        arms0.position.y = 0.7 + sob * 0.012;
+        arms0.rotation.z = Math.sin(time * 23) * 0.015 * sob;
         return;
       }
-      const moving = anim === Anim.Walk || anim === Anim.Run;
-      cycle += dt * (anim === Anim.Run ? 9 : moving ? 3 : 0);
-      const sw = moving ? Math.sin(cycle) * 0.55 : 0;
-      legsR[0].rotation.x = sw;
-      legsR[1].rotation.x = -sw;
-      arms[0].rotation.x = anim === Anim.Attack ? 1.7 : -sw * 0.7 + 0.2;
-      arms[1].rotation.x = anim === Anim.Attack ? 1.7 : sw * 0.7 + 0.2;
-      spine.rotation.x = 0.2 + (anim === Anim.Run ? 0.3 : 0);
-      head.rotation.z = Math.sin(time * 0.6 + seed) * 0.15 + (Math.random() < 0.02 ? (Math.random() - 0.5) * 0.8 : 0);
+      const moving = anim === Anim.Walk || anim === Anim.Run || anim === Anim.Flee;
+      const run = anim === Anim.Run || anim === Anim.Flee;
+      const k = 1 - Math.exp(-14 * dt);
+      amt = ease(amt, moving ? 1 : 0, 1 - Math.exp(-5 * dt));
+      phase += dt * (run ? 8 : moving ? 2.6 : 0);
+      if ((jerk -= dt) <= 0 && Math.random() < dt * 0.6) {
+        jerk = 0.12;
+        jerkZ = (Math.random() - 0.5) * 1.1;
+      }
+      walk(r, phase, amt, run ? SPRINT : STALK, k, false, { look: Math.sin(time * 0.5 + seed) * 0.3 * (1 - amt) });
+      // encorvado incluso quieto, respirando hondo
+      r.spine.rotation.x = ease(r.spine.rotation.x, (run ? SPRINT.lean : STALK.lean) * Math.max(amt, 0.75) + Math.sin(time * 1.4) * 0.03, k);
+      r.head.rotation.z = ease(r.head.rotation.z, Math.sin(time * 0.6 + seed) * 0.15 + (jerk > 0 ? jerkZ : 0), jerk > 0 ? 0.7 : k);
+      if (anim === Anim.Attack) {
+        // se yergue y lanza zarpazos con los dos brazos
+        const slash = Math.max(0, Math.sin(time * 10));
+        r.arms.forEach((a, i) => {
+          a.upper.rotation.x = ease(a.upper.rotation.x, 2.5 - slash * 1.8 + i * 0.2, 0.5);
+          a.upper.rotation.z = ease(a.upper.rotation.z, (i ? -1 : 1) * 0.35, k);
+          a.fore.rotation.x = ease(a.fore.rotation.x, 0.5 + slash * 0.6, 0.5);
+        });
+        r.spine.rotation.x = ease(r.spine.rotation.x, 0.05 + slash * 0.35, 0.4);
+      } else if (run) {
+        // a la carrera: las garras por delante, alternando
+        r.arms.forEach((a, i) => {
+          const s = Math.sin(phase + (i ? 0 : Math.PI));
+          a.upper.rotation.x = ease(a.upper.rotation.x, 1.0 + s * 0.7, k);
+          a.upper.rotation.z = ease(a.upper.rotation.z, (i ? -1 : 1) * 0.15, k);
+          a.fore.rotation.x = ease(a.fore.rotation.x, 0.4 - s * 0.3, k);
+        });
+      } else {
+        // los brazos cuelgan y se balancean solos
+        r.arms.forEach((a, i) => {
+          const drive = -STALK.stride * Math.sin(phase + i * Math.PI) * amt * 0.9 + r.spine.rotation.x * 0.6;
+          swingV[i] += ((drive - swing[i]) * 30 - swingV[i] * 4) * dt;
+          swing[i] += swingV[i] * dt;
+          a.upper.rotation.x = swing[i];
+          a.upper.rotation.z = (i ? -1 : 1) * 0.12;
+          a.fore.rotation.x = ease(a.fore.rotation.x, 0.15 + Math.max(0, swingV[i]) * 0.08, k);
+          a.hand.rotation.x = Math.sin(time * 3 + i) * 0.1;
+        });
+      }
+      breathe(r, time, 1.6);
     },
   };
 }
 
+/** Pone la misma malla de sombra en cada hueso (la figura es toda negra). */
+function shadowLimbs(r: Rig, mat: THREE.Material) {
+  for (const l of r.legs) {
+    put(l.thigh, cached('fig-thigh', () => muscle(0.5, 0.075, 0.05, 0.05)), mat);
+    put(l.shin, cached('fig-shin', () => muscle(0.48, 0.05, 0.035, 0.05)), mat);
+    put(l.foot, cached('fig-foot', () => place(new THREE.CapsuleGeometry(0.035, 0.14, 4, 8), 0, -0.03, -0.06, Math.PI / 2)), mat);
+  }
+  for (const a of r.arms) {
+    put(a.upper, cached('fig-upper', () => muscle(0.48, 0.05, 0.035, 0.04)), mat);
+    put(a.fore, cached('fig-fore', () => muscle(0.5, 0.036, 0.028, 0.04)), mat);
+    put(a.hand, cached('fig-hand', () => handGeo(4, 0.2, 0.009, 0.05, 0, 0.15)), mat);
+  }
+}
+
 /**
- * Figura oscura (Nivel 0): una silueta alta y flaca, de brazos demasiado
- * largos y la cabeza un poco adelantada. El borde se deshace como humo y, a
- * veces, se le ven dos puntos de luz donde irían los ojos.
+ * Figura oscura (Nivel 0): una silueta alta y flaca, de brazos que le llegan
+ * a las rodillas y la cabeza adelantada. El borde se deshace como humo y, a
+ * veces, se le ven dos puntos de luz donde irían los ojos. Casi no se mueve:
+ * cuando anda parece flotar, y de vez en cuando da un tirón seco con la cabeza.
  */
 export function makeFigure(): EnemyModel {
   const shadow = new THREE.MeshBasicMaterial({ color: 0x050403, transparent: true, opacity: 0.88, depthWrite: false });
-  const group = new THREE.Group();
-  const silhouette = new THREE.Mesh(
-    cached('figure', () =>
-      merge([
-        place(trunk([[0.001, 0.82], [0.13, 0.85], [0.1, 1.05], [0.17, 1.35], [0.22, 1.58], [0.12, 1.68], [0.05, 1.72], [0.001, 1.74]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.55),
-        place(new THREE.SphereGeometry(0.13, 12, 10), 0, 1.86, -0.05, 0.2, 0, 0, 0.9, 1.2, 1),
-        ...[-0.08, 0.08].map((x) => place(bone(0.86, 0.07, 0.045, 0.15), x, 0.86, 0)),
-        ...[-0.24, 0.24].map((x) => merge([place(bone(1.02, 0.05, 0.035, 0.15), x, 1.6, 0, 0, 0, x > 0 ? 0.06 : -0.06), place(handGeo(4, 0.18, 0.01, 0.05, 0, 0.2), x * 1.25, 0.58, 0)])),
-      ]),
-    ),
-    shadow,
-  );
+  const r = makeRig({ hipY: 1.0, hipW: 0.075, thigh: 0.5, shin: 0.48, spine: 0.3, chest: 0.36, shoulderW: 0.19, upper: 0.48, fore: 0.5, neck: 0.12 });
+  const group = r.root;
+  put(r.hips, cached('fig-hips', () => place(roundedGeo(0.24, 0.18, 0.15), 0, -0.02, 0)), shadow);
+  put(r.spine, cached('fig-belly', () => place(trunk([[0.001, -0.02], [0.1, -0.02], [0.095, 0.15], [0.12, 0.3], [0.001, 0.31]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.6)), shadow);
+  put(r.chest, cached('fig-chest', () => place(trunk([[0.001, -0.02], [0.12, -0.02], [0.16, 0.18], [0.19, 0.32], [0.08, 0.39], [0.001, 0.39]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.55)), shadow);
+  put(r.neck, cached('fig-neck', () => place(new THREE.CylinderGeometry(0.035, 0.045, 0.16, 8), 0, 0.04, 0)), shadow);
+  put(r.head, cached('fig-head', () => place(new THREE.SphereGeometry(0.115, 14, 10), 0, 0.12, -0.03, 0.2, 0, 0, 0.88, 1.22, 1)), shadow);
+  shadowLimbs(r, shadow);
+  r.neck.rotation.x = 0.35; // la cabeza adelantada
   const wisp = new THREE.SpriteMaterial({ map: smoke(), color: 0x000000, transparent: true, opacity: 0.5, depthWrite: false });
   const wisps: THREE.Sprite[] = [];
   for (let i = 0; i < 8; i++) {
@@ -874,13 +1099,29 @@ export function makeFigure(): EnemyModel {
     s.position.set(Math.sin(i * 2.3) * 0.22, 0.4 + i * 0.2, Math.cos(i * 2.3) * 0.12);
     wisps.push(s);
   }
-  const glints = new THREE.Mesh(cached('eyes0.04|0.008', () => merge([place(new THREE.SphereGeometry(0.008, 6, 4), -0.04), place(new THREE.SphereGeometry(0.008, 6, 4), 0.04)])), new THREE.MeshBasicMaterial({ color: 0x9a968a, fog: false }));
-  glints.position.set(0, 1.88, -0.16);
-  group.add(silhouette, glints, ...wisps);
+  const glints = put(r.head, cached('eyes0.04|0.008', () => merge([place(new THREE.SphereGeometry(0.008, 6, 4), -0.04), place(new THREE.SphereGeometry(0.008, 6, 4), 0.04)])), new THREE.MeshBasicMaterial({ color: 0x9a968a, fog: false }));
+  glints.position.set(0, 0.14, -0.13);
+  group.add(...wisps);
+  const DRIFT: Gait = { stride: 0.18, knee: 0.15, arm: 0.03, elbow: 0.02, bob: 0, sway: 0.01, twist: 0.02, lean: 0.06 };
+  let phase = 0;
+  let amt = 0;
+  let snap = 0;
+  let snapY = 0;
   return {
     group,
     eye: 1.85,
-    animate(_dt, time) {
+    animate(dt, time, anim) {
+      const moving = anim === Anim.Walk || anim === Anim.Run;
+      const k = 1 - Math.exp(-6 * dt);
+      amt = ease(amt, moving ? 1 : 0, 1 - Math.exp(-3 * dt));
+      phase += dt * (moving ? 2 : 0);
+      if ((snap -= dt) <= 0 && Math.random() < dt * 0.15) {
+        snap = 0.6;
+        snapY = (Math.random() - 0.5) * 1.2;
+      }
+      walk(r, phase, amt, DRIFT, k, true, { look: snap > 0 ? snapY : 0, nod: 0.35 });
+      r.head.rotation.z = Math.sin(time * 0.35) * 0.18;
+      for (const a of r.arms) a.upper.rotation.z = ease(a.upper.rotation.z, (a === r.arms[0] ? 1 : -1) * 0.04 + Math.sin(time * 0.8) * 0.02, k);
       // contorno inestable, como si no estuviera del todo ahí
       shadow.opacity = 0.7 + Math.sin(time * 7) * 0.1 + (Math.random() < 0.05 ? -0.4 : 0);
       group.scale.x = 1 + Math.sin(time * 3.1) * 0.03;
@@ -892,8 +1133,9 @@ export function makeFigure(): EnemyModel {
 }
 
 /**
- * Clump: un nudo de cuerpos fundidos del que salen brazos y piernas. En la
- * masa se adivinan dos caras a medio hundir, con la boca abierta.
+ * Clump: un nudo de torsos fundidos del que salen brazos y piernas, con dos
+ * caras a medio hundir. Avanza arrastrándose: cada miembro se levanta, se
+ * estira, se apoya y empuja, cada uno a su ritmo, y la masa entera palpita.
  */
 export function makeClump(seed: number): EnemyModel {
   const flesh = skinMat('clump', { base: '#c29682', mottle: '#9a6a5a', bruise: '#6a3a40', veins: 'rgba(90,40,60,0.45)', stitches: '#3a1a1a' });
@@ -902,49 +1144,51 @@ export function makeClump(seed: number): EnemyModel {
   const core = new THREE.Group();
   core.position.y = 0.55;
   group.add(core);
-  const blob = new THREE.Mesh(
-    cached('clump-core', () =>
-      merge([
-        lumpy(place(new THREE.SphereGeometry(0.35, 18, 12), 0, 0, 0, 0, 0, 0, 1.2, 0.8, 1), 0.04, 7, 1),
-        lumpy(place(new THREE.CapsuleGeometry(0.17, 0.4, 4, 10), 0.12, 0.12, 0.05, 0.4, 0, 1.2), 0.02, 9, 2),
-        lumpy(place(new THREE.CapsuleGeometry(0.15, 0.35, 4, 10), -0.15, 0.08, -0.08, -0.5, 0.8, -0.9), 0.02, 9, 3),
-      ]),
+  const mass = new THREE.Group();
+  core.add(mass);
+  mass.add(
+    new THREE.Mesh(
+      cached('clump-core2', () =>
+        merge([
+          lumpy(place(new THREE.SphereGeometry(0.3, 18, 12), 0, 0, 0, 0, 0, 0, 1.2, 0.8, 1), 0.04, 7, 1),
+          // torsos fundidos, con sus costillas
+          lumpy(place(trunk([[0.001, -0.25], [0.15, -0.23], [0.16, 0], [0.18, 0.18], [0.08, 0.26], [0.001, 0.27]]), 0.15, 0.1, 0.02, 0.5, 0.3, 1.1, 1, 1, 0.7), 0.012, 12, 2),
+          lumpy(place(trunk([[0.001, -0.22], [0.14, -0.2], [0.15, 0], [0.16, 0.16], [0.07, 0.24], [0.001, 0.25]]), -0.16, 0.06, -0.06, -0.6, 0.9, -1.0, 1, 1, 0.7), 0.012, 12, 3),
+          place(ribsGeo(5, -0.08, 0.08, 0.16, 0, 0.012), 0.15, 0.12, 0.02, 0.5, 0.3, 1.1 + Math.PI / 2),
+          ...Array.from({ length: 8 }, (_, i) => place(new THREE.SphereGeometry(0.03, 6, 5), -0.25 + i * 0.07, 0.24 - Math.abs(i - 3.5) * 0.02, 0.1)), // una columna por fuera
+        ]),
+      ),
+      bruise,
     ),
-    bruise,
-  );
-  const faces = new THREE.Mesh(cached('clump-faces', () => merge([lumpy(place(new THREE.SphereGeometry(0.11, 12, 10), 0.12, 0.2, -0.3, 0, 0, 0, 0.9, 1.15, 0.8), 0.006, 20), lumpy(place(new THREE.SphereGeometry(0.1, 12, 10), -0.32, 0.05, 0.12, 0, 0, 0.6, 0.9, 1.1, 0.8), 0.006, 20)])), flesh);
-  const mouths = new THREE.Mesh(
-    cached('clump-mouths', () =>
-      merge([
-        place(new THREE.SphereGeometry(0.035, 8, 6), 0.12, 0.14, -0.38, 0, 0, 0, 1, 1.5, 0.5),
-        place(new THREE.SphereGeometry(0.03, 8, 6), -0.4, 0.02, 0.1, 0, 0, 0.6, 0.5, 1.5, 1),
-        ...[-1, 1].map((s) => place(new THREE.BoxGeometry(0.035, 0.006, 0.01), 0.12 + s * 0.04, 0.24, -0.385)),
-      ]),
+    new THREE.Mesh(cached('clump-faces', () => merge([lumpy(place(humanHead(0.09, { nose: 0.8 }), 0.12, 0.2, -0.3, -0.3, 0, 0), 0.006, 20), lumpy(place(humanHead(0.085, { nose: 0.8 }), -0.32, 0.05, 0.12, 0, -1.9, 0.6), 0.006, 20)])), flesh),
+    new THREE.Mesh(
+      cached('clump-mouths', () =>
+        merge([
+          place(new THREE.SphereGeometry(0.03, 8, 6), 0.12, 0.15, -0.38, 0, 0, 0, 1, 1.5, 0.5),
+          place(new THREE.SphereGeometry(0.028, 8, 6), -0.4, 0.01, 0.13, 0, 0, 0.6, 0.5, 1.5, 1),
+          ...[-1, 1].map((s) => place(new THREE.BoxGeometry(0.03, 0.006, 0.01), 0.12 + s * 0.035, 0.225, -0.385)),
+        ]),
+      ),
+      voidMat(),
     ),
-    voidMat(),
   );
-  core.add(blob, faces, mouths);
-  const limbs: { g: THREE.Group; a: number; b: number }[] = [];
+  const limbs: { g: THREE.Group; lower: THREE.Group; end: THREE.Group; a: number; b: number; off: number }[] = [];
   for (let i = 0; i < 14; i++) {
     const g = new THREE.Group();
     const len = Math.round((0.45 + hashf(seed, i) * 0.35) * 20) / 20; // pocas medidas distintas: se comparten
-    const seg = hang(cached(`clump-up${len}`, () => bone(len, 0.065, 0.05, 0.3)), i % 3 ? flesh : bruise);
     const foot = i % 4 === 0; // algunos acaban en un pie
-    const lower = hang(
-      cached(`clump-low${len}|${foot}`, () =>
-        merge([bone(len * 0.9, 0.05, 0.035, 0.3), foot ? place(handGeo(5, 0.07, 0.012, 0.07, 0.015, 1.4), 0, -len * 0.9, 0, 0, Math.PI, 0) : place(handGeo(4, 0.09, 0.011, 0.055, 0.02, 0.5), 0, -len * 0.9, 0)]),
-      ),
-      flesh,
-    );
-    lower.position.y = -len;
-    seg.add(lower);
+    const seg = hang(cached(`clump-up${len}`, () => muscle(len, 0.07, 0.05, 0.15, 0.25)), i % 3 ? flesh : bruise);
+    const lower = joint(seg, 0, -len, 0);
+    put(lower, cached(`clump-mid${len}`, () => muscle(len * 0.9, 0.052, 0.036, 0.15, 0.2)), flesh);
+    const end = joint(lower, 0, -len * 0.9, 0);
+    put(end, cached(`clump-end${foot}`, () => (foot ? place(handGeo(5, 0.07, 0.012, 0.07, 0.015, 1.4), 0, 0, 0, 0, Math.PI, 0) : handGeo(4, 0.09, 0.011, 0.055, 0.02, 0.5))), flesh);
     g.add(seg);
     const a = (i / 14) * Math.PI * 2;
     const b = (hashf(seed, i + 30) - 0.5) * 1.6;
     g.rotation.set(0, a, 0);
     seg.rotation.z = 1.2 + b * 0.3;
     core.add(g);
-    limbs.push({ g, a, b });
+    limbs.push({ g, lower, end, a, b, off: hashf(seed, i + 60) * Math.PI * 2 });
   }
   let cycle = seed;
   return {
@@ -952,48 +1196,54 @@ export function makeClump(seed: number): EnemyModel {
     eye: 0.6,
     animate(dt, time, anim) {
       const run = anim === Anim.Run;
-      cycle += dt * (run ? 16 : anim === Anim.Walk ? 6 : 1.5);
+      const moving = run || anim === Anim.Walk;
+      cycle += dt * (run ? 14 : moving ? 5 : 1.2);
       limbs.forEach((l, i) => {
         const seg = l.g.children[0];
-        seg.rotation.x = Math.sin(cycle + i * 1.3) * (run ? 0.8 : 0.25);
-        seg.rotation.z = 1.2 + l.b * 0.3 + Math.cos(cycle * 0.7 + i) * (run ? 0.4 : 0.1);
+        // cada miembro: se levanta y se estira hacia delante, se apoya y empuja hacia atrás
+        const p = cycle + l.off;
+        const up = Math.max(0, Math.sin(p));
+        const reach = Math.cos(p);
+        const amp = run ? 1 : moving ? 0.7 : 0.18;
+        seg.rotation.x = reach * 0.6 * amp + Math.sin(time * 1.3 + i) * 0.04;
+        seg.rotation.z = 1.2 + l.b * 0.3 - up * 0.55 * amp;
+        l.lower.rotation.x = -0.3 - up * 0.9 * amp;
+        l.end.rotation.x = 0.4 + up * 0.5 * amp;
       });
+      // la masa palpita y se balancea con el esfuerzo
+      const pulse = Math.sin(time * (run ? 7 : 2.2));
+      mass.scale.set(1 + pulse * 0.025, 1 - pulse * 0.02, 1 + pulse * 0.025);
       core.position.y = 0.55 + (run ? Math.abs(Math.sin(cycle * 0.5)) * 0.12 : Math.sin(time * 2) * 0.02);
-      core.rotation.y = run ? Math.sin(cycle * 0.3) * 0.2 : 0;
+      core.rotation.y = run ? Math.sin(cycle * 0.3) * 0.2 : Math.sin(time * 0.4) * 0.08;
+      core.rotation.z = Math.sin(cycle * 0.5) * (moving ? 0.08 : 0.02);
     },
   };
 }
 
 /**
  * Duller: humanoide gris y apagado, de piel agrietada como el yeso, que sale
- * de las paredes. Cuencas vacías, la boca floja y abierta, y brazos larguísimos.
+ * de las paredes de cintura para arriba. Cuencas vacías, la boca floja y
+ * abierta y brazos larguísimos que tantean y agarran; la cabeza le cuelga.
  */
 export function makeDuller(): EnemyModel {
   const grey = skinMat('duller', { base: '#77736c', mottle: '#5d5953', cracks: 'rgba(38,36,32,0.75)' });
   const group = new THREE.Group();
   const body = new THREE.Group();
   group.add(body);
-  const torso = new THREE.Mesh(
-    cached('duller-torso', () =>
-      merge([
-        lumpy(place(trunk([[0.001, 0.55], [0.07, 0.6], [0.15, 0.95], [0.18, 1.3], [0.22, 1.5], [0.14, 1.62], [0.05, 1.66], [0.001, 1.67]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.7), 0.012, 11, 5),
-        place(ribsGeo(5, -0.06, 0.06, 0.18, 0, 0.01), 0, 1.3, 0, Math.PI / 2, 0, 0),
-        place(new THREE.CylinderGeometry(0.045, 0.055, 0.16, 8), 0, 1.7, 0),
-      ]),
-    ),
-    grey,
-  );
-  const head = new THREE.Mesh(cached('duller-head', () => lumpy(place(new THREE.SphereGeometry(0.15, 14, 12), 0, 1.84, 0, 0, 0, 0, 0.85, 1.3, 0.9), 0.012, 12, 6)), grey);
-  const holes = new THREE.Mesh(cached('duller-holes', () => merge([place(new THREE.SphereGeometry(0.04, 8, 6), -0.05, 1.87, -0.115), place(new THREE.SphereGeometry(0.04, 8, 6), 0.05, 1.87, -0.115), place(new THREE.SphereGeometry(0.045, 8, 6), 0, 1.7, -0.11, 0, 0, 0, 0.8, 1.6, 0.6)])), voidMat());
-  const arms: THREE.Group[] = [];
-  const armGeo = cached('duller-arm', () => merge([bone(1.0, 0.06, 0.04, 0.3), place(handGeo(4, 0.19, 0.011, 0.06, 0.02, 0.3), 0, -1.0, 0)]));
-  for (const x of [-0.27, 0.27]) {
-    const arm = hang(armGeo, grey);
-    arm.position.set(x, 1.55, 0);
-    body.add(arm);
-    arms.push(arm);
+  const r = makeRig({ hipY: 0.85, hipW: 0.1, thigh: 0.4, shin: 0.4, spine: 0.3, chest: 0.36, shoulderW: 0.2, upper: 0.48, fore: 0.5, neck: 0.12 });
+  body.add(r.root);
+  // de la cintura para abajo se funde con la pared (se pierde en punta)
+  put(r.hips, cached('dl-waist', () => lumpy(place(trunk([[0.001, -0.42], [0.06, -0.36], [0.13, -0.15], [0.15, 0.02], [0.001, 0.03]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.7), 0.015, 9, 4)), grey);
+  put(r.spine, cached('dl-belly', () => lumpy(place(trunk([[0.001, -0.02], [0.13, -0.02], [0.12, 0.15], [0.15, 0.3], [0.001, 0.31]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.7), 0.012, 11, 5)), grey);
+  put(r.chest, cached('dl-chest', () => merge([lumpy(place(trunk([[0.001, -0.02], [0.15, -0.02], [0.18, 0.18], [0.2, 0.31], [0.07, 0.39], [0.001, 0.39]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.7), 0.012, 11, 6), place(ribsGeo(5, -0.06, 0.06, 0.17, 0, 0.01), 0, 0.15, 0, Math.PI / 2, 0, 0)])), grey);
+  put(r.neck, cached('dl-neck', () => place(new THREE.CylinderGeometry(0.04, 0.05, 0.16, 8), 0, 0.04, 0)), grey);
+  put(r.head, cached('dl-head', () => lumpy(place(new THREE.SphereGeometry(0.13, 14, 12), 0, 0.12, 0, 0, 0, 0, 0.85, 1.3, 0.9), 0.012, 12, 6)), grey);
+  put(r.head, cached('dl-holes', () => merge([place(new THREE.SphereGeometry(0.035, 8, 6), -0.045, 0.15, -0.1), place(new THREE.SphereGeometry(0.035, 8, 6), 0.045, 0.15, -0.1), place(new THREE.SphereGeometry(0.04, 8, 6), 0, 0.01, -0.095, 0, 0, 0, 0.8, 1.7, 0.6)])), voidMat());
+  for (const a of r.arms) {
+    put(a.upper, cached('dl-upper', () => muscle(0.48, 0.058, 0.04, 0.06, 0.3)), grey);
+    put(a.fore, cached('dl-fore', () => muscle(0.5, 0.042, 0.03, 0.06, 0.25)), grey);
+    put(a.hand, cached('dl-hand', () => handGeo(4, 0.19, 0.011, 0.06, 0.02, 0.3)), grey);
   }
-  body.add(torso, head, holes);
   return {
     group,
     eye: 1.8,
@@ -1001,8 +1251,21 @@ export function makeDuller(): EnemyModel {
       const out = anim === Anim.Attack || anim === Anim.Flee;
       body.visible = out;
       if (!out) return;
-      for (const a of arms) a.rotation.x = 1.4 + Math.sin(time * 14) * 0.15;
       body.position.z = -0.2;
+      // se echa hacia delante a sacudidas; los brazos tantean y agarran por turnos
+      const lurch = Math.sin(time * 2.6);
+      r.spine.rotation.x = 0.35 + lurch * 0.12 + Math.sin(time * 31) * 0.01;
+      r.chest.rotation.y = Math.sin(time * 1.9) * 0.15;
+      r.arms.forEach((a, i) => {
+        const g = Math.sin(time * 3.2 + i * Math.PI);
+        a.upper.rotation.x = 1.25 + g * 0.35 + Math.sin(time * 14 + i) * 0.04;
+        a.upper.rotation.z = (i ? -1 : 1) * (0.15 + Math.max(0, g) * 0.2);
+        a.fore.rotation.x = 0.2 + Math.max(0, -g) * 0.6;
+        a.hand.rotation.x = 0.3 + Math.max(0, -g) * 0.7; // cierra la mano al agarrar
+      });
+      // la cabeza le cuelga y se balancea
+      r.neck.rotation.x = 0.35 + Math.sin(time * 1.3) * 0.1;
+      r.head.rotation.z = Math.sin(time * 1.7) * 0.3;
     },
   };
 }
@@ -1071,21 +1334,14 @@ function megPatch(): THREE.Texture {
 
 /** Miembro de una patrulla de la M.E.G.: uniforme lima, casco, chaleco reflectante y el águila. */
 export function makeMeg(): NpcModel {
-  const h = makeHumanoid(0xb8d23a, 'M.E.G.');
-  const patch = new THREE.Mesh(cached('meg-patch', () => new THREE.CircleGeometry(0.07, 14)), litMaterial({ map: megPatch() }, 0.1));
-  patch.position.set(0.11, 1.32, -0.148);
-  patch.rotation.y = Math.PI;
-  const helmet = new THREE.Mesh(
-    cached('meg-helmet', () => merge([place(new THREE.SphereGeometry(0.175, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2), 0, 1.64, 0), place(new THREE.TorusGeometry(0.17, 0.018, 4, 18), 0, 1.645, 0, Math.PI / 2)])),
-    litMaterial({ color: 0x5e6b2e }, 0.1),
-  );
-  const visor = new THREE.Mesh(cached('meg-visor', () => place(new THREE.CylinderGeometry(0.165, 0.165, 0.05, 16, 1, true, Math.PI * 0.65, Math.PI * 0.7), 0, 1.66, 0)), new THREE.MeshBasicMaterial({ color: 0x1a2018 }));
+  const { h, rig } = makeExplorer(0xb8d23a, 'M.E.G.');
+  put(rig.chest, cached('meg-patch', () => place(new THREE.CircleGeometry(0.065, 14), 0.105, 0.14, -0.137, 0, Math.PI, 0)), litMaterial({ map: megPatch() }, 0.1));
+  put(rig.head, cached('meg-helmet', () => merge([place(new THREE.SphereGeometry(0.135, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2), 0, 0.12, 0.005, 0, 0, 0, 1, 1.05, 1.08), place(new THREE.TorusGeometry(0.134, 0.014, 4, 18), 0, 0.122, 0.005, Math.PI / 2, 0, 0, 1, 1.08, 1)])), litMaterial({ color: 0x5e6b2e }, 0.1));
+  put(rig.head, cached('meg-visor', () => place(new THREE.CylinderGeometry(0.128, 0.128, 0.04, 16, 1, true, Math.PI * 0.65, Math.PI * 0.7), 0, 0.15, 0.005)), new THREE.MeshBasicMaterial({ color: 0x1a2018 }));
   // bandas reflectantes del chaleco
-  const stripes = new THREE.Mesh(
-    cached('meg-stripes', () => merge([1.06, 1.26].map((y) => place(new THREE.CylinderGeometry(0.205, 0.2, 0.035, 16, 1, true), 0, y, 0, 0, 0, 0, 1, 1, 0.66)))),
-    new THREE.MeshBasicMaterial({ color: 0x9a9a92 }),
-  );
-  h.group.add(patch, helmet, visor, stripes);
+  const band = new THREE.MeshBasicMaterial({ color: 0x9a9a92 });
+  put(rig.chest, cached('meg-band-up', () => place(new THREE.CylinderGeometry(0.206, 0.2, 0.032, 16, 1, true), 0, 0.12, 0, 0, 0, 0, 1, 1, 0.66)), band);
+  put(rig.spine, cached('meg-band-down', () => place(new THREE.CylinderGeometry(0.176, 0.172, 0.032, 16, 1, true), 0, 0.13, 0, 0, 0, 0, 1, 1, 0.68)), band);
   h.setLight(false);
   return { group: h.group, animate: (dt, _t, moving) => h.animate(dt, moving ? 1.4 : 0) };
 }
@@ -1093,60 +1349,79 @@ export function makeMeg(): NpcModel {
 /**
  * Trabajador sombra (sector en obras): una silueta negra sin cara, con mono
  * de trabajo, casco amarillo desgastado (lo único con color) y un martillo.
+ * Quieto, martillea encorvado: sube el brazo despacio, golpea de golpe y todo
+ * el cuerpo acompaña el golpe.
  */
 export function makeWorker(seed: number): NpcModel {
   const dark = litMaterial({ color: 0x0c0c0c }, 0.1);
   const overall = skinMat('overall', { base: '#232c40', mottle: '#161c2a', stitches: '#10141c' });
-  const group = new THREE.Group();
-  const torso = new THREE.Mesh(
-    cached('worker-torso', () => merge([place(trunk([[0.001, -0.34], [0.2, -0.32], [0.19, -0.1], [0.21, 0.12], [0.24, 0.26], [0.1, 0.34], [0.001, 0.35]]), 0, 1.2, 0, 0, 0, 0, 1, 1, 0.66), place(new THREE.BoxGeometry(0.36, 0.06, 0.26), 0, 0.92, 0)])),
-    overall,
-  );
-  const head = new THREE.Mesh(cached('worker-head', () => lumpy(place(new THREE.SphereGeometry(0.15, 14, 10), 0, 1.7, 0, 0, 0, 0, 0.95, 1.12, 1), 0.012, 14, 8)), dark);
-  const hat = new THREE.Mesh(
-    cached('worker-hat', () => merge([place(new THREE.SphereGeometry(0.165, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), 0, 1.77, 0), place(new THREE.CylinderGeometry(0.2, 0.2, 0.015, 16), 0, 1.775, -0.02)])),
-    skinMat('hardhat', { base: '#b8921e', mottle: '#8a6a14', cracks: 'rgba(60,40,10,0.5)' }),
-  );
+  const r = makeRig({ hipY: 0.9, hipW: 0.1, thigh: 0.44, shin: 0.42, spine: 0.22, chest: 0.27, shoulderW: 0.22, upper: 0.3, fore: 0.28, neck: 0.09 });
+  put(r.hips, cached('wk-pelvis', () => merge([place(roundedGeo(0.37, 0.2, 0.24), 0, -0.02, 0), place(new THREE.BoxGeometry(0.39, 0.06, 0.26), 0, 0.07, 0), place(new THREE.BoxGeometry(0.08, 0.1, 0.06), 0.16, 0.02, -0.08)])), overall);
+  put(r.spine, cached('wk-belly', () => place(trunk([[0.001, -0.02], [0.165, -0.02], [0.17, 0.12], [0.18, 0.23], [0.001, 0.24]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.68)), overall);
+  put(r.chest, cached('wk-chest', () => merge([place(trunk([[0.001, -0.02], [0.18, -0.02], [0.2, 0.12], [0.235, 0.21], [0.2, 0.27], [0.08, 0.3], [0.001, 0.3]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.66), ...[-1, 1].map((s) => place(new THREE.BoxGeometry(0.04, 0.3, 0.012), s * 0.09, 0.12, -0.145))])), overall);
+  put(r.neck, cached('wk-neck', () => place(new THREE.CylinderGeometry(0.055, 0.065, 0.12, 10), 0, 0.03, 0)), dark);
+  put(r.head, cached('wk-head', () => lumpy(place(humanHead(0.11, { nose: 0.6, ears: true }), 0, 0.1, 0), 0.006, 16, 8)), dark);
+  put(r.head, cached('wk-hat', () => merge([place(new THREE.SphereGeometry(0.125, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), 0, 0.15, 0.005, 0, 0, 0, 1, 1, 1.1), place(new THREE.CylinderGeometry(0.155, 0.155, 0.012, 16), 0, 0.152, -0.02, 0, 0, 0, 1, 1, 1.12)])), skinMat('hardhat', { base: '#b8921e', mottle: '#8a6a14', cracks: 'rgba(60,40,10,0.5)' }));
   const fume = new THREE.SpriteMaterial({ map: smoke(), color: 0x000000, transparent: true, opacity: 0.45, depthWrite: false });
   const wisps = [0, 1].map((i) => {
     const s = new THREE.Sprite(fume);
-    s.scale.setScalar(0.35);
-    s.position.set(i ? 0.08 : -0.06, 1.62 + i * 0.12, 0.05);
+    s.scale.setScalar(0.3);
+    s.position.set(i ? 0.07 : -0.05, 0.06 + i * 0.1, 0.06);
+    r.head.add(s);
     return s;
   });
-  const legs: THREE.Group[] = [];
-  const legGeo = cached('worker-leg', () => merge([bone(0.85, 0.09, 0.075, 0.1), place(new THREE.BoxGeometry(0.14, 0.09, 0.28), 0, -0.85, -0.05)]));
-  for (const x of [-0.11, 0.11]) {
-    const l = hang(legGeo, overall);
-    l.position.set(x, 0.88, 0);
-    group.add(l);
-    legs.push(l);
+  for (const l of r.legs) {
+    put(l.thigh, cached('wk-thigh', () => muscle(0.44, 0.095, 0.068, 0.1)), overall);
+    put(l.shin, cached('wk-shin', () => muscle(0.42, 0.072, 0.055, 0.12)), overall);
+    put(l.foot, cached('ex-boot', bootGeo), dark);
   }
-  const armGeo = cached('worker-arm', () => merge([bone(0.6, 0.065, 0.05, 0.15), place(handGeo(4, 0.07, 0.013, 0.05, 0, 0.6), 0, -0.6, 0)]));
-  const armL = hang(armGeo, dark);
-  armL.position.set(-0.28, 1.45, 0);
-  const armR = hang(armGeo, dark);
-  armR.position.set(0.28, 1.45, 0);
+  for (const a of r.arms) {
+    put(a.upper, cached('wk-upper', () => muscle(0.3, 0.07, 0.055, 0.16)), dark);
+    put(a.fore, cached('wk-fore', () => muscle(0.28, 0.058, 0.046, 0.14)), dark);
+    put(a.hand, cached('wk-hand', () => handGeo(4, 0.07, 0.013, 0.05, 0, 1.1)), dark);
+  }
   const hammer = new THREE.Group();
-  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.35, 6), litMaterial({ color: 0x6b4a2a }, 0.1));
-  const headH = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.05, 0.05), litMaterial({ color: 0x555555 }, 0.1));
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.016, 0.36, 6), litMaterial({ color: 0x6b4a2a }, 0.1));
+  const headH = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.05, 0.05), litMaterial({ color: 0x555555 }, 0.1));
   headH.position.y = 0.17;
   hammer.add(handle, headH);
-  hammer.position.y = -0.62;
+  hammer.position.y = -0.07;
   hammer.rotation.x = Math.PI / 2;
-  armR.add(hammer);
-  group.add(torso, head, hat, ...wisps, armL, armR);
-  let cycle = seed;
+  r.arms[1].hand.add(hammer);
+  const HEAVY: Gait = { stride: 0.38, knee: 0.7, arm: 0.3, elbow: 0.3, bob: 0.045, sway: 0.03, twist: 0.1, lean: 0.12 };
+  let phase = seed;
+  let amt = 0;
+  let time = seed;
   return {
-    group,
-    animate(dt, time, moving) {
-      cycle += dt * (moving ? 3 : 0);
-      const sw = moving ? Math.sin(cycle) * 0.35 : 0;
-      legs[0].rotation.x = sw;
-      legs[1].rotation.x = -sw;
-      // martillea sin parar
-      armR.rotation.x = moving ? -sw : 1.2 + Math.max(0, Math.sin(time * 5 + seed)) * 0.9;
-      armL.rotation.x = moving ? sw : 0.6;
+    group: r.root,
+    animate(dt, t, moving) {
+      time = t + seed;
+      const k = 1 - Math.exp(-14 * dt);
+      amt = ease(amt, moving ? 1 : 0, 1 - Math.exp(-5 * dt));
+      phase += dt * (moving ? 5 : 0);
+      // el golpe: sube despacio y baja de golpe
+      const u = (time * 0.75) % 1;
+      const lift = u < 0.72 ? Math.sin(((u / 0.72) * Math.PI) / 2) : 1 - (u - 0.72) / 0.28;
+      const work = 1 - amt;
+      walk(r, phase, amt, HEAVY, k, moving, { nod: 0.25 * work });
+      // encorvado sobre el trabajo, con las rodillas un poco dobladas
+      r.spine.rotation.x = ease(r.spine.rotation.x, HEAVY.lean * amt + work * (0.35 + 0.12 * (1 - lift)), k);
+      if (!moving) {
+        for (const l of r.legs) {
+          l.thigh.rotation.x = ease(l.thigh.rotation.x, 0.28, k);
+          l.shin.rotation.x = ease(l.shin.rotation.x, -0.45, k);
+          l.foot.rotation.x = ease(l.foot.rotation.x, 0.17, k);
+        }
+        r.hips.position.y = ease(r.hips.position.y, r.hipY - 0.04, k);
+        const [left, right] = r.arms;
+        right.upper.rotation.x = ease(right.upper.rotation.x, 0.4 + lift * 1.9, k * 1.6);
+        right.upper.rotation.z = ease(right.upper.rotation.z, -0.15, k);
+        right.fore.rotation.x = ease(right.fore.rotation.x, 0.3 + lift * 0.9, k * 1.6);
+        left.upper.rotation.x = ease(left.upper.rotation.x, 0.9, k);
+        left.fore.rotation.x = ease(left.fore.rotation.x, 0.7, k);
+        r.chest.rotation.y = ease(r.chest.rotation.y, -0.15 * lift, k);
+      }
+      wisps.forEach((s, i) => (s.position.y = 0.06 + i * 0.1 + ((time * 0.3 + i * 0.5) % 0.15)));
     },
   };
 }
