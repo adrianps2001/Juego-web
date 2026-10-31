@@ -32,6 +32,8 @@ const MIN_PIXEL_RATIO = 0.3;
 const MAX_MOUSE_JUMP = 250;
 // por debajo de esta altura se ha caído por un agujero
 const VOID_Y = -6;
+/** Todo lo que baja la cordura va a esta fracción de su ritmo (lo que la sube no cambia). */
+const SANITY_LOSS = 0.5;
 
 interface Remote {
   model: Humanoid;
@@ -899,7 +901,7 @@ export class Game {
     if (zone === 'whisper') drain *= 1.6;
     if (company) drain *= 0.5;
     if (zone === 'safe') drain = -1.5;
-    this.sanity = THREE.MathUtils.clamp(this.sanity - drain * dt, 0, 100);
+    this.sanity = THREE.MathUtils.clamp(this.sanity - (drain > 0 ? drain * SANITY_LOSS : drain) * dt, 0, 100);
     if (this.sanity === 0) {
       // sin cordura, el cuerpo empieza a fallar
       this.health -= 4 * dt;
@@ -1075,7 +1077,7 @@ export class Game {
       w.face.userData.left = 0.35;
       this.windowCool = 45;
       if (!this.scare('face', true)) this.sound.sting();
-      this.sanity = Math.max(0, this.sanity - 12);
+      this.loseSanity(12);
       this.shake = 0.25;
     }
     // alucinaciones: a oscuras y con poca cordura, a veces aparece una cara
@@ -1083,7 +1085,7 @@ export class Game {
     const dark = isDarkAll(map, this.pose.x, this.pose.z, this.pose.y) || lightUniforms.uBlackout.value > 0.5;
     if (this.phantomCool <= 0 && dark && this.sanity < 50 && Math.random() < dt * (0.02 + (50 - this.sanity) / 1500)) {
       this.phantomCool = 90 + Math.random() * 90;
-      if (this.scare(Math.random() < 0.5 ? 'face' : 'smiler', true)) this.sanity = Math.max(0, this.sanity - 8);
+      if (this.scare(Math.random() < 0.5 ? 'face' : 'smiler', true)) this.loseSanity(8);
     }
     // Nivel 0: el zumbido sube de golpe de vez en cuando
     if (map.def.isolation) {
@@ -1115,6 +1117,10 @@ export class Game {
     this.enterLevel(this.pose.level + 1);
   }
 
+  private loseSanity(amount: number) {
+    this.sanity = Math.max(0, this.sanity - amount * SANITY_LOSS);
+  }
+
   /** Tras caer al vacío: se despierta en otra parte del nivel, sin saber cómo. */
   private wakeElsewhere() {
     const map = this.level!.map;
@@ -1127,7 +1133,7 @@ export class Game {
     this.pose.y = floorAt(map.storeys[w.s] ?? map, w.x, w.z);
     this.lastFloor = this.pose.y;
     this.vy = 0;
-    this.sanity = Math.max(0, this.sanity - 30);
+    this.loseSanity(30);
     this.hud.notice('Caes… y caes… y te despiertas en otro sitio.');
   }
 
