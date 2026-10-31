@@ -1,6 +1,193 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { litMaterial } from './lighting';
 import { canvasTexture, labelTexture, smilerTexture, textTexture } from './textures';
+
+// Modelos de personajes, criaturas y objetos, hechos con piezas simples.
+// Las criaturas comparten geometrías y texturas entre ejemplares (se crean
+// una vez); lo pequeño (pelo, dientes, dedos, costillas) va fusionado en una
+// sola malla para no multiplicar las llamadas de dibujo.
+
+// ---------------------------------------------------------------- ayudas
+
+/** Geometría que se construye una vez y se reutiliza. */
+const geoCache = new Map<string, THREE.BufferGeometry>();
+const cached = (key: string, make: () => THREE.BufferGeometry) => geoCache.get(key) ?? geoCache.set(key, make()).get(key)!;
+
+/** Junta varias geometrías en una (todas con posición, normal y uv). */
+function merge(list: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  return mergeGeometries(list, false) ?? list[0];
+}
+
+/** Aplica una transformación a una geometría (posición, giro y escala). */
+function place(g: THREE.BufferGeometry, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, sx = 1, sy = sx, sz = sx): THREE.BufferGeometry {
+  const m = new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(sx, sy, sz));
+  return g.applyMatrix4(m);
+}
+
+/** Desplaza los vértices a lo largo de la normal con un ruido suave: carne, bultos, huesos. */
+function lumpy<T extends THREE.BufferGeometry>(g: T, amp: number, freq = 9, seed = 1): T {
+  const p = g.attributes.position;
+  const n = g.attributes.normal;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i);
+    const y = p.getY(i);
+    const z = p.getZ(i);
+    const k = Math.sin(x * freq + seed) * Math.sin(y * freq * 1.3 + seed * 2.1) * Math.sin(z * freq * 0.9 + seed * 0.7) + 0.5 * Math.sin(x * freq * 2.3 - seed) * Math.sin(y * freq * 2.1 + z * 3);
+    p.setXYZ(i, x + n.getX(i) * k * amp, y + n.getY(i) * k * amp, z + n.getZ(i) * k * amp);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * Hueso de un miembro, colgando de su pivote (de y = 0 a y = -len): más
+ * grueso arriba, con un bulto en la articulación de abajo (codo, rodilla).
+ */
+function bone(len: number, r0: number, r1: number, knob = 0.25, seg = 9): THREE.BufferGeometry {
+  const pts: THREE.Vector2[] = [new THREE.Vector2(0.0005, -len - r1 * 0.5)];
+  const N = 10;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N; // 0 abajo, 1 arriba
+    let r = r1 + (r0 - r1) * t;
+    r *= 1 + knob * Math.exp(-((t - 0.1) ** 2) / 0.006) + 0.12 * Math.exp(-((t - 0.85) ** 2) / 0.01);
+    if (i === 0) r *= 0.8;
+    pts.push(new THREE.Vector2(r, -len + t * len));
+  }
+  pts.push(new THREE.Vector2(0.0005, r0 * 0.6));
+  return new THREE.LatheGeometry(pts, seg);
+}
+
+/** Tronco hecho girando un perfil (radio, altura): pecho, cintura, hombros. */
+function trunk(profile: [number, number][], seg = 14): THREE.BufferGeometry {
+  return new THREE.LatheGeometry(
+    profile.map(([r, y]) => new THREE.Vector2(r, y)),
+    seg,
+  );
+}
+
+/** Mano: palma y dedos largos (y uñas o garras), en una sola geometría. */
+function handGeo(fingers: number, len: number, r: number, spread: number, claw = 0, curl = 0.25): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [place(new THREE.SphereGeometry(r * 2.2, 8, 6), 0, -r * 1.5, 0, 0, 0, 0, 1, 1.3, 0.55)];
+  for (let f = 0; f < fingers; f++) {
+    const t = fingers === 1 ? 0 : f / (fingers - 1) - 0.5;
+    const l = len * (1 - Math.abs(t) * 0.35);
+    const e = new THREE.Euler(curl, 0, -t * 0.25);
+    const base = new THREE.Vector3(t * spread, -r * 3, 0);
+    parts.push(place(bone(l, r, r * 0.7, 0.3, 5), base.x, base.y, base.z, e.x, e.y, e.z));
+    if (claw) {
+      // la garra sigue al dedo desde la punta
+      const tip = new THREE.Vector3(0, -l, 0).applyEuler(e).add(base);
+      const c = new THREE.ConeGeometry(r * 0.8, claw, 5).rotateX(Math.PI).translate(0, -claw / 2, 0);
+      parts.push(place(c, tip.x, tip.y, tip.z, e.x, e.y, e.z));
+    }
+  }
+  return merge(parts);
+}
+
+/** Hilera de dientes (conos) a lo largo de un arco. */
+function teethGeo(n: number, width: number, len: number, r: number, up: boolean, arc = 0.5): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = n === 1 ? 0 : i / (n - 1) - 0.5;
+    const l = len * (0.6 + 0.4 * Math.abs(Math.sin(i * 2.7)));
+    parts.push(place(new THREE.ConeGeometry(r, l, 4), t * width, up ? -l / 2 : l / 2, -Math.cos(t * Math.PI) * arc * width * 0.4, up ? Math.PI : 0, 0, 0));
+  }
+  return merge(parts);
+}
+
+/** Generador aleatorio con semilla (para que las texturas salgan siempre iguales). */
+function seeded(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+interface SkinOpts {
+  base: string;
+  mottle?: string; // manchas pequeñas
+  bruise?: string; // moratones grandes
+  veins?: string; // venas finas
+  cracks?: string; // grietas (yeso)
+  stitches?: string; // costuras
+}
+
+/** Piel pintada por código (128 px), una por tipo y compartida. */
+const skinCache = new Map<string, THREE.Texture>();
+function skinTex(key: string, o: SkinOpts): THREE.Texture {
+  let t = skinCache.get(key);
+  if (t) return t;
+  t = canvasTexture(128, 128, (ctx, w, h) => {
+    const R = seeded(key.length * 977 + key.charCodeAt(0));
+    ctx.fillStyle = o.base;
+    ctx.fillRect(0, 0, w, h);
+    const blob = (color: string, n: number, r0: number, r1: number, a0: number, a1: number) => {
+      for (let i = 0; i < n; i++) {
+        const x = R() * w;
+        const y = R() * h;
+        const r = r0 + R() * (r1 - r0);
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        ctx.globalAlpha = a0 + R() * (a1 - a0);
+        g.addColorStop(0, color);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        // repetido en los bordes para que la textura no tenga costuras
+        for (const dx of [-w, 0, w]) for (const dy of [-h, 0, h]) ctx.fillRect(x - r + dx, y - r + dy, r * 2, r * 2);
+      }
+      ctx.globalAlpha = 1;
+    };
+    const lines = (color: string, n: number, steps: number, width: number, wander: number) => {
+      ctx.strokeStyle = color;
+      ctx.lineCap = 'round';
+      for (let i = 0; i < n; i++) {
+        let x = R() * w;
+        let y = R() * h;
+        let a = R() * Math.PI * 2;
+        ctx.lineWidth = width * (0.5 + R());
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        for (let s = 0; s < steps; s++) {
+          a += (R() - 0.5) * wander;
+          x += Math.cos(a) * 4;
+          y += Math.sin(a) * 4;
+          ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+    };
+    if (o.mottle) blob(o.mottle, 90, 2, 9, 0.1, 0.3);
+    if (o.bruise) blob(o.bruise, 7, 12, 30, 0.25, 0.55);
+    if (o.veins) lines(o.veins, 16, 14, 0.9, 1.1);
+    if (o.cracks) lines(o.cracks, 22, 9, 0.8, 2.2);
+    if (o.stitches) {
+      ctx.strokeStyle = o.stitches;
+      ctx.lineWidth = 1.2;
+      for (let i = 0; i < 4; i++) {
+        const x0 = R() * w;
+        const y0 = R() * h;
+        const a = R() * Math.PI;
+        for (let s = 0; s < 9; s++) {
+          const x = x0 + Math.cos(a) * s * 5;
+          const y = y0 + Math.sin(a) * s * 5;
+          ctx.beginPath();
+          ctx.moveTo(x - Math.sin(a) * 3, y + Math.cos(a) * 3);
+          ctx.lineTo(x + Math.sin(a) * 3, y - Math.cos(a) * 3);
+          ctx.stroke();
+        }
+      }
+    }
+  });
+  skinCache.set(key, t);
+  return t;
+}
+
+/** Material de piel (o tela) con la textura pintada. */
+const skinMat = (key: string, o: SkinOpts, extra: THREE.MeshBasicMaterialParameters = {}) => litMaterial({ map: skinTex(key, o), ...extra }, 0.1);
 
 // ---------- jugadores ----------
 
@@ -39,63 +226,93 @@ function rounded(w: number, h: number, d: number, mat: THREE.Material): THREE.Me
   return new THREE.Mesh(g, mat);
 }
 
-/** Explorador: cuerpo articulado con linterna en la mano derecha. */
+/** Pieza que cuelga de su pivote (para brazos y piernas). */
+function hang(geo: THREE.BufferGeometry, mat: THREE.Material): THREE.Group {
+  const pivot = new THREE.Group();
+  pivot.add(new THREE.Mesh(geo, mat));
+  return pivot;
+}
+
+/**
+ * Explorador: chaqueta con capucha, mochila con esterilla, pantalón de bolsillos
+ * y botas; la linterna en la mano derecha.
+ */
 export function makeHumanoid(color: number, name: string): Humanoid {
   const shirt = litMaterial({ color }, 0.1);
-  const pants = litMaterial({ color: 0x2f3542 }, 0.1);
-  const skin = litMaterial({ color: 0xd9a98a }, 0.1);
+  const pants = skinMat('pants', { base: '#3a404c', mottle: '#20242c' }, { color: 0xffffff });
+  const skin = skinMat('human', { base: '#d6a688', mottle: '#b9806a' });
   const dark = litMaterial({ color: 0x1e1e1e }, 0.1);
-  const pack = litMaterial({ color: 0x5b4a33 }, 0.1);
+  const hairMat = litMaterial({ color: 0x2a1d14 }, 0.1);
+  const pack = skinMat('canvas', { base: '#5f4d34', mottle: '#3e3222', stitches: '#2a2116' });
+  const strap = litMaterial({ color: 0x2b2620 }, 0.1);
 
   const group = new THREE.Group();
   const body = new THREE.Group();
   group.add(body);
 
-  const torso = rounded(0.46, 0.62, 0.26, shirt);
+  const torso = new THREE.Mesh(
+    cached('h-torso', () => place(trunk([[0.001, -0.31], [0.17, -0.3], [0.165, -0.15], [0.19, 0.05], [0.225, 0.2], [0.2, 0.29], [0.07, 0.33], [0.001, 0.33]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.62)),
+    shirt,
+  );
   torso.position.y = 1.18;
-  const backpack = rounded(0.36, 0.42, 0.16, pack);
-  backpack.position.set(0, 1.2, 0.2);
-  const hips = rounded(0.42, 0.22, 0.24, pants);
+  const details = new THREE.Mesh(
+    cached('h-details', () =>
+      merge([
+        place(new THREE.BoxGeometry(0.014, 0.52, 0.012), 0, 1.16, -0.142), // cremallera
+        place(new THREE.TorusGeometry(0.13, 0.045, 6, 14, Math.PI), 0, 1.47, 0.05, -1.2, 0, 0, 1, 1, 0.9), // capucha
+        place(new THREE.BoxGeometry(0.43, 0.05, 0.26), 0, 0.97, 0), // cinturón
+        place(new THREE.BoxGeometry(0.035, 0.46, 0.015), -0.1, 1.24, -0.138, 0.05), // tirantes de la mochila
+        place(new THREE.BoxGeometry(0.035, 0.46, 0.015), 0.1, 1.24, -0.138, 0.05),
+      ]),
+    ),
+    strap,
+  );
+  const backpack = rounded(0.34, 0.44, 0.17, pack);
+  backpack.position.set(0, 1.2, 0.21);
+  const roll = new THREE.Mesh(cached('h-roll', () => place(new THREE.CylinderGeometry(0.065, 0.065, 0.4, 10), 0, 1.47, 0.24, 0, 0, Math.PI / 2)), litMaterial({ color: 0x4f6a3a }, 0.1));
+  const hips = rounded(0.4, 0.22, 0.24, pants);
   hips.position.y = 0.86;
 
   const head = new THREE.Group();
   head.position.y = 1.6;
-  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.15, 20, 16), skin);
-  skull.scale.set(1, 1.12, 1.05);
-  const hair = new THREE.Mesh(new THREE.SphereGeometry(0.155, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), dark);
-  hair.position.y = 0.02;
-  hair.rotation.x = 0.25;
-  const eyes = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.025, 0.02), new THREE.MeshBasicMaterial({ color: 0x111111 }));
-  eyes.position.set(0, 0.02, -0.15);
+  const skull = new THREE.Mesh(
+    cached('h-skull', () =>
+      merge([
+        place(new THREE.SphereGeometry(0.14, 18, 14), 0, 0, 0, 0, 0, 0, 1, 1.12, 1.05),
+        place(new THREE.SphereGeometry(0.075, 10, 8), 0, -0.09, -0.04, 0, 0, 0, 1.2, 0.8, 1.1), // mandíbula
+        place(new THREE.ConeGeometry(0.022, 0.06, 6), 0, -0.01, -0.155, -Math.PI / 2 - 0.3, 0, 0), // nariz
+        place(new THREE.SphereGeometry(0.03, 8, 6), -0.14, 0, 0, 0, 0, 0, 0.5, 1, 0.8), // orejas
+        place(new THREE.SphereGeometry(0.03, 8, 6), 0.14, 0, 0, 0, 0, 0, 0.5, 1, 0.8),
+      ]),
+    ),
+    skin,
+  );
+  const hair = new THREE.Mesh(
+    cached('h-hair', () => lumpy(place(new THREE.SphereGeometry(0.152, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.56), 0, 0.025, 0.01, 0.3, 0, 0, 1, 1.05, 1.08), 0.008, 30)),
+    hairMat,
+  );
+  const eyes = new THREE.Mesh(
+    cached('h-eyes', () => merge([place(new THREE.SphereGeometry(0.017, 8, 6), -0.05, 0.025, -0.135), place(new THREE.SphereGeometry(0.017, 8, 6), 0.05, 0.025, -0.135), place(new THREE.BoxGeometry(0.05, 0.01, 0.01), -0.05, 0.06, -0.14, 0, 0, 0.1), place(new THREE.BoxGeometry(0.05, 0.01, 0.01), 0.05, 0.06, -0.14, 0, 0, -0.1)])),
+    new THREE.MeshBasicMaterial({ color: 0x15100c }),
+  );
   head.add(skull, hair, eyes);
-  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.12, 10), skin);
+  const neck = new THREE.Mesh(cached('h-neck', () => new THREE.CylinderGeometry(0.055, 0.065, 0.12, 10)), skin);
   neck.position.y = 1.5;
 
-  const limb = (len: number, rad: number, mat: THREE.Material) => {
-    const pivot = new THREE.Group();
-    const g = new THREE.CapsuleGeometry(rad, len - rad * 2, 4, 10);
-    g.translate(0, -len / 2, 0);
-    pivot.add(new THREE.Mesh(g, mat));
-    return pivot;
-  };
-  const legL = limb(0.82, 0.085, pants);
+  const legGeo = cached('h-leg', () => merge([bone(0.82, 0.09, 0.07, 0.12), place(new THREE.BoxGeometry(0.05, 0.13, 0.11), 0.085, -0.35, 0)]));
+  const bootGeo = cached('h-boot', () => merge([lumpy(place(new THREE.CapsuleGeometry(0.065, 0.16, 4, 10), 0, -0.8, -0.05, Math.PI / 2, 0, 0, 1, 1, 0.75), 0.004, 40), place(new THREE.BoxGeometry(0.13, 0.025, 0.24), 0, -0.85, -0.06)]));
+  const legL = hang(legGeo, pants);
   legL.position.set(-0.11, 0.86, 0);
-  const legR = limb(0.82, 0.085, pants);
+  const legR = hang(legGeo, pants);
   legR.position.set(0.11, 0.86, 0);
-  for (const leg of [legL, legR]) {
-    const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.08, 0.26), dark);
-    shoe.position.set(0, -0.8, -0.05);
-    leg.add(shoe);
-  }
-  const armL = limb(0.62, 0.065, shirt);
+  for (const leg of [legL, legR]) leg.add(new THREE.Mesh(bootGeo, dark));
+  const armGeo = cached('h-arm', () => bone(0.6, 0.075, 0.058, 0.15));
+  const handGeom = cached('h-hand', () => place(handGeo(4, 0.07, 0.013, 0.05, 0, 0.5), 0, -0.6, 0));
+  const armL = hang(armGeo, shirt);
   armL.position.set(-0.3, 1.44, 0);
-  const armR = limb(0.62, 0.065, shirt);
+  const armR = hang(armGeo, shirt);
   armR.position.set(0.3, 1.44, 0);
-  for (const arm of [armL, armR]) {
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), skin);
-    hand.position.y = -0.62;
-    arm.add(hand);
-  }
+  for (const arm of [armL, armR]) arm.add(new THREE.Mesh(handGeom, skin));
   // linterna en la mano derecha; el brazo apunta hacia delante
   const torch = new THREE.Group();
   const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.2, 10), dark);
@@ -128,7 +345,7 @@ export function makeHumanoid(color: number, name: string): Humanoid {
   beam.visible = false;
   torch.add(beam);
 
-  body.add(torso, backpack, hips, neck, head, legL, legR, armL, armR);
+  body.add(torso, details, backpack, roll, hips, neck, head, legL, legR, armL, armR);
   group.add(makeLabel(name));
 
   let phase = 0;
@@ -218,72 +435,116 @@ export function makeSmiler(seed: number): EnemyModel {
   };
 }
 
-/** Pieza articulada: un cilindro que cuelga de su pivote. */
-function segment(len: number, r0: number, r1: number, m: THREE.Material): THREE.Group {
-  const pivot = new THREE.Group();
-  const g = new THREE.CylinderGeometry(r1, r0, len, 8);
-  g.translate(0, -len / 2, 0);
-  pivot.add(new THREE.Mesh(g, m));
-  return pivot;
+/** Ojos que brillan (puntos de luz que no apaga la niebla). */
+function glowEyes(color: number, spread: number, size = 0.025): THREE.Mesh {
+  const key = `eyes${spread}|${size}`;
+  const geo = cached(key, () => merge([place(new THREE.SphereGeometry(size, 8, 6), -spread), place(new THREE.SphereGeometry(size, 8, 6), spread)]));
+  return new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(2), fog: false }));
 }
 
-function glowEyes(color: number, spread: number, size = 0.025): THREE.Group {
-  const m = new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(2), fog: false });
-  const g = new THREE.Group();
-  for (const s of [-1, 1]) {
-    const e = new THREE.Mesh(new THREE.SphereGeometry(size, 8, 6), m);
-    e.position.x = s * spread;
-    g.add(e);
+/** Material casi negro de los huecos (bocas, cuencas). */
+const voidMat = () => new THREE.MeshBasicMaterial({ color: 0x0a0505 });
+
+/** Costillas: arcos finos bajo la piel, de delante atrás (eje z). */
+function ribsGeo(n: number, z0: number, z1: number, r: number, y = 0, thick = 0.012): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / Math.max(1, n - 1);
+    parts.push(place(new THREE.TorusGeometry(r * (1 - Math.abs(t - 0.35) * 0.35), thick, 4, 14, Math.PI), 0, y, z0 + (z1 - z0) * t, 0, 0, Math.PI, 1, 0.9, 1));
   }
-  return g;
+  return merge(parts);
 }
 
-/** Hound: humanoide pálido que va a cuatro patas, con melena negra. */
+/** Pelo: mechones largos y finos que cuelgan desde un casquete (una sola malla). */
+function hairGeo(n: number, seed: number, r: number, len: number, front: number): THREE.BufferGeometry {
+  const R = seeded(seed * 1000 + 7);
+  const parts: THREE.BufferGeometry[] = [lumpy(place(new THREE.SphereGeometry(r * 1.05, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.6), 0, 0.01, 0.01), 0.01, 25, seed)];
+  for (let i = 0; i < n; i++) {
+    const a = R() * Math.PI * 2;
+    const overFace = i < front; // los primeros caen por delante de la cara
+    const l = len * (0.55 + R() * 0.6) * (overFace ? 0.7 : 1);
+    const x = overFace ? (R() - 0.5) * r * 1.4 : Math.cos(a) * r * 0.95;
+    const z = overFace ? -r * (0.95 + R() * 0.1) : Math.sin(a) * r * 0.95;
+    const strand = new THREE.ConeGeometry(0.013 + R() * 0.01, l, 3).rotateX(Math.PI).translate(0, -l / 2, 0);
+    parts.push(place(strand, x, r * 0.35, z, (R() - 0.5) * 0.35 + (overFace ? -0.1 : 0.15), 0, (R() - 0.5) * 0.35));
+  }
+  return merge(parts);
+}
+
+/**
+ * Hound: humanoide flaco y gris que va a cuatro patas, con la melena negra y
+ * enmarañada tapándole la cara. Ojos rojos hundidos, mandíbula llena de
+ * dientes, y las costillas y la columna marcadas bajo la piel.
+ */
 export function makeHound(seed: number): EnemyModel {
-  const skin = litMaterial({ color: 0x9c9a8e }, 0.1);
-  const hair = litMaterial({ color: 0x0c0b0a, side: THREE.DoubleSide }, 0.1);
+  const skin = skinMat('hound', { base: '#8e8b80', mottle: '#5f5c52', bruise: '#4e3a3a', veins: 'rgba(60,40,55,0.5)' });
+  const hairMat = litMaterial({ color: 0x0b0a09 }, 0.1);
+  const gum = litMaterial({ color: 0x4a1414 }, 0.1);
+  const tooth = litMaterial({ color: 0xc9bd98 }, 0.1);
   const group = new THREE.Group();
   const body = new THREE.Group();
   body.position.y = 0.75;
   group.add(body);
 
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.75, 6, 12), skin);
-  torso.rotation.x = Math.PI / 2 - 0.15;
-  const ribs = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.4, 4, 10), litMaterial({ color: 0x8a877b }, 0.1));
-  ribs.rotation.x = Math.PI / 2;
-  ribs.position.set(0, -0.08, -0.1);
-  body.add(torso, ribs);
+  // el tronco, tumbado: el pecho hacia delante (-z), la cadera atrás
+  const torso = new THREE.Mesh(
+    cached('hound-torso', () => {
+      const profile: [number, number][] = [[0.001, -0.52], [0.12, -0.5], [0.16, -0.32], [0.13, -0.08], [0.19, 0.18], [0.21, 0.36], [0.15, 0.5], [0.001, 0.54]];
+      const radius = (y: number) => {
+        for (let i = 1; i < profile.length; i++) if (y <= profile[i][1]) return profile[i - 1][0] + ((profile[i][0] - profile[i - 1][0]) * (y - profile[i - 1][1])) / (profile[i][1] - profile[i - 1][1]);
+        return 0;
+      };
+      // la columna asoma a lo largo del lomo (que, tumbado, es el lado +z del perfil)
+      const spine = Array.from({ length: 12 }, (_, i) => {
+        const y = -0.4 + i * 0.075;
+        return place(new THREE.SphereGeometry(0.024, 6, 5), 0, y, radius(y) * 0.85 * 0.93, 0, 0, 0, 1, 1.4, 0.8);
+      });
+      return merge([place(merge([lumpy(place(trunk(profile), 0, 0, 0, 0, 0, 0, 1, 1, 0.85), 0.012, 12, 2), ...spine]), 0, 0, 0, -Math.PI / 2 + 0.15, 0, 0), ribsGeo(6, -0.4, -0.1, 0.19, 0.02)]);
+    }),
+    skin,
+  );
+  body.add(torso);
 
   const head = new THREE.Group();
   head.position.set(0, 0.12, -0.6);
-  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.16, 16, 12), skin);
-  skull.scale.set(0.9, 1, 1.15);
-  const jaw = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.16), litMaterial({ color: 0x5a2222 }, 0.1));
+  const skull = new THREE.Mesh(
+    cached('hound-skull', () =>
+      merge([
+        lumpy(place(new THREE.SphereGeometry(0.15, 16, 12), 0, 0, 0, 0, 0, 0, 0.85, 0.9, 1.3), 0.008, 18, 3),
+        place(new THREE.SphereGeometry(0.06, 8, 6), 0, 0.05, -0.15, 0, 0, 0, 1.8, 0.6, 0.8), // ceja de hueso
+        place(new THREE.SphereGeometry(0.05, 8, 6), 0, -0.04, -0.17, 0, 0, 0, 1.2, 0.7, 1), // hocico
+      ]),
+    ),
+    skin,
+  );
+  const sockets = new THREE.Mesh(cached('hound-sockets', () => merge([place(new THREE.SphereGeometry(0.035, 8, 6), -0.055, 0.025, -0.165), place(new THREE.SphereGeometry(0.035, 8, 6), 0.055, 0.025, -0.165)])), voidMat());
+  const eyes = glowEyes(0xff1a08, 0.055, 0.013);
+  eyes.position.set(0, 0.025, -0.188);
+  const upperTeeth = new THREE.Mesh(cached('hound-teeth-up', () => place(teethGeo(11, 0.13, 0.055, 0.008, true), 0, -0.075, -0.17)), tooth);
+  const mouth = new THREE.Mesh(cached('hound-mouth', () => place(new THREE.SphereGeometry(0.07, 10, 8), 0, -0.1, -0.12, 0, 0, 0, 1, 0.6, 1.2)), gum);
+  // mandíbula de abajo (se abre al gruñir)
+  const jaw = new THREE.Group();
   jaw.position.set(0, -0.12, -0.06);
-  const eyes = glowEyes(0xff2a10, 0.06, 0.018);
-  eyes.position.set(0, 0.02, -0.16);
-  head.add(skull, jaw, eyes);
-  // melena: mechones largos que cuelgan
-  for (let i = 0; i < 14; i++) {
-    const len = 0.5 + Math.sin(i * 3.1 + seed) * 0.15;
-    const strand = new THREE.Mesh(new THREE.PlaneGeometry(0.07, len), hair);
-    const a = (i / 14) * Math.PI * 2;
-    strand.position.set(Math.cos(a) * 0.13, -len / 2 + 0.1, Math.sin(a) * 0.1 + 0.03);
-    strand.rotation.set(0.25, a, 0);
-    head.add(strand);
-  }
+  jaw.add(
+    new THREE.Mesh(cached('hound-jaw', () => lumpy(place(new THREE.SphereGeometry(0.08, 12, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), 0, 0.02, -0.07, 0, 0, 0, 0.8, 0.5, 1.4), 0.005, 20)), skin),
+    new THREE.Mesh(cached('hound-teeth-down', () => place(teethGeo(10, 0.11, 0.045, 0.007, false), 0, 0.02, -0.15)), tooth),
+  );
+  const hair = new THREE.Mesh(cached(`hound-hair${Math.floor(seed) % 3}`, () => hairGeo(46, Math.floor(seed) % 3, 0.15, 0.62, 16)), hairMat);
+  hair.position.set(0, 0.06, 0.02);
+  head.add(skull, sockets, eyes, mouth, upperTeeth, jaw, hair);
   body.add(head);
 
+  const upperGeo = cached('hound-upper', () => bone(0.42, 0.06, 0.042, 0.4));
+  const lowerGeo = cached('hound-lower', () => bone(0.42, 0.042, 0.03, 0.35));
+  const handG = cached('hound-hand', () => place(handGeo(4, 0.12, 0.012, 0.07, 0.045, 0.3), 0, -0.42, -0.02, Math.PI / 2 * 0.85, 0, 0));
   const limbs: { upper: THREE.Group; lower: THREE.Group; phase: number }[] = [];
   for (const [x, z, phase] of [[-0.2, -0.38, 0], [0.2, -0.38, Math.PI], [-0.18, 0.38, Math.PI], [0.18, 0.38, 0]] as const) {
-    const upper = segment(0.42, 0.06, 0.07, skin);
+    const upper = hang(upperGeo, skin);
     upper.position.set(x, 0, z);
-    const lower = segment(0.42, 0.04, 0.055, skin);
+    const lower = hang(lowerGeo, skin);
     lower.position.y = -0.42;
     upper.add(lower);
-    const hand = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.03, 0.16), skin);
-    hand.position.set(0, -0.42, -0.05);
-    lower.add(hand);
+    lower.add(new THREE.Mesh(handG, skin));
     body.add(upper);
     limbs.push({ upper, lower, phase });
   }
@@ -313,46 +574,65 @@ export function makeHound(seed: number): EnemyModel {
   };
 }
 
-/** Faceling: humanoide alto y pálido, vestido, sin cara. */
+/**
+ * Faceling: humanoide alto, de piel pálida como la porcelana, con traje y
+ * corbata. La cara es lisa: solo se adivina dónde irían la nariz y las cejas.
+ */
 export function makeFaceling(seed: number): EnemyModel {
-  const skin = litMaterial({ color: 0xd2c7b8 }, 0.1);
+  const skin = skinMat('faceling', { base: '#d9d0c4', mottle: '#c7baab', veins: 'rgba(110,120,150,0.22)' });
   const suit = litMaterial({ color: [0x3a3d44, 0x4a3d34, 0x2f3a33][Math.floor(seed) % 3] }, 0.1);
   const shirt = litMaterial({ color: 0xbcb6a8 }, 0.1);
+  const black = litMaterial({ color: 0x111111 }, 0.1);
   const group = new THREE.Group();
   const body = new THREE.Group();
   group.add(body);
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.6, 4, 12), suit);
-  torso.scale.set(1.2, 1, 0.75);
-  torso.position.y = 1.32;
-  const collar = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.25, 0.02), shirt);
-  collar.position.set(0, 1.5, -0.15);
-  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.06, 0.16, 10), skin);
+  const torso = new THREE.Mesh(cached('face-torso', () => place(trunk([[0.001, -0.42], [0.2, -0.4], [0.18, -0.16], [0.2, 0.08], [0.26, 0.28], [0.21, 0.37], [0.06, 0.42], [0.001, 0.42]]), 0, 1.32, 0, 0, 0, 0, 1, 1, 0.65)), suit);
+  const front = new THREE.Mesh(
+    cached('face-front', () =>
+      merge([
+        place(new THREE.ConeGeometry(0.08, 0.3, 3), 0, 1.56, -0.138, Math.PI, 0, 0, 1, 1, 0.08), // camisa en V
+        place(new THREE.BoxGeometry(0.05, 0.016, 0.03), 0, 1.66, -0.15), // cuello
+      ]),
+    ),
+    shirt,
+  );
+  const tie = new THREE.Mesh(cached('face-tie', () => merge([place(new THREE.BoxGeometry(0.045, 0.32, 0.012), 0, 1.48, -0.148), place(new THREE.BoxGeometry(0.05, 0.05, 0.02), 0, 1.65, -0.15)])), litMaterial({ color: 0x3a1418 }, 0.1));
+  const lapels = new THREE.Mesh(
+    cached('face-lapels', () => merge([place(new THREE.BoxGeometry(0.07, 0.3, 0.015), -0.075, 1.55, -0.14, 0, 0, -0.25), place(new THREE.BoxGeometry(0.07, 0.3, 0.015), 0.075, 1.55, -0.14, 0, 0, 0.25), ...[1.3, 1.18].map((y) => place(new THREE.SphereGeometry(0.012, 6, 4), 0, y, -0.15))])),
+    black,
+  );
+  const neck = new THREE.Mesh(cached('face-neck', () => new THREE.CylinderGeometry(0.05, 0.058, 0.22, 10)), skin);
   neck.position.y = 1.78;
   const head = new THREE.Group();
   head.position.y = 1.95;
-  // cabeza lisa: sin ojos, sin boca
-  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.13, 20, 16), skin);
-  skull.scale.set(0.95, 1.25, 1.05);
+  // cabeza lisa: sin ojos ni boca, solo el relieve de la nariz y las cejas
+  const skull = new THREE.Mesh(
+    cached('face-skull', () =>
+      merge([
+        lumpy(place(new THREE.SphereGeometry(0.13, 22, 16), 0, 0, 0, 0, 0, 0, 0.92, 1.28, 1.02), 0.003, 14),
+        place(new THREE.SphereGeometry(0.03, 8, 6), 0, -0.01, -0.12, 0, 0, 0, 0.7, 1.6, 0.6),
+        place(new THREE.SphereGeometry(0.05, 8, 6), 0, 0.06, -0.105, 0, 0, 0, 1.6, 0.35, 0.5),
+        place(new THREE.SphereGeometry(0.05, 8, 6), 0, -0.12, -0.08, 0, 0, 0, 1, 0.6, 0.8),
+      ]),
+    ),
+    skin,
+  );
   head.add(skull);
-  const legL = segment(0.95, 0.07, 0.08, suit);
+  const legGeo = cached('face-leg', () => bone(0.95, 0.08, 0.065, 0.1));
+  const shoeGeo = cached('face-shoe', () => lumpy(place(new THREE.CapsuleGeometry(0.055, 0.17, 4, 10), 0, -0.97, -0.06, Math.PI / 2, 0, 0, 1, 0.6, 1), 0.003, 30));
+  const legL = hang(legGeo, suit);
   legL.position.set(-0.1, 0.98, 0);
-  const legR = segment(0.95, 0.07, 0.08, suit);
+  const legR = hang(legGeo, suit);
   legR.position.set(0.1, 0.98, 0);
-  for (const leg of [legL, legR]) {
-    const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.07, 0.26), litMaterial({ color: 0x111111 }, 0.1));
-    shoe.position.set(0, -0.95, -0.05);
-    leg.add(shoe);
-  }
-  const armL = segment(0.82, 0.045, 0.055, suit);
+  for (const leg of [legL, legR]) leg.add(new THREE.Mesh(shoeGeo, black));
+  const armGeo = cached('face-arm', () => bone(0.82, 0.058, 0.045, 0.15));
+  const handG = cached('face-hand', () => merge([place(handGeo(5, 0.12, 0.011, 0.09, 0, 0.45), 0, -0.84, 0), place(new THREE.CylinderGeometry(0.05, 0.05, 0.04, 10), 0, -0.8, 0)]));
+  const armL = hang(armGeo, suit);
   armL.position.set(-0.28, 1.65, 0);
-  const armR = segment(0.82, 0.045, 0.055, suit);
+  const armR = hang(armGeo, suit);
   armR.position.set(0.28, 1.65, 0);
-  for (const arm of [armL, armR]) {
-    const hand = new THREE.Mesh(new THREE.CapsuleGeometry(0.035, 0.1, 4, 8), skin);
-    hand.position.y = -0.87;
-    arm.add(hand);
-  }
-  body.add(torso, collar, neck, head, legL, legR, armL, armR);
+  for (const arm of [armL, armR]) arm.add(new THREE.Mesh(handG, skin));
+  body.add(torso, front, tie, lapels, neck, head, legL, legR, armL, armR);
   let cycle = seed;
   return {
     group,
@@ -374,101 +654,168 @@ export function makeFaceling(seed: number): EnemyModel {
   };
 }
 
+/** Jirón de piel con el borde inferior desgarrado. */
+function flapGeo(w: number, h: number, seed: number): THREE.BufferGeometry {
+  const R = seeded(seed);
+  const s = new THREE.Shape();
+  s.moveTo(-w / 2, 0);
+  s.lineTo(w / 2, 0);
+  const n = 6;
+  for (let i = 0; i <= n; i++) s.lineTo(w / 2 - (w * i) / n, -h * (0.6 + R() * 0.4));
+  s.lineTo(-w / 2, 0);
+  const g = new THREE.ShapeGeometry(s);
+  // un poco curvado, como piel que cuelga
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setZ(i, Math.sin((p.getX(i) / w) * Math.PI) * 0.03 + p.getY(i) * -0.05);
+  g.computeVertexNormals();
+  return g;
+}
+
+let stolenFace: THREE.Texture | null = null;
+/** La cara de alguien, arrancada: ojos cerrados y la boca abierta. */
+function stolenFaceTex(): THREE.Texture {
+  stolenFace ??= canvasTexture(
+    128,
+    128,
+    (ctx, w, h) => {
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#c99a80';
+      ctx.beginPath();
+      ctx.ellipse(w / 2, h / 2, w * 0.36, h * 0.46, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(120,50,40,0.5)';
+      ctx.beginPath();
+      ctx.ellipse(w / 2, h * 0.93, w * 0.3, h * 0.08, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#3a2018';
+      ctx.lineWidth = 3;
+      for (const x of [0.37, 0.63]) {
+        ctx.beginPath();
+        ctx.arc(w * x, h * 0.42, 9, 0.2, Math.PI - 0.2);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#1a0806';
+      ctx.beginPath();
+      ctx.ellipse(w / 2, h * 0.7, 11, 16, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#2a1a12';
+      ctx.fillRect(w * 0.18, h * 0.04, w * 0.64, h * 0.14);
+    },
+    false,
+  );
+  return stolenFace;
+}
+
 /**
- * Skin-Stealer: humanoide alto, de piel amarillo pálido y ojos blancos
- * hundidos. Disfrazado parece una persona encogida que llora.
+ * Skin-Stealer: alto, flaco y de piel amarillenta y estirada, con los ojos
+ * blancos y hundidos y una boca que llega casi a las orejas. Lleva colgando
+ * jirones de piel humana (y una cara). Disfrazado es alguien encogido que llora.
  */
 export function makeSkinStealer(seed: number): EnemyModel {
-  const pale = litMaterial({ color: 0xd8cf96 }, 0.1);
-  const paleDark = litMaterial({ color: 0xb8ad78 }, 0.1);
-  const skin = litMaterial({ color: 0xd2a58a, side: THREE.DoubleSide }, 0.1);
-  const cloth = litMaterial({ color: 0x5c5048 }, 0.1);
-  const hairMat = litMaterial({ color: 0x2a1d14, side: THREE.DoubleSide }, 0.1);
+  const pale = skinMat('stealer', { base: '#c2b98e', mottle: '#9c9266', veins: 'rgba(110,70,50,0.5)', bruise: '#8a7a48' });
+  const paleDark = skinMat('stealer2', { base: '#a39a70', mottle: '#7d7552', veins: 'rgba(90,50,40,0.5)' });
+  const skin = skinMat('stolen', { base: '#d2a58a', mottle: '#b07a64', bruise: '#7a3a30', stitches: '#4a1a14' }, { side: THREE.DoubleSide });
+  const cloth = skinMat('hoodie', { base: '#4f4740', mottle: '#3a332d', stitches: '#2a2420' });
+  const jeans = skinMat('jeans', { base: '#33405a', mottle: '#24304a' });
+  const hairMat = litMaterial({ color: 0x2a1d14 }, 0.1);
+  const tooth = litMaterial({ color: 0xd8d0b0 }, 0.1);
   const group = new THREE.Group();
 
   // ---- disfraz: alguien de rodillas, encogido, tapándose la cara ----
   const disguise = new THREE.Group();
-  const back = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.45, 4, 10), cloth);
+  const back = new THREE.Mesh(
+    cached('ss-back', () => merge([place(trunk([[0.001, -0.3], [0.17, -0.28], [0.2, 0.05], [0.21, 0.2], [0.12, 0.3], [0.001, 0.31]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.75), lumpy(place(new THREE.SphereGeometry(0.13, 12, 8), 0, 0.27, 0.05, 0, 0, 0, 1.1, 1, 1), 0.01, 20)])),
+    cloth,
+  );
   back.position.set(0, 0.62, 0.05);
   back.rotation.x = 0.55;
-  const dHead = new THREE.Mesh(new THREE.SphereGeometry(0.13, 14, 10), skin);
+  const dHead = new THREE.Mesh(cached('ss-dhead', () => new THREE.SphereGeometry(0.12, 14, 10)), skin);
   dHead.position.set(0, 0.92, -0.22);
-  const hair = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.7), hairMat);
-  hair.position.copy(dHead.position).add(new THREE.Vector3(0, 0.02, 0.02));
-  hair.rotation.x = -0.5;
-  for (let i = 0; i < 6; i++) {
-    const strand = new THREE.Mesh(new THREE.PlaneGeometry(0.06, 0.35), hairMat);
-    const a = (i / 6) * Math.PI - Math.PI / 2;
-    strand.position.set(Math.sin(a) * 0.12, 0.75, -0.18 + Math.cos(a) * 0.06);
-    disguise.add(strand);
-  }
-  const legs = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.35, 4, 8), cloth);
-  legs.rotation.x = Math.PI / 2;
-  legs.position.set(0, 0.18, 0.05);
-  const armL = new THREE.Mesh(new THREE.CapsuleGeometry(0.05, 0.38, 4, 8), skin);
-  armL.position.set(-0.12, 0.8, -0.28);
-  armL.rotation.set(1.1, 0, 0.5);
-  const armR = armL.clone();
-  armR.position.x = 0.12;
-  armR.rotation.z = -0.5;
-  disguise.add(back, dHead, hair, legs, armL, armR);
+  dHead.add(new THREE.Mesh(cached('ss-dhair', () => hairGeo(26, 5, 0.12, 0.35, 10)), hairMat));
+  const legs = new THREE.Mesh(
+    cached('ss-legs', () => merge([place(new THREE.CapsuleGeometry(0.075, 0.38, 4, 8), -0.1, 0.12, 0.02, Math.PI / 2), place(new THREE.CapsuleGeometry(0.075, 0.38, 4, 8), 0.1, 0.12, 0.02, Math.PI / 2)])),
+    jeans,
+  );
+  const shoes = new THREE.Mesh(cached('ss-shoes', () => merge([place(new THREE.BoxGeometry(0.1, 0.07, 0.22), -0.1, 0.05, 0.32), place(new THREE.BoxGeometry(0.1, 0.07, 0.22), 0.1, 0.05, 0.32)])), litMaterial({ color: 0x1a1a1a }, 0.1));
+  const sleeves = new THREE.Mesh(
+    cached('ss-sleeves', () => merge([place(new THREE.CapsuleGeometry(0.055, 0.36, 4, 8), -0.13, 0.78, -0.26, 1.1, 0, 0.5), place(new THREE.CapsuleGeometry(0.055, 0.36, 4, 8), 0.13, 0.78, -0.26, 1.1, 0, -0.5)])),
+    cloth,
+  );
+  const hands = new THREE.Mesh(cached('ss-hands', () => merge([place(handGeo(4, 0.06, 0.01, 0.04, 0, 0.6), -0.05, 0.98, -0.34, 2.6, 0, 0.4), place(handGeo(4, 0.06, 0.01, 0.04, 0, 0.6), 0.05, 0.98, -0.34, 2.6, 0, -0.4)])), skin);
+  disguise.add(back, dHead, legs, shoes, sleeves, hands);
 
   // ---- forma real ----
   const real = new THREE.Group();
   const spine = new THREE.Group();
   spine.position.y = 1.3;
   real.add(spine);
-  const chest = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.75, 4, 10), pale);
-  chest.position.y = 0.4;
+  const chest = new THREE.Mesh(
+    cached('ss-chest', () =>
+      merge([
+        lumpy(place(trunk([[0.001, -0.06], [0.12, -0.04], [0.09, 0.16], [0.16, 0.42], [0.21, 0.62], [0.2, 0.76], [0.06, 0.86], [0.001, 0.86]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.7), 0.01, 14, 4),
+        place(ribsGeo(6, -0.07, 0.07, 0.17, 0, 0.01), 0, 0.52, 0, Math.PI / 2, 0, 0),
+        place(new THREE.CylinderGeometry(0.04, 0.05, 0.14, 8), 0, 0.92, 0),
+        ...[-1, 1].map((sx) => lumpy(place(new THREE.SphereGeometry(0.075, 10, 8), sx * 0.2, 0.78, 0, 0, 0, sx * 0.4, 1.3, 0.8, 0.8), 0.008, 20)),
+        place(new THREE.CapsuleGeometry(0.03, 0.36, 4, 6), 0, 0.8, -0.02, 0, 0, Math.PI / 2), // clavículas
+      ]),
+    ),
+    pale,
+  );
   spine.add(chest);
-  // piel humana colgando a jirones (el disfraz que se quita)
+  // piel humana colgando a jirones (el disfraz que se quita) y una cara
   for (let i = 0; i < 6; i++) {
-    const flap = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.45 + (i % 3) * 0.15), skin);
+    const flap = new THREE.Mesh(cached(`ss-flap${i % 3}`, () => flapGeo(0.22, 0.45 + (i % 3) * 0.15, i + 11)), skin);
     const a = (i / 6) * Math.PI * 2;
-    flap.position.set(Math.cos(a) * 0.19, 0.25, Math.sin(a) * 0.19);
+    flap.position.set(Math.cos(a) * 0.19, 0.5, Math.sin(a) * 0.15);
     flap.rotation.y = -a + Math.PI / 2;
     spine.add(flap);
   }
+  const face = new THREE.Mesh(cached('ss-face', () => new THREE.PlaneGeometry(0.18, 0.24)), litMaterial({ map: stolenFaceTex(), transparent: true, side: THREE.DoubleSide }, 0.1));
+  face.position.set(0.06, 0.18, -0.13);
+  face.rotation.set(0.2, Math.PI, 0.25);
+  spine.add(face);
   const head = new THREE.Group();
   head.position.y = 1.0;
-  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 10), pale);
-  skull.scale.set(0.85, 1.3, 1);
-  // ojos blancos y hundidos
-  const sockets = new THREE.Group();
-  for (const sx of [-1, 1]) {
-    const pit = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 6), litMaterial({ color: 0x3a3320 }, 0.1));
-    pit.position.set(sx * 0.05, 0.03, -0.12);
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.02, 8, 6), new THREE.MeshBasicMaterial({ color: 0xf0f0e8 }));
-    eye.position.set(sx * 0.05, 0.03, -0.135);
-    sockets.add(pit, eye);
-  }
-  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.02, 0.02), litMaterial({ color: 0x2a1010 }, 0.1));
-  mouth.position.set(0, -0.08, -0.13);
-  head.add(skull, sockets, mouth);
+  const skull = new THREE.Mesh(
+    cached('ss-skull', () =>
+      merge([
+        lumpy(place(new THREE.SphereGeometry(0.14, 16, 12), 0, 0, 0, 0, 0, 0, 0.8, 1.4, 1), 0.01, 16, 6),
+        place(new THREE.SphereGeometry(0.06, 8, 6), 0, -0.12, -0.04, 0, 0, 0, 1.5, 0.6, 1.4), // mandíbula ancha
+      ]),
+    ),
+    pale,
+  );
+  // ojos blancos y hundidos; la boca, de oreja a oreja
+  const holes = new THREE.Mesh(
+    cached('ss-holes', () => merge([place(new THREE.SphereGeometry(0.04, 8, 6), -0.05, 0.04, -0.115), place(new THREE.SphereGeometry(0.04, 8, 6), 0.05, 0.04, -0.115), place(new THREE.SphereGeometry(0.1, 12, 6), 0, -0.1, -0.08, 0, 0, 0, 1.15, 0.22, 0.75)])),
+    voidMat(),
+  );
+  const eyes = new THREE.Mesh(cached('eyes0.05|0.016', () => merge([place(new THREE.SphereGeometry(0.016, 8, 6), -0.05), place(new THREE.SphereGeometry(0.016, 8, 6), 0.05)])), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.6, 1.5), fog: false }));
+  eyes.position.set(0, 0.04, -0.13);
+  const teeth = new THREE.Mesh(cached('ss-teeth', () => merge([place(teethGeo(14, 0.2, 0.04, 0.005, true, 1.2), 0, -0.085, -0.13), place(teethGeo(13, 0.18, 0.035, 0.005, false, 1.2), 0, -0.115, -0.125)])), tooth);
+  head.add(skull, holes, eyes, teeth);
   spine.add(head);
   const legsR: THREE.Group[] = [];
+  const thigh = cached('ss-thigh', () => bone(0.68, 0.07, 0.05, 0.3));
+  const shin = cached('ss-shin', () => merge([bone(0.68, 0.05, 0.035, 0.28), place(handGeo(5, 0.12, 0.011, 0.08, 0.03, 1.35), 0, -0.68, 0, 0, Math.PI, 0)]));
   for (const x of [-0.12, 0.12]) {
-    const upper = segment(0.68, 0.045, 0.065, pale);
+    const upper = hang(thigh, pale);
     upper.position.set(x, 1.36, 0);
-    const lower = segment(0.68, 0.035, 0.05, paleDark);
+    const lower = hang(shin, paleDark);
     lower.position.y = -0.68;
     upper.add(lower);
     real.add(upper);
     legsR.push(upper);
   }
   const arms: THREE.Group[] = [];
+  const upperArm = cached('ss-arm', () => bone(0.62, 0.055, 0.042, 0.3));
+  const forearm = cached('ss-forearm', () => merge([bone(0.66, 0.042, 0.03, 0.25), place(handGeo(5, 0.22, 0.01, 0.075, 0.06, 0.35), 0, -0.66, 0)]));
   for (const x of [-0.24, 0.24]) {
-    const upper = segment(0.62, 0.04, 0.055, pale);
+    const upper = hang(upperArm, pale);
     upper.position.set(x, 0.8, 0);
-    const lower = segment(0.66, 0.03, 0.04, paleDark);
+    const lower = hang(forearm, paleDark);
     lower.position.y = -0.62;
     upper.add(lower);
-    for (let f = -1; f <= 1; f++) {
-      const claw = segment(0.18, 0.004, 0.012, litMaterial({ color: 0x2a2416 }, 0.1));
-      claw.position.set(f * 0.022, -0.66, 0);
-      claw.rotation.x = 0.25;
-      lower.add(claw);
-    }
     spine.add(upper);
     arms.push(upper);
   }
@@ -500,28 +847,36 @@ export function makeSkinStealer(seed: number): EnemyModel {
   };
 }
 
-/** Figura oscura (Nivel 0): una silueta negra sin rasgos que te observa. */
+/**
+ * Figura oscura (Nivel 0): una silueta alta y flaca, de brazos demasiado
+ * largos y la cabeza un poco adelantada. El borde se deshace como humo y, a
+ * veces, se le ven dos puntos de luz donde irían los ojos.
+ */
 export function makeFigure(): EnemyModel {
   const shadow = new THREE.MeshBasicMaterial({ color: 0x050403, transparent: true, opacity: 0.88, depthWrite: false });
   const group = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 1.1, 4, 10), shadow);
-  body.position.y = 1.0;
-  body.scale.set(1, 1, 0.6);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), shadow);
-  head.position.y = 1.85;
-  head.scale.y = 1.15;
-  const parts: THREE.Mesh[] = [body, head];
-  for (const x of [-0.27, 0.27]) {
-    const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.05, 0.8, 4, 8), shadow);
-    arm.position.set(x, 1.05, 0);
-    parts.push(arm);
+  const silhouette = new THREE.Mesh(
+    cached('figure', () =>
+      merge([
+        place(trunk([[0.001, 0.82], [0.13, 0.85], [0.1, 1.05], [0.17, 1.35], [0.22, 1.58], [0.12, 1.68], [0.05, 1.72], [0.001, 1.74]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.55),
+        place(new THREE.SphereGeometry(0.13, 12, 10), 0, 1.86, -0.05, 0.2, 0, 0, 0.9, 1.2, 1),
+        ...[-0.08, 0.08].map((x) => place(bone(0.86, 0.07, 0.045, 0.15), x, 0.86, 0)),
+        ...[-0.24, 0.24].map((x) => merge([place(bone(1.02, 0.05, 0.035, 0.15), x, 1.6, 0, 0, 0, x > 0 ? 0.06 : -0.06), place(handGeo(4, 0.18, 0.01, 0.05, 0, 0.2), x * 1.25, 0.58, 0)])),
+      ]),
+    ),
+    shadow,
+  );
+  const wisp = new THREE.SpriteMaterial({ map: smoke(), color: 0x000000, transparent: true, opacity: 0.5, depthWrite: false });
+  const wisps: THREE.Sprite[] = [];
+  for (let i = 0; i < 8; i++) {
+    const s = new THREE.Sprite(wisp);
+    s.scale.setScalar(0.45 + (i % 3) * 0.12);
+    s.position.set(Math.sin(i * 2.3) * 0.22, 0.4 + i * 0.2, Math.cos(i * 2.3) * 0.12);
+    wisps.push(s);
   }
-  for (const x of [-0.1, 0.1]) {
-    const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.75, 4, 8), shadow);
-    leg.position.set(x, 0.42, 0);
-    parts.push(leg);
-  }
-  group.add(...parts);
+  const glints = new THREE.Mesh(cached('eyes0.04|0.008', () => merge([place(new THREE.SphereGeometry(0.008, 6, 4), -0.04), place(new THREE.SphereGeometry(0.008, 6, 4), 0.04)])), new THREE.MeshBasicMaterial({ color: 0x9a968a, fog: false }));
+  glints.position.set(0, 1.88, -0.16);
+  group.add(silhouette, glints, ...wisps);
   return {
     group,
     eye: 1.85,
@@ -529,32 +884,60 @@ export function makeFigure(): EnemyModel {
       // contorno inestable, como si no estuviera del todo ahí
       shadow.opacity = 0.7 + Math.sin(time * 7) * 0.1 + (Math.random() < 0.05 ? -0.4 : 0);
       group.scale.x = 1 + Math.sin(time * 3.1) * 0.03;
+      wisp.opacity = shadow.opacity * 0.55;
+      wisps.forEach((s, i) => (s.position.x = Math.sin(i * 2.3 + time * 0.6) * 0.22));
+      glints.visible = Math.sin(time * 0.45) > 0.75;
     },
   };
 }
 
-/** Clump: una maraña de brazos y piernas unidos que corre a toda velocidad. */
+/**
+ * Clump: un nudo de cuerpos fundidos del que salen brazos y piernas. En la
+ * masa se adivinan dos caras a medio hundir, con la boca abierta.
+ */
 export function makeClump(seed: number): EnemyModel {
-  const flesh = litMaterial({ color: 0xc49a86 }, 0.1);
-  const bruise = litMaterial({ color: 0x8a6656 }, 0.1);
+  const flesh = skinMat('clump', { base: '#c29682', mottle: '#9a6a5a', bruise: '#6a3a40', veins: 'rgba(90,40,60,0.45)', stitches: '#3a1a1a' });
+  const bruise = skinMat('clump2', { base: '#8a6252', mottle: '#5e3e36', bruise: '#3a2228', veins: 'rgba(60,20,30,0.5)' });
   const group = new THREE.Group();
   const core = new THREE.Group();
   core.position.y = 0.55;
   group.add(core);
-  const blob = new THREE.Mesh(new THREE.SphereGeometry(0.35, 14, 10), bruise);
-  blob.scale.set(1.2, 0.8, 1);
-  core.add(blob);
+  const blob = new THREE.Mesh(
+    cached('clump-core', () =>
+      merge([
+        lumpy(place(new THREE.SphereGeometry(0.35, 18, 12), 0, 0, 0, 0, 0, 0, 1.2, 0.8, 1), 0.04, 7, 1),
+        lumpy(place(new THREE.CapsuleGeometry(0.17, 0.4, 4, 10), 0.12, 0.12, 0.05, 0.4, 0, 1.2), 0.02, 9, 2),
+        lumpy(place(new THREE.CapsuleGeometry(0.15, 0.35, 4, 10), -0.15, 0.08, -0.08, -0.5, 0.8, -0.9), 0.02, 9, 3),
+      ]),
+    ),
+    bruise,
+  );
+  const faces = new THREE.Mesh(cached('clump-faces', () => merge([lumpy(place(new THREE.SphereGeometry(0.11, 12, 10), 0.12, 0.2, -0.3, 0, 0, 0, 0.9, 1.15, 0.8), 0.006, 20), lumpy(place(new THREE.SphereGeometry(0.1, 12, 10), -0.32, 0.05, 0.12, 0, 0, 0.6, 0.9, 1.1, 0.8), 0.006, 20)])), flesh);
+  const mouths = new THREE.Mesh(
+    cached('clump-mouths', () =>
+      merge([
+        place(new THREE.SphereGeometry(0.035, 8, 6), 0.12, 0.14, -0.38, 0, 0, 0, 1, 1.5, 0.5),
+        place(new THREE.SphereGeometry(0.03, 8, 6), -0.4, 0.02, 0.1, 0, 0, 0.6, 0.5, 1.5, 1),
+        ...[-1, 1].map((s) => place(new THREE.BoxGeometry(0.035, 0.006, 0.01), 0.12 + s * 0.04, 0.24, -0.385)),
+      ]),
+    ),
+    voidMat(),
+  );
+  core.add(blob, faces, mouths);
   const limbs: { g: THREE.Group; a: number; b: number }[] = [];
   for (let i = 0; i < 14; i++) {
     const g = new THREE.Group();
-    const len = 0.45 + hashf(seed, i) * 0.35;
-    const seg = segment(len, 0.05, 0.065, i % 3 ? flesh : bruise);
-    const lower = segment(len * 0.9, 0.035, 0.05, flesh);
+    const len = Math.round((0.45 + hashf(seed, i) * 0.35) * 20) / 20; // pocas medidas distintas: se comparten
+    const seg = hang(cached(`clump-up${len}`, () => bone(len, 0.065, 0.05, 0.3)), i % 3 ? flesh : bruise);
+    const foot = i % 4 === 0; // algunos acaban en un pie
+    const lower = hang(
+      cached(`clump-low${len}|${foot}`, () =>
+        merge([bone(len * 0.9, 0.05, 0.035, 0.3), foot ? place(handGeo(5, 0.07, 0.012, 0.07, 0.015, 1.4), 0, -len * 0.9, 0, 0, Math.PI, 0) : place(handGeo(4, 0.09, 0.011, 0.055, 0.02, 0.5), 0, -len * 0.9, 0)]),
+      ),
+      flesh,
+    );
     lower.position.y = -len;
     seg.add(lower);
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 5), flesh);
-    hand.position.y = -len * 0.9;
-    lower.add(hand);
     g.add(seg);
     const a = (i / 14) * Math.PI * 2;
     const b = (hashf(seed, i + 30) - 0.5) * 1.6;
@@ -581,27 +964,36 @@ export function makeClump(seed: number): EnemyModel {
   };
 }
 
-/** Duller: humanoide gris y apagado que sale de las paredes. */
+/**
+ * Duller: humanoide gris y apagado, de piel agrietada como el yeso, que sale
+ * de las paredes. Cuencas vacías, la boca floja y abierta, y brazos larguísimos.
+ */
 export function makeDuller(): EnemyModel {
-  const grey = litMaterial({ color: 0x77736c }, 0.1);
+  const grey = skinMat('duller', { base: '#77736c', mottle: '#5d5953', cracks: 'rgba(38,36,32,0.75)' });
   const group = new THREE.Group();
   const body = new THREE.Group();
   group.add(body);
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.6, 4, 10), grey);
-  torso.position.y = 1.25;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), grey);
-  head.position.y = 1.8;
-  head.scale.set(0.9, 1.2, 0.9);
-  const eyes = glowEyes(0x222222, 0.05, 0.02);
-  eyes.position.set(0, 1.83, -0.13);
+  const torso = new THREE.Mesh(
+    cached('duller-torso', () =>
+      merge([
+        lumpy(place(trunk([[0.001, 0.55], [0.07, 0.6], [0.15, 0.95], [0.18, 1.3], [0.22, 1.5], [0.14, 1.62], [0.05, 1.66], [0.001, 1.67]]), 0, 0, 0, 0, 0, 0, 1, 1, 0.7), 0.012, 11, 5),
+        place(ribsGeo(5, -0.06, 0.06, 0.18, 0, 0.01), 0, 1.3, 0, Math.PI / 2, 0, 0),
+        place(new THREE.CylinderGeometry(0.045, 0.055, 0.16, 8), 0, 1.7, 0),
+      ]),
+    ),
+    grey,
+  );
+  const head = new THREE.Mesh(cached('duller-head', () => lumpy(place(new THREE.SphereGeometry(0.15, 14, 12), 0, 1.84, 0, 0, 0, 0, 0.85, 1.3, 0.9), 0.012, 12, 6)), grey);
+  const holes = new THREE.Mesh(cached('duller-holes', () => merge([place(new THREE.SphereGeometry(0.04, 8, 6), -0.05, 1.87, -0.115), place(new THREE.SphereGeometry(0.04, 8, 6), 0.05, 1.87, -0.115), place(new THREE.SphereGeometry(0.045, 8, 6), 0, 1.7, -0.11, 0, 0, 0, 0.8, 1.6, 0.6)])), voidMat());
   const arms: THREE.Group[] = [];
+  const armGeo = cached('duller-arm', () => merge([bone(1.0, 0.06, 0.04, 0.3), place(handGeo(4, 0.19, 0.011, 0.06, 0.02, 0.3), 0, -1.0, 0)]));
   for (const x of [-0.27, 0.27]) {
-    const arm = segment(1.0, 0.04, 0.06, grey);
+    const arm = hang(armGeo, grey);
     arm.position.set(x, 1.55, 0);
     body.add(arm);
     arms.push(arm);
   }
-  body.add(torso, head, eyes);
+  body.add(torso, head, holes);
   return {
     group,
     eye: 1.8,
@@ -646,38 +1038,94 @@ export interface NpcModel {
   animate: (dt: number, time: number, moving: boolean) => void;
 }
 
-/** Miembro de una patrulla de la M.E.G.: uniforme amarillo lima con el águila. */
+let eagleTex: THREE.Texture | null = null;
+/** Parche de la M.E.G.: el águila negra sobre fondo lima. */
+function megPatch(): THREE.Texture {
+  eagleTex ??= canvasTexture(
+    64,
+    64,
+    (ctx, w, h) => {
+      ctx.fillStyle = '#c4dc3a';
+      ctx.beginPath();
+      ctx.arc(w / 2, h / 2, w / 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#151510';
+      ctx.beginPath();
+      // alas abiertas, cuerpo y cabeza
+      ctx.moveTo(6, 24);
+      ctx.lineTo(26, 30);
+      ctx.lineTo(32, 18);
+      ctx.lineTo(38, 30);
+      ctx.lineTo(58, 24);
+      ctx.lineTo(42, 40);
+      ctx.lineTo(36, 52);
+      ctx.lineTo(28, 52);
+      ctx.lineTo(22, 40);
+      ctx.closePath();
+      ctx.fill();
+    },
+    false,
+  );
+  return eagleTex;
+}
+
+/** Miembro de una patrulla de la M.E.G.: uniforme lima, casco, chaleco reflectante y el águila. */
 export function makeMeg(): NpcModel {
   const h = makeHumanoid(0xb8d23a, 'M.E.G.');
-  const patch = new THREE.Mesh(new THREE.CircleGeometry(0.07, 12), litMaterial({ map: textTexture('◆', '#2a2a2a', '#e8e0c0', 64, 64) }, 0.1));
-  patch.position.set(0.12, 1.32, -0.14);
+  const patch = new THREE.Mesh(cached('meg-patch', () => new THREE.CircleGeometry(0.07, 14)), litMaterial({ map: megPatch() }, 0.1));
+  patch.position.set(0.11, 1.32, -0.148);
   patch.rotation.y = Math.PI;
-  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.17, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), litMaterial({ color: 0x5e6b2e }, 0.1));
-  helmet.position.y = 1.64;
-  h.group.add(patch, helmet);
+  const helmet = new THREE.Mesh(
+    cached('meg-helmet', () => merge([place(new THREE.SphereGeometry(0.175, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2), 0, 1.64, 0), place(new THREE.TorusGeometry(0.17, 0.018, 4, 18), 0, 1.645, 0, Math.PI / 2)])),
+    litMaterial({ color: 0x5e6b2e }, 0.1),
+  );
+  const visor = new THREE.Mesh(cached('meg-visor', () => place(new THREE.CylinderGeometry(0.165, 0.165, 0.05, 16, 1, true, Math.PI * 0.65, Math.PI * 0.7), 0, 1.66, 0)), new THREE.MeshBasicMaterial({ color: 0x1a2018 }));
+  // bandas reflectantes del chaleco
+  const stripes = new THREE.Mesh(
+    cached('meg-stripes', () => merge([1.06, 1.26].map((y) => place(new THREE.CylinderGeometry(0.205, 0.2, 0.035, 16, 1, true), 0, y, 0, 0, 0, 0, 1, 1, 0.66)))),
+    new THREE.MeshBasicMaterial({ color: 0x9a9a92 }),
+  );
+  h.group.add(patch, helmet, visor, stripes);
   h.setLight(false);
   return { group: h.group, animate: (dt, _t, moving) => h.animate(dt, moving ? 1.4 : 0) };
 }
 
-/** Trabajador de sombra (sector en obras): mono de trabajo y un martillo. */
+/**
+ * Trabajador sombra (sector en obras): una silueta negra sin cara, con mono
+ * de trabajo, casco amarillo desgastado (lo único con color) y un martillo.
+ */
 export function makeWorker(seed: number): NpcModel {
-  const dark = litMaterial({ color: 0x141414 }, 0.1);
-  const overall = litMaterial({ color: 0x2a3550 }, 0.1);
+  const dark = litMaterial({ color: 0x0c0c0c }, 0.1);
+  const overall = skinMat('overall', { base: '#232c40', mottle: '#161c2a', stitches: '#10141c' });
   const group = new THREE.Group();
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.55, 4, 10), overall);
-  torso.position.y = 1.2;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), dark);
-  head.position.y = 1.7;
+  const torso = new THREE.Mesh(
+    cached('worker-torso', () => merge([place(trunk([[0.001, -0.34], [0.2, -0.32], [0.19, -0.1], [0.21, 0.12], [0.24, 0.26], [0.1, 0.34], [0.001, 0.35]]), 0, 1.2, 0, 0, 0, 0, 1, 1, 0.66), place(new THREE.BoxGeometry(0.36, 0.06, 0.26), 0, 0.92, 0)])),
+    overall,
+  );
+  const head = new THREE.Mesh(cached('worker-head', () => lumpy(place(new THREE.SphereGeometry(0.15, 14, 10), 0, 1.7, 0, 0, 0, 0, 0.95, 1.12, 1), 0.012, 14, 8)), dark);
+  const hat = new THREE.Mesh(
+    cached('worker-hat', () => merge([place(new THREE.SphereGeometry(0.165, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), 0, 1.77, 0), place(new THREE.CylinderGeometry(0.2, 0.2, 0.015, 16), 0, 1.775, -0.02)])),
+    skinMat('hardhat', { base: '#b8921e', mottle: '#8a6a14', cracks: 'rgba(60,40,10,0.5)' }),
+  );
+  const fume = new THREE.SpriteMaterial({ map: smoke(), color: 0x000000, transparent: true, opacity: 0.45, depthWrite: false });
+  const wisps = [0, 1].map((i) => {
+    const s = new THREE.Sprite(fume);
+    s.scale.setScalar(0.35);
+    s.position.set(i ? 0.08 : -0.06, 1.62 + i * 0.12, 0.05);
+    return s;
+  });
   const legs: THREE.Group[] = [];
+  const legGeo = cached('worker-leg', () => merge([bone(0.85, 0.09, 0.075, 0.1), place(new THREE.BoxGeometry(0.14, 0.09, 0.28), 0, -0.85, -0.05)]));
   for (const x of [-0.11, 0.11]) {
-    const l = segment(0.85, 0.07, 0.085, overall);
+    const l = hang(legGeo, overall);
     l.position.set(x, 0.88, 0);
     group.add(l);
     legs.push(l);
   }
-  const armL = segment(0.62, 0.05, 0.06, dark);
+  const armGeo = cached('worker-arm', () => merge([bone(0.6, 0.065, 0.05, 0.15), place(handGeo(4, 0.07, 0.013, 0.05, 0, 0.6), 0, -0.6, 0)]));
+  const armL = hang(armGeo, dark);
   armL.position.set(-0.28, 1.45, 0);
-  const armR = segment(0.62, 0.05, 0.06, dark);
+  const armR = hang(armGeo, dark);
   armR.position.set(0.28, 1.45, 0);
   const hammer = new THREE.Group();
   const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.35, 6), litMaterial({ color: 0x6b4a2a }, 0.1));
@@ -687,7 +1135,7 @@ export function makeWorker(seed: number): NpcModel {
   hammer.position.y = -0.62;
   hammer.rotation.x = Math.PI / 2;
   armR.add(hammer);
-  group.add(torso, head, armL, armR);
+  group.add(torso, head, hat, ...wisps, armL, armR);
   let cycle = seed;
   return {
     group,
@@ -705,16 +1153,65 @@ export function makeWorker(seed: number): NpcModel {
 
 // ---------- bichos ambientales ----------
 
+let wingTex: THREE.Texture | null = null;
+/** Ala de polilla: polvo pardo, nervios oscuros y un ojo falso. */
+function mothWing(): THREE.Texture {
+  wingTex ??= canvasTexture(
+    64,
+    64,
+    (ctx, w, h) => {
+      ctx.clearRect(0, 0, w, h);
+      const g = ctx.createRadialGradient(w * 0.2, h / 2, 2, w * 0.4, h / 2, w * 0.6);
+      g.addColorStop(0, '#6a5a44');
+      g.addColorStop(1, '#3a3024');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = 'rgba(25,18,10,0.7)';
+      for (let i = 0; i < 6; i++) {
+        ctx.beginPath();
+        ctx.moveTo(0, h / 2);
+        ctx.quadraticCurveTo(w * 0.5, h / 2 + (i - 2.5) * 6, w, (i / 5) * h);
+        ctx.stroke();
+      }
+      for (const [r, c] of [[11, '#1a120a'], [8, '#b89a5a'], [4, '#0a0604']] as const) {
+        ctx.fillStyle = c;
+        ctx.beginPath();
+        ctx.arc(w * 0.62, h * 0.48, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    },
+    false,
+  );
+  return wingTex;
+}
+
 /** Deathmoth pequeña (las del Nivel 2 son más pequeñas). */
 export function makeMoth(): { group: THREE.Group; flap: (t: number) => void } {
-  const wingMat = litMaterial({ color: 0x8a7a62, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }, 0.05);
+  const wingMat = litMaterial({ map: mothWing(), side: THREE.DoubleSide, transparent: true, alphaTest: 0.5 }, 0.05);
   const group = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.03, 0.12, 4, 6), litMaterial({ color: 0x4a3f30 }, 0.05));
-  body.rotation.x = Math.PI / 2;
+  const body = new THREE.Mesh(
+    cached('moth-body', () =>
+      merge([
+        place(trunk([[0.001, -0.1], [0.018, -0.08], [0.03, -0.03], [0.028, 0.02], [0.001, 0.03]], 8), 0, 0, 0.03, -Math.PI / 2, 0, 0),
+        lumpy(place(new THREE.SphereGeometry(0.032, 8, 6), 0, 0, -0.01), 0.006, 60),
+        place(new THREE.SphereGeometry(0.018, 6, 5), 0, 0, -0.05),
+        ...[-1, 1].map((s) => place(new THREE.ConeGeometry(0.003, 0.08, 3), s * 0.02, 0.02, -0.09, -1.1, 0, s * 0.4)),
+      ]),
+    ),
+    litMaterial({ color: 0x4a3f30 }, 0.05),
+  );
   const wings: THREE.Mesh[] = [];
   for (const s of [-1, 1]) {
-    const g = new THREE.CircleGeometry(0.16, 8);
-    g.translate(s * 0.16, 0, 0);
+    // ala con forma (más ancha delante), con la raíz pegada al cuerpo
+    const shape = new THREE.Shape();
+    shape.moveTo(0, 0.02);
+    shape.bezierCurveTo(0.08, 0.1, 0.2, 0.08, 0.22, -0.02);
+    shape.bezierCurveTo(0.2, -0.1, 0.08, -0.12, 0, -0.04);
+    const g = new THREE.ShapeGeometry(shape, 6);
+    const uv = g.attributes.uv;
+    const p = g.attributes.position;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, p.getX(i) / 0.22, (p.getY(i) + 0.12) / 0.24);
+    if (s < 0) g.scale(-1, 1, 1);
     const w = new THREE.Mesh(g, wingMat);
     w.rotation.x = Math.PI / 2;
     wings.push(w);
@@ -729,20 +1226,28 @@ export function makeMoth(): { group: THREE.Group; flap: (t: number) => void } {
   };
 }
 
-/** Death Rat: rata pelada. */
+/** Death Rat: rata pelada, de piel rosácea y ojos rojos. */
 export function makeRat(): THREE.Group {
-  const skin = litMaterial({ color: 0x9c7d74 }, 0.05);
+  const skin = skinMat('rat', { base: '#a08070', mottle: '#7a5a50', veins: 'rgba(110,40,50,0.4)' });
   const group = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.05, 0.12, 4, 8), skin);
-  body.rotation.x = Math.PI / 2;
-  body.position.y = 0.05;
-  const head = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.09, 8), skin);
-  head.rotation.x = -Math.PI / 2;
-  head.position.set(0, 0.05, -0.14);
-  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.012, 0.22, 4), skin);
-  tail.rotation.x = Math.PI / 2 - 0.2;
-  tail.position.set(0, 0.03, 0.18);
-  group.add(body, head, tail);
+  const body = new THREE.Mesh(
+    cached('rat-body', () =>
+      merge([
+        lumpy(place(trunk([[0.001, -0.1], [0.045, -0.08], [0.055, 0], [0.045, 0.07], [0.025, 0.12], [0.001, 0.13]], 10), 0, 0.055, 0.02, -Math.PI / 2, 0, 0, 1, 0.85, 1), 0.004, 60),
+        place(new THREE.ConeGeometry(0.032, 0.09, 8), 0, 0.055, -0.15, -Math.PI / 2, 0, 0), // hocico
+        ...[-1, 1].map((s) => place(new THREE.CircleGeometry(0.018, 8), s * 0.025, 0.085, -0.11, 0, s * 0.5, 0)), // orejas
+        ...[-1, 1].flatMap((s) => [-0.07, 0.06].map((z) => place(new THREE.SphereGeometry(0.012, 6, 4), s * 0.04, 0.012, z, 0, 0, 0, 1, 0.6, 1.6))), // patas
+      ]),
+    ),
+    skin,
+  );
+  const tail = new THREE.Mesh(
+    cached('rat-tail', () => new THREE.TubeGeometry(new THREE.CatmullRomCurve3([new THREE.Vector3(0, 0.05, 0.1), new THREE.Vector3(0.02, 0.02, 0.18), new THREE.Vector3(-0.03, 0.01, 0.27), new THREE.Vector3(0.02, 0.01, 0.35)]), 12, 0.006, 4)),
+    skin,
+  );
+  const eyes = glowEyes(0xb01010, 0.02, 0.006);
+  eyes.position.set(0, 0.07, -0.12);
+  group.add(body, tail, eyes);
   return group;
 }
 
@@ -785,7 +1290,7 @@ export function makeBottle(): THREE.Group {
 export function makeBattery(): THREE.Group {
   const group = new THREE.Group();
   const body = litMaterial({ color: 0x1d1d1d, emissive: 0x0b0b0b }, 0.05);
-  const band = litMaterial({ color: 0xd8a619, emissive: 0x2a2000 }, 0.05);
+  const band = litMaterial({ map: textTexture('AA  1.5V', '#1d1d1d', '#d8a619', 128, 32), emissive: 0x2a2000 }, 0.05);
   const metal = litMaterial({ color: 0xbbbbbb, emissive: 0x1a1a1a }, 0.05);
   for (const [x, rot] of [[-0.04, 0.2], [0.05, -0.3]] as const) {
     const cell = new THREE.Group();
@@ -824,8 +1329,18 @@ export function makeCan(): THREE.Group {
   const g = new THREE.Group();
   const body = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.11, 14), litMaterial({ map: textTexture('CONSERVA', '#f2ead0', '#7a2b1c', 128, 32), emissive: 0x100800 }, 0.05));
   body.position.y = 0.055;
-  const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.046, 0.046, 0.008, 14), litMaterial({ color: 0xb8b8b0, emissive: 0x111111 }, 0.05));
-  rim.position.y = 0.11;
+  const metal = litMaterial({ color: 0xb8b8b0, emissive: 0x111111 }, 0.05);
+  const rim = new THREE.Mesh(
+    cached('can-rim', () =>
+      merge([
+        place(new THREE.TorusGeometry(0.044, 0.004, 4, 16), 0, 0.11, 0, Math.PI / 2),
+        place(new THREE.TorusGeometry(0.044, 0.004, 4, 16), 0, 0.001, 0, Math.PI / 2),
+        place(new THREE.CylinderGeometry(0.042, 0.042, 0.004, 14), 0, 0.108, 0),
+        place(new THREE.TorusGeometry(0.012, 0.003, 4, 10), 0.018, 0.112, 0, Math.PI / 2), // anilla
+      ]),
+    ),
+    metal,
+  );
   g.add(body, rim);
   return g;
 }
@@ -863,8 +1378,11 @@ export function makeLitFlare(): { group: THREE.Group; update: (t: number, left: 
 /** Botiquín con vendas. */
 export function makeMedkit(): THREE.Group {
   const g = new THREE.Group();
-  const box = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.12, 0.2), litMaterial({ color: 0xe8e4dc, emissive: 0x1a1a1a }, 0.05));
+  const box = rounded(0.28, 0.2, 0.12, litMaterial({ color: 0xe8e4dc, emissive: 0x1a1a1a }, 0.05));
+  box.rotation.x = Math.PI / 2;
   box.position.y = 0.06;
+  const latches = new THREE.Mesh(cached('medkit-latch', () => merge([-0.07, 0.07].map((x) => place(new THREE.BoxGeometry(0.03, 0.04, 0.012), x, 0.07, -0.104)))), litMaterial({ color: 0x8a8a84 }, 0.05));
+  g.add(latches);
   const red = litMaterial({ color: 0xc41e1e, emissive: 0x200000 }, 0.05);
   const c1 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.005, 0.03), red);
   c1.position.y = 0.123;
