@@ -122,7 +122,6 @@ export class Level3D {
     }
     for (const m of sink.meshes()) this.group.add(m);
     this.buildShifts(wallMats, tex.wallScale, tex.wallHeight);
-    this.buildDiags(wallMats, tex.wallScale, tex.wallHeight);
     this.buildAbyss(tex.walls[0], tex.wallScale, tex.wallHeight);
 
 
@@ -141,7 +140,7 @@ export class Level3D {
       obj.rotation.y = p.ry;
       if (DYNAMIC_PROPS.has(p.type)) {
         this.group.add(obj);
-        if (p.type !== 'fog') this.smalls.push(obj);
+        this.smalls.push(obj);
         this.animated.push({ obj, kind: p.type, seed: hash(p.x * 10, p.z * 10) * 100 });
         if (p.type === 'violet') this.addGlow(obj, 0xa060ff, 1.4, 0.9);
         if (p.type === 'bulb') this.addGlow(obj, 0xffe0a0, 1.0, 0.7, -0.55);
@@ -156,7 +155,7 @@ export class Level3D {
     // objetos que se pueden coger, cajas y salidas
     for (const item of map.items) {
       if (picked.has(item.key)) continue;
-      const obj = itemModel(item.kind);
+      const obj = flatten(itemModel(item.kind));
       obj.position.set(item.x, item.y, item.z);
       obj.rotation.y = hash(item.x * 10, item.z * 10) * Math.PI * 2;
       this.items.set(item.key, obj);
@@ -180,7 +179,7 @@ export class Level3D {
 
     // puertas, notas, ventanas, personajes y bichos
     for (const d of map.doors) {
-      const obj = makeDoor(d);
+      const obj = flatten(makeDoor(d));
       obj.position.set(d.x, d.y, d.z);
       obj.rotation.y = d.ry;
       this.group.add(obj);
@@ -201,7 +200,7 @@ export class Level3D {
       this.smalls.push(paper);
     }
     for (const w of map.windows) {
-      const obj = makeWindow();
+      const obj = flatten(makeWindow(), ['face']);
       obj.position.set(w.x, w.y, w.z);
       obj.rotation.y = w.ry;
       this.group.add(obj);
@@ -246,6 +245,29 @@ export class Level3D {
       nozzle.position.set(v.x, v.y + 0.12, v.z);
       this.group.add(nozzle);
       this.steam.push({ ...v, sprites });
+    }
+
+    this.freezeStatics([
+      ...this.animated.map((a) => a.obj),
+      ...this.steam.flatMap((s) => s.sprites),
+      ...this.moths.map((m) => m.obj),
+      ...this.rats.map((r) => r.obj),
+      ...this.npcs.map((n) => n.model.group),
+      ...this.crates.values(),
+    ]);
+  }
+
+  /**
+   * Lo que no se mueve calcula su matriz una sola vez: three.js deja de
+   * recorrerlo y recalcularlo en cada fotograma (son miles de objetos).
+   */
+  private freezeStatics(moving: THREE.Object3D[]) {
+    const keep = new Set(moving);
+    this.group.updateMatrixWorld(true);
+    for (const o of this.group.children) {
+      if (keep.has(o)) continue;
+      o.traverse((c) => (c.matrixAutoUpdate = false));
+      o.matrixWorldAutoUpdate = false;
     }
   }
 
@@ -607,22 +629,6 @@ export class Level3D {
     }
   }
 
-  private buildDiags(wallMats: THREE.Material[], wallScale: number, wallHeight: number) {
-    const sink = new QuadSink();
-    for (const d of this.map.diags) {
-      const m = this.map.storeys[d.s ?? 0];
-      const tx = Math.cos(d.ry);
-      const tz = -Math.sin(d.ry);
-      const p0: [number, number] = [d.x - (tx * d.w) / 2, d.z - (tz * d.w) / 2];
-      const p1: [number, number] = [d.x + (tx * d.w) / 2, d.z + (tz * d.w) / 2];
-      const i = Math.floor(d.z / CELL) * m.w + Math.floor(d.x / CELL);
-      const base = floorAt(m, d.x + Math.sin(d.ry) * 0.3, d.z + Math.cos(d.ry) * 0.3);
-      const top = m.ceil[i] ?? base + 2.6;
-      this.panel(sink, wallMats[d.wall] ?? wallMats[0], p0, p1, Number.isFinite(base) ? base : 0, top, [Math.sin(d.ry), 0, Math.cos(d.ry)], wallScale, wallHeight, d.x + d.z);
-    }
-    for (const mesh of sink.meshes()) this.group.add(mesh);
-  }
-
   /** Halo de luz alrededor de una bombilla o un cartel. */
   private addGlow(parent: THREE.Object3D, color: number, size: number, base: number, y = -0.14, z = 0) {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: steamTexture(), color, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: base, fog: false }));
@@ -842,12 +848,7 @@ export class Level3D {
     for (const g of this.glows) (g.sprite.material as THREE.SpriteMaterial).opacity = g.base * (0.85 + 0.15 * Math.sin(time * 3 + g.seed));
     this.steadyPanels.color.copy(this.glow).multiplyScalar(Math.max(0.03, on));
     this.flickerPanels.color.copy(this.glow).multiplyScalar(Math.max(0.03, flicker * on));
-    this.group.children.forEach((c) => {
-      if (c instanceof THREE.Mesh && c.material instanceof THREE.ShaderMaterial) c.material.uniforms.uTime.value = time;
-    });
     for (const a of this.animated) {
-      if (a.kind === 'hanglamp') a.obj.rotation.z = Math.sin(time * 0.7 + a.seed) * 0.05;
-      if (a.kind === 'fog') a.obj.children.forEach((s, k) => (s.position.x += Math.sin(time * 0.1 + k + a.seed) * 0.003));
       if (a.kind === 'bulb') a.obj.rotation.z = Math.sin(time * 0.9 + a.seed) * 0.04;
       if (a.kind === 'drip') {
         // una gota cada pocos segundos, cae hasta el suelo
@@ -1009,6 +1010,38 @@ export class Level3D {
   }
 }
 
+/**
+ * Junta las piezas de un objeto que no se mueve en una sola malla por
+ * material: el mismo aspecto con muchas menos llamadas de dibujo. Las piezas
+ * nombradas en `keep` (hijos directos que se animan) se quedan sueltas.
+ */
+function flatten(obj: THREE.Group, keep: string[] = []): THREE.Group {
+  const out = new THREE.Group();
+  const kept = obj.children.filter((c) => keep.includes(c.name));
+  const lists = new Map<THREE.Material, THREE.BufferGeometry[]>();
+  let simple = true;
+  obj.updateMatrixWorld(true);
+  obj.traverse((o) => {
+    if (o === obj || kept.includes(o)) return;
+    if (o instanceof THREE.Mesh && !Array.isArray(o.material)) {
+      const g = (o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone()).applyMatrix4(o.matrixWorld);
+      for (const name of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(name)) g.deleteAttribute(name);
+      if (!g.attributes.normal) g.computeVertexNormals();
+      if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+      lists.set(o.material, [...(lists.get(o.material) ?? []), g]);
+    } else if (o.type !== 'Group' && o.type !== 'Object3D') simple = false;
+  });
+  const merged = [...lists].map(([m, list]) => [m, mergeGeometries(list)] as const);
+  if (!simple || merged.some(([, g]) => !g)) return obj;
+  for (const [m, g] of merged) out.add(new THREE.Mesh(g!, m));
+  if (kept.length) out.add(...kept);
+  return out;
+}
+
+/** Materiales que comparten todas las puertas y ventanas iguales (en vez de uno por objeto). */
+const sharedMats = new Map<string, THREE.Material>();
+const shared = (key: string, make: () => THREE.Material) => sharedMats.get(key) ?? sharedMats.set(key, make()).get(key)!;
+
 function itemModel(kind: ItemKind): THREE.Group {
   switch (kind) {
     case 'agua': return makeBottle();
@@ -1023,9 +1056,9 @@ function itemModel(kind: ItemKind): THREE.Group {
 /** Puerta según su aspecto. Las de paso libre se dibujan abiertas. */
 function makeDoor(d: Door): THREE.Group {
   const colors = { steel: 0x4f5450, white: 0xcfcfc6, wood: 0x7a5a3a, double: 0xb8bab2 } as const;
-  const leafMat = litMaterial({ color: colors[d.look] }, 0.3);
-  const frameMat = litMaterial({ color: d.look === 'wood' ? 0x4a3420 : 0x2f322f }, 0.3);
-  const metal = litMaterial({ color: 0xa0a09a }, 0.3);
+  const leafMat = shared(`leaf${d.look}`, () => litMaterial({ color: colors[d.look] }, 0.3));
+  const frameMat = shared(`frame${d.look === 'wood'}`, () => litMaterial({ color: d.look === 'wood' ? 0x4a3420 : 0x2f322f }, 0.3));
+  const metal = shared('metal', () => litMaterial({ color: 0xa0a09a }, 0.3));
   const g = new THREE.Group();
   const w = d.look === 'double' ? 1.8 : 1.0;
   const h = 2.1;
@@ -1051,7 +1084,7 @@ function makeDoor(d: Door): THREE.Group {
     bar.position.set(-side * (d.look === 'double' ? lw / 2 : lw * 0.8), 1.0, 0.05);
     leaf.add(bar);
     if (d.window || d.look === 'double') {
-      const glass = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.4), new THREE.MeshBasicMaterial({ color: 0x050607 }));
+      const glass = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.4), shared('doorglass', () => new THREE.MeshBasicMaterial({ color: 0x050607 })));
       glass.position.set((-side * lw) / 2, 1.6, 0.027);
       leaf.add(glass);
     }
@@ -1071,15 +1104,15 @@ function makeDoor(d: Door): THREE.Group {
 /** Ventana oscura: a veces se asoma una cara (se muestra desde el juego). */
 function makeWindow(): THREE.Group {
   const g = new THREE.Group();
-  const frame = litMaterial({ color: 0x3a3a34 }, 0.3);
+  const frame = shared('winframe', () => litMaterial({ color: 0x3a3a34 }, 0.3));
   for (const [w, h, x, y] of [[1.1, 0.08, 0, 1.0], [1.1, 0.08, 0, 1.9], [0.08, 0.98, -0.55, 1.45], [0.08, 0.98, 0.55, 1.45], [0.04, 0.9, 0, 1.45]]) {
     const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.08), frame);
     b.position.set(x, y, 0.03);
     g.add(b);
   }
-  const glass = new THREE.Mesh(new THREE.PlaneGeometry(1.02, 0.84), new THREE.MeshBasicMaterial({ color: 0x020304 }));
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(1.02, 0.84), shared('winglass', () => new THREE.MeshBasicMaterial({ color: 0x020304 })));
   glass.position.set(0, 1.45, 0.01);
-  const face = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), new THREE.MeshBasicMaterial({ map: windowFace(), transparent: true, fog: false }));
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), shared('winface', () => new THREE.MeshBasicMaterial({ map: windowFace(), transparent: true, fog: false })));
   face.position.set(0.22, 1.5, 0.015);
   face.name = 'face';
   face.visible = false;

@@ -52,7 +52,3 @@ export function closeSettings() {
   onClose?.();
   onClose = null;
 }
-
-export function settingsOpen(): boolean {
-  return !$('settings').hidden;
-}

@@ -100,12 +100,6 @@ function chairStack(): THREE.Group {
   return g;
 }
 
-function partition(w = 4): THREE.Group {
-  const fabric = mat(0x7d7867);
-  const frame = mat(0x9a968a);
-  return group(box(w, 1.35, 0.08, fabric, 0, 0.7, 0), box(w, 0.04, 0.1, frame, 0, 1.39, 0), box(0.06, 1.4, 0.1, frame, w / 2, 0.7, 0), box(0.06, 1.4, 0.1, frame, -w / 2, 0.7, 0));
-}
-
 function plant(): THREE.Group {
   const g = group(cyl(0.22, 0.16, 0.4, mat(0x6b4a33), 0, 0.2, 0), cyl(0.2, 0.2, 0.02, mat(0x2a1f14), 0, 0.39, 0));
   const dead = mat(0x5d5532);
@@ -154,15 +148,6 @@ function fallenTile(): THREE.Group {
   return group(t, bit);
 }
 
-function ceilingHole(): THREE.Group {
-  // hueco negro donde falta una placa, con un cable colgando
-  const hole = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.6), new THREE.MeshBasicMaterial({ color: 0x050403 }));
-  hole.rotation.x = Math.PI / 2;
-  hole.position.y = -0.01;
-  const wire = cyl(0.008, 0.008, 0.5, mat(0x222222), 0.1, -0.25, 0.05, 4);
-  return group(hole, wire);
-}
-
 function tube(): THREE.Group {
   const t = cyl(0.016, 0.016, 1.2, mat(0xe8e8e0, { emissive: 0x111111 }), 0, 0.016, 0, 8);
   t.rotation.z = Math.PI / 2;
@@ -170,24 +155,8 @@ function tube(): THREE.Group {
   return group(t, shard);
 }
 
-function hangLamp(): THREE.Group {
-  // fluorescente medio descolgado, colgando de un cable
-  const housing = box(1.2, 0.06, 0.3, mat(0xb8b3a2), 0.4, -0.55, 0);
-  housing.rotation.z = -0.55;
-  const t = cyl(0.015, 0.015, 1.1, mat(0x9c9a92), 0.4, -0.6, 0.05, 6);
-  t.rotation.z = Math.PI / 2 - 0.55;
-  const cable = cyl(0.006, 0.006, 0.35, mat(0x222222), -0.1, -0.17, 0, 4);
-  return group(housing, t, cable);
-}
-
 function outlet(): THREE.Group {
   return group(box(0.08, 0.12, 0.015, mat(0xe8e2cf), 0, 0, 0), box(0.012, 0.02, 0.005, mat(0x222222), -0.015, 0.02, 0.01), box(0.012, 0.02, 0.005, mat(0x222222), 0.015, 0.02, 0.01));
-}
-
-function wallVent(): THREE.Group {
-  const g = group(box(0.5, 0.3, 0.02, mat(0xcfc9b4), 0, 0, 0));
-  for (let i = 0; i < 5; i++) g.add(box(0.44, 0.02, 0.02, mat(0x3a362c), 0, -0.1 + i * 0.05, 0.012));
-  return g;
 }
 
 function doorToWall(): THREE.Group {
@@ -259,13 +228,6 @@ function cone(): THREE.Group {
   return group(box(0.4, 0.03, 0.4, mat(0xd65a1c), 0, 0.015, 0), cyl(0.02, 0.15, 0.6, mat(0xe0661f), 0, 0.32, 0, 12), cyl(0.09, 0.11, 0.08, mat(0xeeeeee), 0, 0.35, 0, 12));
 }
 
-function dockDoor(): THREE.Group {
-  const g = group(box(3.4, 3.2, 0.06, mat(0x7c8288), 0, 1.6, 0));
-  for (let y = 0.1; y < 3.2; y += 0.2) g.add(box(3.4, 0.03, 0.08, mat(0x5a5f64), 0, y, 0.01));
-  g.add(box(3.6, 0.15, 0.1, mat(0xc9a227), 0, 3.25, 0), box(0.1, 3.3, 0.1, mat(0xc9a227), -1.75, 1.65, 0), box(0.1, 3.3, 0.1, mat(0xc9a227), 1.75, 1.65, 0));
-  return g;
-}
-
 function meg(): THREE.Group {
   // mesa de la M.E.G. con suministros y una lámpara
   const g = table();
@@ -326,18 +288,6 @@ function wires(): THREE.Group {
   return g;
 }
 
-function metalDoor(): THREE.Group {
-  const steel = mat(0x4f5450);
-  return group(
-    box(1.0, 2.1, 0.05, steel, 0, 1.05, 0.025),
-    box(0.1, 2.2, 0.08, mat(0x2f322f), -0.55, 1.1, 0.03),
-    box(0.1, 2.2, 0.08, mat(0x2f322f), 0.55, 1.1, 0.03),
-    box(1.2, 0.1, 0.08, mat(0x2f322f), 0, 2.2, 0.03),
-    box(0.3, 0.06, 0.06, mat(0x999999), 0.3, 1.0, 0.08),
-    box(0.6, 0.12, 0.01, mat(0xc9a227), 0, 1.7, 0.055),
-  );
-}
-
 // ---- piezas con textura propia ----
 
 const texMats = new Map<string, THREE.Material>();
@@ -389,23 +339,6 @@ function arch(w = 1.6, h = 2.2): THREE.Group {
   return group(new THREE.Mesh(geo, mat(0xd8cc8c)));
 }
 
-/** Arco ciego: un arco dibujado en la pared que no lleva a ninguna parte. */
-function blindArch(w = 1.6, h = 2.2): THREE.Group {
-  const r = w / 2;
-  const s = new THREE.Shape();
-  s.moveTo(-w / 2, 0);
-  s.lineTo(-w / 2, h - r);
-  s.absarc(0, h - r, r, Math.PI, 0, true);
-  s.lineTo(w / 2, 0);
-  s.lineTo(-w / 2, 0);
-  const inner = new THREE.Mesh(new THREE.ShapeGeometry(s, 12), mat(0x6e6438));
-  inner.position.z = 0.012;
-  const frame = new THREE.Mesh(new THREE.ShapeGeometry(s, 12), mat(0xb9ac6c));
-  frame.scale.set(1.12, 1.05, 1);
-  frame.position.z = 0.006;
-  return group(frame, inner);
-}
-
 // ---- Nivel 1 ----
 
 /** Tubería con fuga en el techo: gotea (la gota se anima). */
@@ -418,20 +351,6 @@ function drip(): THREE.Group {
   drop.name = 'drop';
   drop.scale.y = 1.6;
   return group(p, joint, drop);
-}
-
-/** Tubería larga bajo el techo (w = largo). */
-function longPipe(w = 20): THREE.Group {
-  const m = mat(0x5d6366);
-  const p = cyl(0.14, 0.14, w, m, 0, 0, 0, 12);
-  p.rotation.z = Math.PI / 2;
-  const g = group(p);
-  for (let x = -w / 2 + 1.5; x < w / 2; x += 3) {
-    const f = cyl(0.19, 0.19, 0.08, mat(0x464b4e), x, 0, 0, 12);
-    f.rotation.z = Math.PI / 2;
-    g.add(f, box(0.04, 0.35, 0.04, mat(0x333333), x + 0.3, 0.2, 0));
-  }
-  return g;
 }
 
 /** Montón de escombros: losas rotas, madera y hierros. */
@@ -502,11 +421,6 @@ function megCloth(): THREE.Group {
 
 function megFlag(): THREE.Group {
   return group(plane(0.7, 1.2, texMat('megflag', 128, 220, megPainter(false)), 0, 0, 0.02), box(0.8, 0.03, 0.04, mat(0x444444), 0, 0.6, 0.03));
-}
-
-/** Franja de pintura naranja en una columna o pared: sirve de referencia. */
-function paint(h = 3): THREE.Group {
-  return group(box(1.2, h, 0.01, mat(0xd8641e), 0, h / 2, 0.006), box(1.2, 0.08, 0.012, mat(0xf0f0e8), 0, 1.6, 0.008));
 }
 
 /** Cuadro eléctrico con piloto rojo: punto de referencia del pasillo infinito. */
@@ -797,17 +711,6 @@ function car(): THREE.Group {
   return g;
 }
 
-/** Contenedor de carga (6 × 2,4 m). */
-let contSeed = 0;
-function container(): THREE.Group {
-  const colors = [0x8a3a22, 0x2e5a7a, 0x5a6a2e, 0x7a6a2e];
-  const m = mat(colors[contSeed++ % colors.length]);
-  const g = group(box(2.4, 2.6, 6, m, 0, 1.3, 0));
-  for (let z = -2.8; z <= 2.81; z += 0.4) g.add(box(2.44, 2.5, 0.06, m, 0, 1.3, z));
-  g.add(box(2.3, 2.4, 0.04, mat(0x3a3a36), 0, 1.3, 3.02), box(0.05, 2.2, 0.06, mat(0x888888), 0.4, 1.3, 3.05), box(0.05, 2.2, 0.06, mat(0x888888), -0.4, 1.3, 3.05));
-  return g;
-}
-
 /** Líneas de aparcamiento pintadas en el suelo. */
 function parkLines(w = 2.6): THREE.Group {
   const m = mat(0xc8c0a0);
@@ -817,7 +720,7 @@ function parkLines(w = 2.6): THREE.Group {
 // ---------------------------------------------------------------------------
 
 /** Objetos que se mueven o tienen textura propia: no se fusionan. */
-export const DYNAMIC_PROPS = new Set(['text', 'fog', 'hanglamp', 'drip', 'bulb', 'violet']);
+export const DYNAMIC_PROPS = new Set(['text', 'drip', 'bulb', 'violet']);
 
 export function buildProp(p: Prop): THREE.Object3D | null {
   switch (p.type) {
@@ -825,25 +728,20 @@ export function buildProp(p: Prop): THREE.Object3D | null {
     case 'desk': return desk();
     case 'cabinet': return cabinet();
     case 'chairstack': return chairStack();
-    case 'partition': return partition(p.w);
     case 'plant': return plant();
     case 'vending': return vending();
     case 'cooler': return cooler();
     case 'table': return table();
     case 'box': return box_();
     case 'tile': return fallenTile();
-    case 'hole': return ceilingHole();
     case 'tube': return tube();
-    case 'hanglamp': return hangLamp();
     case 'outlet': return outlet();
-    case 'vent': return wallVent();
     case 'door2wall': return doorToWall();
     case 'shelf': return shelf(p.d);
     case 'pallet': return pallet();
     case 'barrel': return barrel();
     case 'forklift': return forklift();
     case 'cone': return cone();
-    case 'dockdoor': return dockDoor();
     case 'meg': return meg();
     case 'cot': return cot();
     case 'radio': return radio();
@@ -851,15 +749,11 @@ export function buildProp(p: Prop): THREE.Object3D | null {
     case 'gauge': return gauge();
     case 'valve': return valve();
     case 'wires': return wires();
-    case 'metaldoor': return metalDoor();
     case 'arch': return arch(p.w, p.h);
-    case 'blindarch': return blindArch(p.w, p.h);
     case 'drip': return drip();
-    case 'pipe': return longPipe(p.w);
     case 'debris': return debris();
     case 'megcloth': return megCloth();
     case 'megflag': return megFlag();
-    case 'paint': return paint(p.h);
     case 'panel': return elecPanel();
     case 'tent': return tent();
     case 'scaffold': return scaffold();
@@ -883,7 +777,6 @@ export function buildProp(p: Prop): THREE.Object3D | null {
     case 'violet': return violet();
     case 'railing': return railing(p.w);
     case 'car': return car();
-    case 'container': return container();
     case 'parklines': return parkLines(p.w);
     case 'text': {
       const w = p.w ?? 2;
@@ -892,43 +785,13 @@ export function buildProp(p: Prop): THREE.Object3D | null {
       mesh.position.z = 0.012;
       return group(mesh);
     }
-    case 'fog': {
-      // jirones de niebla baja que se mueven despacio
-      const g = new THREE.Group();
-      const tex = fogTexture();
-      for (let i = 0; i < 7; i++) {
-        const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, color: 0x9aa4ab, transparent: true, opacity: 0.18, depthWrite: false }));
-        s.scale.set(5 + Math.random() * 4, 1.6, 1);
-        s.position.set((Math.random() - 0.5) * 8, 0.6 + Math.random() * 0.6, (Math.random() - 0.5) * 8);
-        g.add(s);
-      }
-      return g;
-    }
   }
   return null;
 }
 
-let fogTex: THREE.Texture | null = null;
-function fogTexture(): THREE.Texture {
-  fogTex ??= canvasTexture(
-    128,
-    64,
-    (ctx, w, h) => {
-      const g = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
-      g.addColorStop(0, 'rgba(255,255,255,0.8)');
-      g.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, w, h);
-    },
-    false,
-  );
-  return fogTex;
-}
-
 /** Caja de suministros (Nivel 1). Abierta: sin tapa. */
 export function makeCrate(open: boolean): THREE.Group {
-  const tex = crateTex();
-  const wood = litMaterial({ map: tex }, 0.2);
+  const wood = (crateWood ??= litMaterial({ map: crateTex() }, 0.2));
   const g = group(box(0.85, 0.6, 0.85, wood, 0, 0.3, 0));
   const lid = box(0.9, 0.06, 0.9, wood, 0, 0.63, 0);
   lid.name = 'lid';
@@ -936,12 +799,15 @@ export function makeCrate(open: boolean): THREE.Group {
     lid.position.set(0.55, 0.05, 0.3);
     lid.rotation.set(0, 0.6, 1.4);
   }
-  const label = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.15), litMaterial({ map: stencil(), transparent: true }, 0.2));
+  const label = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.15), (crateLabel ??= litMaterial({ map: stencil(), transparent: true }, 0.2)));
   label.position.set(0, 0.35, 0.428);
   g.add(lid, label);
   return g;
 }
 
+// (todas las cajas comparten materiales)
+let crateWood: THREE.Material | null = null;
+let crateLabel: THREE.Material | null = null;
 let crateT: THREE.Texture | null = null;
 const crateTex = () => (crateT ??= crateTexture());
 let stencilT: THREE.Texture | null = null;

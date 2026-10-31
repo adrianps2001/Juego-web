@@ -138,15 +138,6 @@ export interface Zone {
   d: number;
 }
 
-/** Panel de pared en diagonal (giros de 45°). */
-export interface Diag {
-  s?: number; // planta (0 = la de abajo)
-  x: number;
-  z: number;
-  ry: number;
-  w: number;
-  wall: number;
-}
 export interface Exit {
   s?: number; // planta (0 = la de abajo)
   x: number;
@@ -185,15 +176,6 @@ export interface Prop {
   h?: number;
   text?: string;
 }
-export interface Glitch {
-  x: number;
-  y: number;
-  z: number;
-  ry: number;
-  w: number;
-  h: number;
-  noclip: boolean;
-}
 export interface Vent {
   s?: number; // planta (0 = la de abajo)
   x: number;
@@ -223,7 +205,6 @@ export interface LevelMap {
   lairs: Lair[];
   lamps: Lamp[];
   props: Prop[];
-  glitches: Glitch[];
   vents: Vent[];
   notes: Note[];
   doors: Door[];
@@ -231,7 +212,6 @@ export interface LevelMap {
   loops: Loop[];
   npcs: Npc[];
   zones: Zone[];
-  diags: Diag[];
   /** Ventanas peligrosas al final de algunos túneles. */
   windows: { x: number; y: number; z: number; ry: number; s?: number }[];
   /** Puntos donde viven bichos ambientales (polillas, ratas). */
@@ -578,7 +558,6 @@ export class Builder {
       lairs: [],
       lamps: [],
       props: [],
-      glitches: [],
       vents: [],
       notes: [],
       doors: [],
@@ -586,7 +565,6 @@ export class Builder {
       loops: [],
       npcs: [],
       zones: [],
-      diags: [],
       windows: [],
       critters: [],
       wakes: [],
@@ -848,24 +826,6 @@ export class Builder {
       m.ceil[i] = m.floor[i] + top;
     });
     return this.prop('arch', x + w / 2, z + d / 2, ry, { w: Math.max(w, d), h: top });
-  }
-
-  /** Panel diagonal que corta una esquina (los túneles giran a 45°). */
-  diag(x: number, z: number, ry: number, w: number, wall = 0): this {
-    const m = this.map;
-    m.diags.push({ x, z, ry, w, wall, s: this.cur });
-    // lo que queda detrás del panel no se puede pisar
-    const nx = -Math.sin(ry);
-    const nz = -Math.cos(ry);
-    for (let t = -w / 2; t <= w / 2; t += CELL / 2) {
-      for (let k = 0.1; k < w / 2; k += CELL / 2) {
-        const px = x + Math.cos(ry) * t + nx * k;
-        const pz = z - Math.sin(ry) * t + nz * k;
-        const i = cellOf(pz) * m.w + cellOf(px);
-        if (i >= 0 && i < m.flags.length && !(m.flags[i] & F_SOLID)) m.flags[i] |= F_BLOCK;
-      }
-    }
-    return this;
   }
 
   window(x: number, z: number, ry: number): this {

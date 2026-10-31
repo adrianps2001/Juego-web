@@ -83,6 +83,14 @@ export class Post {
     this.target.setSize(Math.max(1, Math.floor(w * this.ratio)), Math.max(1, Math.floor(h * this.ratio)));
   }
 
+  /** Compila en segundo plano los shaders de la escena tal como se usarán (dibujando en la imagen interna). */
+  compile(): Promise<unknown> {
+    this.renderer.setRenderTarget(this.target);
+    const done = this.renderer.compileAsync(this.scene, this.camera);
+    this.renderer.setRenderTarget(null);
+    return done;
+  }
+
   render(time: number, insanity: number, damage: number) {
     const u = this.film.uniforms;
     u.uTime.value = time;

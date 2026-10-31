@@ -8,7 +8,7 @@
 
 import { L0_DECOR, L0_ENDS, L1_DECOR, L1_ENDS, L2_DECOR, L2_ENDS } from './decor';
 import { FACE, OPP, between, makeRng, maze, pick, take, wallSpots, type Block, type Maze, type Port, type Rng, type Style } from './maze';
-import { Builder, F_PIT, F_SOLID, cellOf, flagsAt, type EntityKind, type ItemKind, type LevelDef, type LevelMap } from './world';
+import { Builder, F_BLOCK, F_HOLE, F_PIT, F_SOLID, cellOf, flagsAt, type EntityKind, type ItemKind, type LevelDef, type LevelMap } from './world';
 
 
 export const LEVELS: LevelDef[] = [
@@ -182,13 +182,29 @@ function vertical(b: Builder, R: Rng, m0: Maze, reserved1: BRect[], drops: numbe
   return force;
 }
 
+/**
+ * Un sitio libre dentro de un bloque (en la planta en la que está el
+ * constructor): cerca del centro y nunca dentro de una pared, un mueble o un
+ * hueco (en los pasillos estrechos o con una columna en medio podía pasar).
+ */
+function freeSpot(b: Builder, R: Rng, k: Block, spread: number): { x: number; z: number } | null {
+  const c = mid(k);
+  const tries = [
+    { x: c.x + between(R, -spread, spread), z: c.z + between(R, -spread, spread) },
+    c,
+    { x: k.area.x + 0.5, z: k.area.z + 0.5 },
+    { x: k.area.x + k.area.w - 0.5, z: k.area.z + k.area.d - 0.5 },
+  ];
+  return tries.find((p) => !(flagsAt(b.map, cellOf(p.x), cellOf(p.z)) & (F_SOLID | F_BLOCK | F_HOLE | F_PIT))) ?? null;
+}
+
 function scatterItems(b: Builder, R: Rng, mazes: Maze[], kinds: ItemKind[], n: number) {
   const spots = mazes.flatMap((m) => [...m.ends, ...take(R, m.rooms, 30)].map((k) => ({ k, s: m.o.storey })));
   for (const { k, s } of take(R, spots, n)) {
     if (k.kind !== 'hall' && k.kind !== 'room') continue;
-    const c = mid(k);
     b.storey(s);
-    b.item(pick(R, kinds), c.x + between(R, -0.4, 0.4), c.z + between(R, -0.4, 0.4));
+    const p = freeSpot(b, R, k, 0.4);
+    if (p) b.item(pick(R, kinds), p.x, p.z);
   }
   b.storey(0);
 }
@@ -198,9 +214,9 @@ function scatterLairs(b: Builder, R: Rng, mazes: Maze[], start: Block, list: [En
   const spots = mazes.flatMap((m) => solidGround(m).filter((k) => m.o.storey > 0 || (near.get(k) ?? 99) > 8).map((k) => ({ k, s: m.o.storey })));
   for (const [kind, lines] of list) {
     const { k, s } = pick(R, spots);
-    const c = mid(k);
     b.storey(s);
-    b.lair(kind, c.x, c.z, lines);
+    const p = freeSpot(b, R, k, 0);
+    if (p) b.lair(kind, p.x, p.z, lines);
   }
   b.storey(0);
 }

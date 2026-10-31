@@ -76,7 +76,8 @@ const HIT_TEXT: Record<EntityKind, string> = {
 };
 
 export class Game {
-  private renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+  // el lienzo solo recibe el posprocesado: la escena se dibuja en otra imagen con su propia profundidad
+  private renderer = new THREE.WebGLRenderer({ antialias: false, depth: false, powerPreference: 'high-performance' });
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(75, 1, 0.03, 120);
   private torchPower = 0; // intensidad de la linterna propia (0 = apagada)
@@ -400,11 +401,27 @@ export class Game {
       if (token !== this.levelToken || !this.running) return;
       this.level = new Level3D(map, this.picked);
       this.scene.add(this.level.group);
+      this.warmShaders();
       this.applyShifts([...this.closedShifts]);
       for (const fl of this.flares.values()) fl.model.group.visible = fl.data.level === level;
     };
     if (themeReady(L.theme)) build();
     else void loadThemeTextures(L.theme).then(build);
+  }
+
+  /**
+   * Compila ya, en segundo plano, los shaders de lo que aparecerá más tarde
+   * (criaturas, compañeros y bengalas): si no, se compilan la primera vez que
+   * salen y el juego da un tirón justo en ese momento.
+   */
+  private warmShaders() {
+    const extra = new THREE.Group();
+    for (const kind of ['smiler', 'hound', 'faceling', 'skinstealer', 'figure', 'clump', 'duller']) extra.add(makeEnemy(kind, 1).group);
+    extra.add(makeHumanoid(0xffffff, 'A').group, makeLitFlare().group);
+    extra.position.y = -1000;
+    this.scene.add(extra);
+    const done = () => this.scene.remove(extra);
+    this.post.compile().then(done, done);
   }
 
   /** Tras escapar: volver a empezar desde el Nivel 0. */
@@ -620,9 +637,8 @@ export class Game {
     else if (this.frameAvg < 1 / 56 && r < PIXEL_RATIO - 0.001) r += 0.05;
     if (r === this.pixelRatio) return;
     this.pixelRatio = r;
-    this.renderer.setPixelRatio(r);
+    // solo cambia la imagen interna de la escena: redimensionar el lienzo daba un tirón cada vez
     this.post.setPixelRatio(r);
-    this.resize();
   }
 
   private torchDir = new THREE.Vector3();
