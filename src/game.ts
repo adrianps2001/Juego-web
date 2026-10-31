@@ -2,16 +2,17 @@ import * as THREE from 'three';
 import type { Hud } from './hud';
 import { ITEM_INFO, Inventory } from './inventory';
 import { Level3D } from './level3d';
-import { loadThemeTextures, themeReady } from './textures';
+import { canvasTexture, loadThemeTextures, setAnisotropy, themeReady } from './textures';
 import { ESCAPED, LEVELS, getMap } from './levels';
-import { MAX_TORCHES, lightUniforms } from './lighting';
+import { MAX_TORCHES, lightUniforms, litMaterial } from './lighting';
 import { Anim, makeBattery, makeBottle, makeCan, makeEnemy, makeEnergyBar, makeFlareStick, makeHumanoid, makeLitFlare, makeMedkit, makeViewTorch, type EnemyModel, type Humanoid } from './models';
 import { Post } from './post';
 import { Screamer, type ScreamerKind } from './screamer';
-import type { ClientMessage, EntityState, Flare, HostMessage, PlayerState, Pose } from './protocol';
+import type { ClientMessage, EntityState, Flare, HostMessage, Mark, PlayerState, Pose } from './protocol';
 import { getSettings, onSettings, type Settings } from './settings';
 import type { Sound } from './sound';
-import { F_DEEP, PLAYER_HEIGHT, STEP, cellOf, ceilOver, collideAll, flagsAt, floorAt, floorUnder, gridAt, inZone, isDarkAll, setShift, type EntityKind, type ItemKind } from './world';
+import type { Voice } from './voice';
+import { CELL, F_DEEP, F_SOLID, PLAYER_HEIGHT, STEP, cellOf, ceilOver, collideAll, flagsAt, floorAt, floorUnder, gridAt, inZone, isDarkAll, lineOfSight, setShift, type EntityKind, type ItemKind, type LevelMap } from './world';
 
 const EYE = 1.6;
 const RADIUS = 0.3;
@@ -22,18 +23,28 @@ const CROUCH_EYE = 1.0;
 const GRAVITY = 20;
 const JUMP = 4.6;
 const RESPAWN_TIME = 4;
+// caído: un compañero tiene este tiempo para levantarte (manteniendo E este otro)
+const DOWNED_TIME = 30;
+const REVIVE_TIME = 3;
+// la salida abierta se oye desde aquí (metros)
+const EXIT_HUM_RANGE = 28;
 const TORCH_POWER = 1.6;
 const MOUSE_SPEED = 0.0022;
-// se dibuja a media resolución: se ve algo más borroso pero va fluido. Si el
-// equipo no llega a ~40 FPS, la resolución baja sola (hasta MIN_PIXEL_RATIO)
-const PIXEL_RATIO = 0.5;
-const MIN_PIXEL_RATIO = 0.3;
-/**
- * Tope de píxeles de la imagen (equivale a 1080p a la mitad). Con el zoom del
- * navegador alejado la ventana tiene muchos más píxeles CSS y, sin tope, se
- * dibujaban muchísimos más (iba fatal); con el zoom acercado, menos.
- */
-const MAX_PIXELS = 960 * 540;
+// se dibuja a media resolución: se ve algo más borroso pero va fluido.
+// Tope de píxeles de la imagen: con el zoom del navegador alejado la ventana
+// tiene muchos más píxeles CSS y, sin tope, se dibujaban muchísimos más.
+// Lo que más cuesta es el relleno (cada píxel pasa por el shader de luz), por
+// eso con zoom acercado (menos píxeles) iba mucho más fluido.
+const QUALITY = {
+  alta: { ratio: 0.5, pixels: 960 * 540, detail: 1 },
+  media: { ratio: 0.4, pixels: 768 * 432, detail: 1 },
+  baja: { ratio: 0.3, pixels: 576 * 324, detail: 0 },
+};
+const PIXEL_RATIO = QUALITY.alta.ratio;
+// en automático la resolución baja sola hasta aquí si no se llega a ~50 FPS
+const MIN_PIXEL_RATIO = 0.25;
+// y por debajo de esta se quita además el detalle de suciedad de las superficies
+const DETAIL_RATIO = 0.36;
 // movimientos de ratón más grandes que esto en un solo evento son fallos del navegador
 const MAX_MOUSE_JUMP = 250;
 // por debajo de esta altura se ha caído por un agujero
@@ -53,6 +64,7 @@ interface Enemy {
   vx: number; // velocidad estimada entre actualizaciones (para anticipar)
   vz: number;
   at: number; // cuándo llegó la última actualización
+  stepT: number; // para sus pisadas al correr
 }
 
 type StateMsg = Extract<HostMessage, { t: 'state' }>;
@@ -135,6 +147,11 @@ export class Game {
   private boost = 0; // segundos de energía ilimitada (barrita)
   private battery = 100;
   private dead = 0;
+  private downed = false; // caído esperando a que te levanten
+  private reviving = 0; // segundos que llevas levantando a un compañero
+  private marks = new Map<number, THREE.Mesh>();
+  private voice: Voice | null = null;
+  private markMats = new Map<string, THREE.Material>();
   private damage = 0;
   private shake = 0;
   private time = 0;
@@ -151,13 +168,14 @@ export class Game {
   private lockedAt = 0;
   private hurtSound = 0;
   private pixelRatio = PIXEL_RATIO;
-  /** Cuánto hay que reducir la resolución para no pasar de MAX_PIXELS (1 = nada). */
+  /** Cuánto hay que reducir la resolución para no pasar del tope de píxeles (1 = nada). */
   private fit = 1;
   private levelToken = 0;
   private lastFloor = 0; // último suelo pisado (para saber si se cae a un agujero)
   private loopWraps = 0;
   private frameAvg = 1 / 60;
   private resClock = 3;
+  private quality: Settings['quality'] = 'auto';
 
   constructor(
     private container: HTMLElement,
@@ -220,7 +238,8 @@ export class Game {
         this.scene.add(r.model.group);
       }
       r.target = p;
-      r.model.group.visible = this.canSee(p);
+      r.model.group.visible = this.canSee(p) || (p.level === this.pose.level && !!p.downed);
+      r.model.group.rotation.x = p.downed ? -1.45 : 0; // caído: tumbado boca arriba
       r.model.setLight(p.light);
     }
     for (const [id, r] of this.remotes) {
@@ -233,7 +252,7 @@ export class Game {
     for (const e of entities) {
       let en = this.enemies.get(e.id);
       if (!en) {
-        en = { model: makeEnemy(e.kind, e.id), target: e, vx: 0, vz: 0, at: performance.now() };
+        en = { model: makeEnemy(e.kind, e.id), target: e, vx: 0, vz: 0, at: performance.now(), stepT: 0 };
         en.model.group.position.set(e.x, e.y, e.z);
         en.model.group.rotation.y = e.ry;
         this.enemies.set(e.id, en);
@@ -293,6 +312,7 @@ export class Game {
     for (const k of keys) {
       this.picked.delete(k);
       this.level?.restoreCrate(k);
+      this.level?.restoreItem(k);
     }
   }
 
@@ -374,6 +394,7 @@ export class Game {
     this.sound.setLevel(level);
     for (const r of this.remotes.values()) r.model.group.visible = r.target.level === level && !r.target.dead;
     for (const e of this.enemies.values()) e.model.group.visible = e.target.level === level;
+    for (const m of this.marks.values()) m.visible = m.userData.level === level;
 
     if (level === ESCAPED) {
       this.levelToken++;
@@ -520,8 +541,9 @@ export class Game {
   private resize = () => {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
-    this.fit = Math.min(1, Math.sqrt(MAX_PIXELS / Math.max(1, w * h * PIXEL_RATIO * PIXEL_RATIO)));
-    this.renderer.setPixelRatio(PIXEL_RATIO * this.fit);
+    const q = QUALITY[this.quality === 'auto' ? 'alta' : this.quality];
+    this.fit = Math.min(1, Math.sqrt(q.pixels / Math.max(1, w * h * q.ratio * q.ratio)));
+    this.renderer.setPixelRatio(q.ratio * this.fit);
     this.post.setPixelRatio(this.pixelRatio * this.fit);
     this.renderer.setSize(w, h);
     this.post.setSize(w, h);
@@ -531,6 +553,14 @@ export class Game {
 
   private applySettings(st: Settings) {
     this.settings = st;
+    if (st.quality !== this.quality) {
+      this.quality = st.quality;
+      const q = QUALITY[st.quality === 'auto' ? 'alta' : st.quality];
+      this.pixelRatio = q.ratio;
+      this.setDetail(q.detail);
+      this.resClock = 3;
+      this.resize();
+    }
     this.post.setBrightness(st.brightness);
     this.hud.showFps(st.showFps);
   }
@@ -655,18 +685,31 @@ export class Game {
 
   /** Resolución dinámica: baja si los fotogramas tardan, sube si sobra tiempo. */
   private adaptResolution(raw: number) {
-    if (raw > 0.25) return; // pestaña en segundo plano
-    this.frameAvg += (raw - this.frameAvg) * 0.05;
+    if (raw > 0.25 || this.quality !== 'auto') return; // pestaña en segundo plano o calidad fija
+    this.frameAvg += (raw - this.frameAvg) * 0.08;
     this.resClock -= raw;
     if (this.resClock > 0) return;
-    this.resClock = 2;
     let r = this.pixelRatio;
-    if (this.frameAvg > 1 / 40 && r > MIN_PIXEL_RATIO + 0.001) r -= 0.05;
-    else if (this.frameAvg < 1 / 56 && r < PIXEL_RATIO - 0.001) r += 0.05;
+    // baja deprisa si va mal (más aún si va muy mal) y sube despacio si sobra
+    if (this.frameAvg > 1 / 50 && r > MIN_PIXEL_RATIO + 0.001) {
+      r = Math.max(MIN_PIXEL_RATIO, r - (this.frameAvg > 1 / 32 ? 0.08 : 0.04));
+      this.resClock = 1;
+    } else if (this.frameAvg < 1 / 58 && r < PIXEL_RATIO - 0.001) {
+      r = Math.min(PIXEL_RATIO, r + 0.03);
+      this.resClock = 4;
+    } else this.resClock = 1;
     if (r === this.pixelRatio) return;
     this.pixelRatio = r;
+    this.setDetail(r < DETAIL_RATIO ? 0 : 1);
     // solo cambia la imagen interna de la escena: redimensionar el lienzo daba un tirón cada vez
     this.post.setPixelRatio(r * this.fit);
+  }
+
+  /** Detalle de superficies: suciedad, mezcla de losetas y filtro anisótropo. */
+  private setDetail(d: number) {
+    if (lightUniforms.uDetail.value === d) return;
+    lightUniforms.uDetail.value = d;
+    setAnisotropy(d ? 4 : 1);
   }
 
   private torchDir = new THREE.Vector3();
@@ -729,6 +772,19 @@ export class Game {
     this.dead -= dt;
     this.camera.position.y = Math.max(this.pose.y + 0.3, this.camera.position.y - dt * 2);
     this.camera.rotation.z = Math.min(1.2, this.camera.rotation.z + dt);
+    this.sound.setExit(0, 0);
+    this.sound.setChase(0);
+    if (this.downed) {
+      // si ya no queda nadie en pie en el nivel, no tiene sentido esperar; Espacio para rendirse
+      const mates = this.others.some((p) => p.level === this.pose.level && !p.dead);
+      if (!mates || (this.pressed.has('Space') && DOWNED_TIME - this.dead > 2)) this.dead = Math.min(this.dead, 0);
+      this.hud.downed(Math.max(0, Math.ceil(this.dead)));
+    }
+    this.sendAccum += dt;
+    if (this.sendAccum >= 0.25) {
+      this.sendAccum = 0;
+      this.sendPose();
+    }
     if (this.dead <= 0) {
       this.hud.showDeath(null);
       this.health = 70;
@@ -736,22 +792,60 @@ export class Game {
       this.stamina = 100;
       this.exhausted = false;
       this.pose.dead = false;
+      this.pose.downed = false;
+      this.downed = false;
       this.camera.rotation.z = 0;
-      this.enterLevel(this.pose.level);
+      // te despiertas en otro punto del nivel (no al principio)
+      this.placeAtWake();
+      this.hud.fade();
+      this.hud.notice('Te despiertas en otra parte, sin saber cómo has llegado.');
+      this.sendPose();
     }
+  }
+
+  /** Un compañero te ha levantado. */
+  onRevived(by: string) {
+    if (!this.downed || this.dead <= 0) return;
+    this.dead = 0;
+    this.downed = false;
+    this.pose.dead = false;
+    this.pose.downed = false;
+    this.health = 35;
+    this.sanity = Math.max(this.sanity, 40);
+    this.stamina = 50;
+    this.camera.rotation.z = 0;
+    this.hud.showDeath(null);
+    this.hud.notice(`${by} te ha levantado.`);
+    this.sendPose();
+  }
+
+  /** Lleva al jugador a uno de los puntos de despertar del nivel. */
+  private placeAtWake() {
+    const map = getMap(this.pose.level);
+    const list = map.wakes.length ? map.wakes : [{ x: map.spawn.x, z: map.spawn.z, s: map.spawn.s ?? 0 }];
+    const w = list[Math.floor(Math.random() * list.length)];
+    this.pose.x = w.x;
+    this.pose.z = w.z;
+    this.pose.y = floorAt(map.storeys[w.s] ?? map, w.x, w.z);
+    this.lastFloor = this.pose.y;
+    this.eyeY = this.pose.y + EYE;
+    this.vy = 0;
   }
 
   private die(reason: string) {
     if (this.dead > 0) return;
     const [mine, theirs] = DEATH_TEXT[reason] ?? DEATH_TEXT.cordura;
-    this.dead = RESPAWN_TIME;
+    // con un compañero en pie en el nivel, caes y puede levantarte
+    this.downed = this.others.some((p) => p.level === this.pose.level && !p.dead);
+    this.dead = this.downed ? DOWNED_TIME : RESPAWN_TIME;
     this.damage = 1;
     this.pose.dead = true;
+    this.pose.downed = this.downed;
     this.setLight(false);
     if (!this.scare(reason === 'smiler' || reason === 'hound' || reason === 'skinstealer' ? reason : 'face')) this.sound.scream();
     this.hud.setPrompt(null);
-    this.hud.showDeath(mine);
-    this.send({ t: 'died', reason: theirs });
+    this.hud.showDeath(mine, this.downed);
+    this.send({ t: 'died', reason: this.downed ? `ha caído: ${theirs}` : theirs });
     this.sendPose();
   }
 
@@ -891,6 +985,9 @@ export class Game {
     let smiler = 0;
     let hound = 0;
     let stealer = 0;
+    let smilerPan = 0;
+    let houndPan = 0;
+    let chase = 0;
     this.warnCool = Math.max(0, this.warnCool - dt);
     for (const e of this.enemies.values()) {
       if (e.target.level !== this.pose.level) continue;
@@ -898,8 +995,24 @@ export class Game {
       const d = Math.hypot(pos.x - this.pose.x, pos.z - this.pose.z);
       const near = Math.max(0, 1 - d / 22);
       const kind = e.target.kind;
-      if (kind === 'smiler') smiler = Math.max(smiler, near);
-      if (kind === 'hound') hound = Math.max(hound, near * (e.target.anim >= 2 ? 1 : 0.4));
+      const pan = this.panOf(pos.x, pos.z);
+      if (kind === 'smiler' && near > smiler) {
+        smiler = near;
+        smilerPan = pan * 0.8;
+      }
+      if (kind === 'hound' && near * (e.target.anim >= 2 ? 1 : 0.4) > hound) {
+        hound = near * (e.target.anim >= 2 ? 1 : 0.4);
+        houndPan = pan * 0.8;
+      }
+      // algo corre: se oyen sus pisadas desde su lado, y el zumbido de las luces se corta
+      if (e.target.anim === Anim.Run && d < 20) {
+        chase = Math.max(chase, 1 - d / 20);
+        e.stepT -= dt;
+        if (e.stepT <= 0) {
+          e.stepT = kind === 'hound' ? 0.2 : 0.3;
+          this.sound.creatureStep(kind, 0.6 * (1 - d / 20), pan);
+        }
+      }
       if (kind === 'skinstealer' && e.target.anim !== Anim.Disguise) stealer = Math.max(stealer, near);
       // un Duller a punto de salir: arañazos dentro de la pared
       if (kind === 'duller' && e.target.anim === Anim.Warn && d < 8 && this.warnCool <= 0) {
@@ -951,7 +1064,8 @@ export class Game {
       if (e.walk && Math.hypot(e.x - this.pose.x, e.z - this.pose.z) < 1.3 && Math.abs(e.y - this.pose.y) < 1.5) return this.passExit();
     }
 
-    this.updateInteraction();
+    this.updateChalk(map);
+    if (!this.updateRevive(dt)) this.updateInteraction();
 
     // ---- cámara y manos ----
     const insanity = Math.max(0, 1 - this.sanity / 40);
@@ -978,6 +1092,9 @@ export class Game {
       this.hudTimer = 0.1;
       this.hud.bars(this.health, this.sanity, this.stamina, this.battery, this.exhausted);
     }
+    this.sound.setPans(smilerPan, houndPan);
+    this.sound.setChase(chase);
+    this.updateExitHum(map);
     this.sound.update(lightUniforms.uFlicker.value * lightUniforms.uCircuit.value * (1 - lightUniforms.uBlackout.value), smiler, hound, stealer, insanity, dark, dt);
     this.sound.setWhir(this.machineNear(map));
 
@@ -1149,16 +1266,9 @@ export class Game {
 
   /** Tras caer al vacío: se despierta en otra parte del nivel, sin saber cómo. */
   private wakeElsewhere() {
-    const map = this.level!.map;
-    const list = map.wakes.length ? map.wakes : [{ x: map.spawn.x, z: map.spawn.z, s: map.spawn.s ?? 0 }];
-    const w = list[Math.floor(Math.random() * list.length)];
     this.hud.fade();
     this.sound.glitch();
-    this.pose.x = w.x;
-    this.pose.z = w.z;
-    this.pose.y = floorAt(map.storeys[w.s] ?? map, w.x, w.z);
-    this.lastFloor = this.pose.y;
-    this.vy = 0;
+    this.placeAtWake();
     this.loseSanity(30);
     this.hud.notice('Caes… y caes… y te despiertas en otro sitio.');
   }
@@ -1247,6 +1357,7 @@ export class Game {
   }
 
   private updateOthers(dt: number) {
+    this.voice?.update(dt, this.pose, this.others, (x, z) => this.panOf(x, z), this.wallsTo);
     const k = 1 - Math.exp(-10 * dt);
     for (const r of this.remotes.values()) {
       const g = r.model.group;
@@ -1280,14 +1391,145 @@ export class Game {
     }
   }
 
+  // ---------------------------------------------------------------- cooperación
+
+  /** Levantar a un compañero caído: mantener E a su lado. Devuelve true si hay uno cerca. */
+  private updateRevive(dt: number): boolean {
+    const mate = this.others.find((p) => p.level === this.pose.level && p.downed && p.dead && Math.hypot(p.x - this.pose.x, p.z - this.pose.z) < 1.8 && Math.abs(p.y - this.pose.y) < 1.4);
+    if (!mate) {
+      this.reviving = 0;
+      return false;
+    }
+    if (this.keys.has('KeyE')) {
+      this.reviving += dt;
+      this.hud.setPrompt(`Levantando a ${mate.name}… ${Math.min(100, Math.round((this.reviving / REVIVE_TIME) * 100))} %`);
+      if (this.reviving >= REVIVE_TIME) {
+        this.reviving = 0;
+        this.send({ t: 'revive', id: mate.id });
+      }
+    } else {
+      this.reviving = 0;
+      this.hud.setPrompt(`Mantén [E] para levantar a ${mate.name}`);
+    }
+    return true;
+  }
+
+  /** T: marca de tiza en la pared que tienes delante (con A o D, una flecha hacia ese lado). */
+  private updateChalk(map: LevelMap) {
+    if (!this.pressed.has('KeyT') || this.noteKey) return;
+    const g = gridAt(map, this.pose.x, this.pose.z, this.pose.y);
+    const dx = -Math.sin(this.yaw);
+    const dz = -Math.cos(this.yaw);
+    let pcx = cellOf(this.pose.x);
+    let pcz = cellOf(this.pose.z);
+    for (let t = 0.1; t < 2.2; t += 0.04) {
+      const x = this.pose.x + dx * t;
+      const z = this.pose.z + dz * t;
+      const cx = cellOf(x);
+      const cz = cellOf(z);
+      if (cx === pcx && cz === pcz) continue;
+      if (flagsAt(g, cx, cz) & F_SOLID) {
+        // la cara de la pared por la que se ha entrado
+        let ry: number;
+        let mx = x;
+        let mz = z;
+        if (cx !== pcx) {
+          ry = cx > pcx ? -Math.PI / 2 : Math.PI / 2;
+          mx = (cx > pcx ? cx : cx + 1) * CELL + (cx > pcx ? -0.015 : 0.015);
+        } else {
+          ry = cz > pcz ? Math.PI : 0;
+          mz = (cz > pcz ? cz : cz + 1) * CELL + (cz > pcz ? -0.015 : 0.015);
+        }
+        const arrow = this.keys.has('KeyA') ? -1 : this.keys.has('KeyD') ? 1 : 0;
+        const y = this.eyeY - 0.2;
+        this.send({ t: 'mark', level: this.pose.level, x: round2(mx), y: round2(y), z: round2(mz), ry, arrow });
+        this.sound.scratchChalk();
+        return;
+      }
+      pcx = cx;
+      pcz = cz;
+    }
+    this.hud.notice('Acércate a una pared para marcarla con tiza.');
+  }
+
+  setVoice(v: Voice) {
+    this.voice = v;
+  }
+
+  /** ¿Hay paredes entre este compañero y yo? (su voz se oye ahogada) */
+  private wallsTo = (p: PlayerState): boolean => {
+    const map = this.level?.map;
+    if (!map) return false;
+    const g = gridAt(map, this.pose.x, this.pose.z, this.pose.y);
+    return !lineOfSight(g, this.pose.x, this.pose.y + 1.5, this.pose.z, p.x, p.y + 1.5, p.z);
+  };
+
+  /** Marcas de tiza (las de todos; las nuevas llegan del anfitrión). */
+  addMarks(list: Mark[]) {
+    for (const m of list) this.addMark(m);
+  }
+
+  addMark(m: Mark) {
+    if (this.marks.has(m.id)) return;
+    const key = `${m.color}|${m.arrow}`;
+    let mat = this.markMats.get(key);
+    if (!mat) {
+      const c = new THREE.Color(m.color).lerp(new THREE.Color(0xffffff), 0.45).multiplyScalar(1.6);
+      mat = litMaterial({ map: chalkTexture(m.arrow), transparent: true, depthWrite: false, color: c }, 0.3);
+      this.markMats.set(key, mat);
+    }
+    const mesh = new THREE.Mesh((chalkGeo ??= new THREE.PlaneGeometry(0.55, 0.55)), mat);
+    mesh.position.set(m.x, m.y, m.z);
+    mesh.rotation.y = m.ry;
+    mesh.userData.level = m.level;
+    mesh.userData.color = m.color;
+    mesh.visible = m.level === this.pose.level;
+    this.scene.add(mesh);
+    this.marks.set(m.id, mesh);
+    // como mucho 30 de cada jugador: se borra la más vieja (igual que en el anfitrión)
+    const mine = [...this.marks.entries()].filter(([, o]) => o.userData.color === m.color);
+    if (mine.length > 30) {
+      this.scene.remove(mine[0][1]);
+      this.marks.delete(mine[0][0]);
+    }
+  }
+
+  /** El director hace sonar algo cerca (pasos, golpes, gruñidos…). */
+  onCue(kind: string, level: number, x: number, z: number) {
+    if (level !== this.pose.level || this.dead > 0 || !this.level) return;
+    const d = Math.hypot(x - this.pose.x, z - this.pose.z);
+    this.sound.cue(kind, 0.4 * Math.max(0.2, 1 - d / 25), this.panOf(x, z));
+  }
+
+  /** Las salidas abiertas zumban de forma distinta: se oyen al acercarse y desde su lado. */
+  private updateExitHum(map: LevelMap) {
+    let best = Infinity;
+    let pan = 0;
+    let gain = 0;
+    const g = gridAt(map, this.pose.x, this.pose.z, this.pose.y);
+    for (const d of map.doors) {
+      if (!d.exit) continue;
+      const dist = Math.hypot(d.x - this.pose.x, d.z - this.pose.z);
+      if (dist >= best || dist > EXIT_HUM_RANGE) continue;
+      best = dist;
+      pan = this.panOf(d.x, d.z) * 0.7;
+      const k = 1 - dist / EXIT_HUM_RANGE;
+      // desde otra planta se oye mucho menos
+      gain = k * k * (map.storeys[d.s ?? 0] === g ? 1 : 0.35);
+    }
+    this.sound.setExit(gain, pan);
+  }
+
   private sendPose() {
     this.pose.shout = this.shoutSend;
     this.shoutSend = false;
-    this.send({ t: 'pose', pose: { ...this.pose } });
+    this.send({ t: 'pose', pose: { ...this.pose, hp: Math.round(this.health), san: Math.round(this.sanity) } });
   }
 
   dispose() {
     this.running = false;
+    for (const m of this.marks.values()) this.scene.remove(m);
+    this.marks.clear();
     this.renderer.setAnimationLoop(null);
     this.level?.dispose();
     this.post.dispose();
@@ -1308,4 +1550,48 @@ export class Game {
     this.hud.showDeath(null);
     this.hud.showLock(false);
   }
+}
+
+const round2 = (v: number) => Math.round(v * 100) / 100;
+
+let chalkGeo: THREE.PlaneGeometry | undefined;
+const chalkTex = new Map<number, THREE.Texture>();
+
+/** Trazos de tiza: una cruz o una flecha (dibujados en blanco; el material los tiñe). */
+function chalkTexture(arrow: number): THREE.Texture {
+  let t = chalkTex.get(arrow);
+  if (t) return t;
+  t = canvasTexture(
+    128,
+    128,
+    (ctx) => {
+      ctx.strokeStyle = '#fff';
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      // varias pasadas finas y algo torcidas: parece tiza de verdad
+      for (let pass = 0; pass < 3; pass++) {
+        const j = () => (Math.random() - 0.5) * 5;
+        ctx.globalAlpha = 0.6;
+        ctx.lineWidth = 6 + pass * 2;
+        ctx.beginPath();
+        if (arrow === 0) {
+          ctx.moveTo(28 + j(), 28 + j());
+          ctx.lineTo(100 + j(), 100 + j());
+          ctx.moveTo(100 + j(), 28 + j());
+          ctx.lineTo(28 + j(), 100 + j());
+        } else {
+          const s = arrow;
+          ctx.moveTo(64 - 44 * s + j(), 64 + j());
+          ctx.lineTo(64 + 40 * s + j(), 64 + j());
+          ctx.moveTo(64 + 14 * s + j(), 36 + j());
+          ctx.lineTo(64 + 42 * s + j(), 64 + j());
+          ctx.lineTo(64 + 14 * s + j(), 92 + j());
+        }
+        ctx.stroke();
+      }
+    },
+    false,
+  );
+  chalkTex.set(arrow, t);
+  return t;
 }

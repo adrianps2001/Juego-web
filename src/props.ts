@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { litMaterial, type LitParams } from './lighting';
 import { canvasTexture, crateTexture, textTexture } from './textures';
-import type { Prop } from './world';
+import { hash, type Prop } from './world';
 
 // Muebles y objetos de decoración. Todos miran hacia +z (su frente) y se
 // construyen con piezas simples. Los materiales se comparten para poder
@@ -720,7 +720,7 @@ function parkLines(w = 2.6): THREE.Group {
 // ---------------------------------------------------------------------------
 
 /** Objetos que se mueven o tienen textura propia: no se fusionan. */
-export const DYNAMIC_PROPS = new Set(['text', 'drip', 'bulb', 'violet']);
+export const DYNAMIC_PROPS = new Set(['text', 'sector', 'drip', 'bulb', 'violet']);
 
 export function buildProp(p: Prop): THREE.Object3D | null {
   switch (p.type) {
@@ -783,6 +783,33 @@ export function buildProp(p: Prop): THREE.Object3D | null {
       const tex = textTexture(p.text ?? '', 'rgba(150, 20, 15, 0.85)', 'rgba(0,0,0,0)', 512, Math.round(512 / (w / 0.35)));
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, 0.35), litMaterial({ map: tex, transparent: true, depthWrite: false }, 0.3));
       mesh.position.z = 0.012;
+      return group(mesh);
+    }
+    case 'sector': {
+      // código de sector pintado con plantilla: para orientarse (cada uno es distinto)
+      const text = p.text ?? '?';
+      const ink = ['#1c1b18', '#7d1a12', '#1d4a8a', '#f2eee2'][text.charCodeAt(0) % 4];
+      const tex = canvasTexture(
+        256,
+        128,
+        (ctx, w, h) => {
+          ctx.strokeStyle = ink;
+          ctx.lineWidth = 8;
+          ctx.globalAlpha = 0.92;
+          ctx.strokeRect(10, 10, w - 20, h - 20);
+          ctx.fillStyle = ink;
+          ctx.font = 'bold 76px "Courier New", monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(text, w / 2, h / 2 + 4);
+          // la pintura gastada: se borran trocitos al azar
+          ctx.globalCompositeOperation = 'destination-out';
+          for (let i = 0; i < 160; i++) ctx.fillRect(hash(i, text.length) * w, hash(text.charCodeAt(0), i) * h, 2 + hash(i, 7) * 6, 2 + hash(3, i) * 4);
+        },
+        false,
+      );
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.55), litMaterial({ map: tex, transparent: true, depthWrite: false }, 0.3));
+      mesh.position.z = 0.014;
       return group(mesh);
     }
   }

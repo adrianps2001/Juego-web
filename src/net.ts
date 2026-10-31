@@ -22,6 +22,9 @@ export interface Link {
   isHost: boolean;
   send: (msg: ClientMessage) => void;
   leave: () => void;
+  /** Para el chat de voz: las llamadas van directas entre jugadores. */
+  peer: Peer;
+  myId: string;
 }
 
 function randomRoomCode(): string {
@@ -73,6 +76,8 @@ export function hostRoom(name: string, onMessage: (msg: HostMessage) => void): P
       resolve({
         roomCode,
         isHost: true,
+        peer,
+        myId,
         send: (msg) => auth.handle(myId, msg),
         leave: () => {
           auth.stop();
@@ -147,6 +152,8 @@ export function joinRoom(
         resolve({
           roomCode: code,
           isHost: false,
+          peer,
+          myId: peer.id,
           send: (msg) => {
             if (conn.open) conn.send(msg);
           },
@@ -160,6 +167,10 @@ export function joinRoom(
       conn.on('close', () => close('El anfitrión ha cerrado la sala.'));
     });
 
-    peer.on('error', (err) => close(errorText(err)));
+    peer.on('error', (err) => {
+      // ya dentro, un fallo de una llamada de voz no debe cerrar la partida
+      if (open && (err.type === 'peer-unavailable' || err.type === 'webrtc')) return;
+      close(errorText(err));
+    });
   });
 }

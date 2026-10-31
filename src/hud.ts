@@ -147,9 +147,20 @@ export class Hud {
     );
   }
 
-  showDeath(reason: string | null) {
+  showDeath(reason: string | null, downed = false) {
     this.death.hidden = !reason;
-    if (reason) $('death-reason').textContent = reason;
+    this.death.classList.toggle('downed', downed);
+    if (!reason) return;
+    $('death-reason').textContent = reason;
+    $('death-title').textContent = downed ? 'Has caído' : 'Has muerto';
+    $('death-hint').textContent = downed ? 'Un compañero puede levantarte si llega a tiempo.' : 'Despertando en otra parte del nivel…';
+  }
+
+  /** Cuenta atrás mientras esperas a que te levanten. */
+  downed(seconds: number) {
+    const text = `Te quedan ${seconds} s · [Espacio] rendirse y despertar en otra parte`;
+    const el = $('death-hint');
+    if (el.textContent !== text) el.textContent = text;
   }
 
 

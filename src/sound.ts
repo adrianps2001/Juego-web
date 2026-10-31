@@ -24,13 +24,27 @@ export class Sound {
   private ambientTimer = 4;
   private paramClock = 0;
   private whir = this.ctx.createGain(); // máquinas del Nivel 2
+  // de qué lado suenan el Smiler y el Hound más cercanos
+  private dronePan = this.ctx.createStereoPanner();
+  private growlPan = this.ctx.createStereoPanner();
+  private chase = 0; // algo te persigue: el zumbido de las luces se corta
+  // zumbido distinto de una salida abierta (pista para encontrarla)
+  private exitHum = this.ctx.createGain();
+  private exitPan = this.ctx.createStereoPanner();
+  /** Voces de los compañeros (chat de voz): entran aquí. */
+  readonly voiceBus = this.ctx.createGain();
 
   constructor() {
     this.master.connect(this.ctx.destination);
     this.ambientBus.connect(this.master);
     this.sfxBus.connect(this.master);
+    this.voiceBus.connect(this.master);
+    this.dronePan.connect(this.sfxBus);
+    this.growlPan.connect(this.sfxBus);
+    this.exitPan.connect(this.sfxBus);
     this.stopListening = onSettings((st) => {
       const t = this.ctx.currentTime;
+      this.voiceBus.gain.setTargetAtTime(st.voiceVolume, t, 0.05);
       this.master.gain.setTargetAtTime(st.master, t, 0.05);
       this.ambientBus.gain.setTargetAtTime(st.ambient, t, 0.05);
       this.sfxBus.gain.setTargetAtTime(st.sfx, t, 0.05);
@@ -56,9 +70,9 @@ export class Sound {
     droneFilter.frequency.value = 220;
     this.osc('sawtooth', 43, droneFilter, 1);
     this.osc('sawtooth', 45.7, droneFilter, 1);
-    droneFilter.connect(this.drone).connect(this.sfxBus);
+    droneFilter.connect(this.drone).connect(this.dronePan);
     this.osc('sine', 1760, this.whine, 1);
-    this.whine.connect(this.sfxBus);
+    this.whine.connect(this.dronePan);
     this.drone.gain.value = 0;
     this.whine.gain.value = 0;
 
@@ -76,7 +90,7 @@ export class Sound {
     lfoGain.gain.value = 0.5;
     lfo.connect(lfoGain).connect(trem.gain);
     lfo.start();
-    growlSrc.connect(growlFilter).connect(trem).connect(this.growl).connect(this.sfxBus);
+    growlSrc.connect(growlFilter).connect(trem).connect(this.growl).connect(this.growlPan);
     this.osc('sawtooth', 62, growlFilter, 0.6);
     growlSrc.start();
     this.growl.gain.value = 0;
@@ -102,6 +116,64 @@ export class Sound {
     this.osc('triangle', 151, whirFilter, 0.4);
     whirFilter.connect(this.whir).connect(this.ambientBus);
     this.whir.gain.value = 0;
+
+    // salida abierta: un zumbido grave y limpio que late despacio (distinto al de los fluorescentes)
+    const exitFilter = this.ctx.createBiquadFilter();
+    exitFilter.type = 'lowpass';
+    exitFilter.frequency.value = 500;
+    this.osc('sine', 98, exitFilter, 1);
+    this.osc('sine', 99.3, exitFilter, 1);
+    this.osc('triangle', 196.5, exitFilter, 0.25);
+    exitFilter.connect(this.exitHum).connect(this.exitPan);
+    this.exitHum.gain.value = 0;
+  }
+
+  get context(): AudioContext {
+    return this.ctx;
+  }
+
+  /** De qué lado (-1 a 1) están el Smiler y el Hound más cercanos. */
+  setPans(smiler: number, hound: number) {
+    const t = this.ctx.currentTime;
+    this.dronePan.pan.setTargetAtTime(clampPan(smiler), t, 0.08);
+    this.growlPan.pan.setTargetAtTime(clampPan(hound), t, 0.08);
+  }
+
+  /** 0-1: cuánto te está persiguiendo algo (el zumbido de las luces se apaga). */
+  setChase(k: number) {
+    this.chase = k;
+  }
+
+  /** Zumbido de la salida abierta más cercana (volumen 0-1 y lado). */
+  setExit(gain: number, pan: number) {
+    const t = this.ctx.currentTime;
+    this.exitHum.gain.setTargetAtTime(0.09 * gain, t, 0.3);
+    this.exitPan.pan.setTargetAtTime(clampPan(pan), t, 0.1);
+  }
+
+  /** Pisada de una criatura que corre (pesada y grave). */
+  creatureStep(kind: string, gain: number, pan: number) {
+    if (kind === 'hound') this.burst(0.07, 380, gain * 0.5, 'lowpass', pan);
+    else if (kind === 'clump') this.burst(0.14, 220, gain * 0.7, 'lowpass', pan);
+    else this.burst(0.1, 300, gain * 0.55, 'lowpass', pan);
+  }
+
+  /** Sonidos que mete el director de tensión: algo cerca… que quizá no está. */
+  cue(kind: string, gain: number, pan: number) {
+    if (kind === 'steps') {
+      const n = 4 + Math.floor(Math.random() * 4);
+      for (let i = 0; i < n; i++) setTimeout(() => this.burst(0.11, 420, gain * (0.6 + i * 0.08), 'lowpass', pan), i * (330 + Math.random() * 90));
+    } else if (kind === 'knock') {
+      for (let i = 0; i < 3; i++)
+        setTimeout(() => {
+          this.tone(150, 95, 0.09, 'square', gain * 0.3, pan);
+          this.burst(0.05, 800, gain * 0.6, 'lowpass', pan);
+        }, i * 420);
+    } else if (kind === 'growl') {
+      this.tone(75, 52, 1.3, 'sawtooth', gain * 0.35, pan);
+      this.burst(1.1, 320, gain * 0.5, 'lowpass', pan);
+    } else if (kind === 'whisper') this.murmur(gain * 0.7, pan);
+    else this.scratch(gain, pan);
   }
 
   private osc(type: OscillatorType, freq: number, dest: AudioNode, gain: number) {
@@ -138,7 +210,7 @@ export class Sound {
     this.paramClock -= dt;
     if (this.paramClock > 0) return;
     this.paramClock = 0.05;
-    this.hum.gain.setTargetAtTime(this.humLevel * flicker * (dark ? 0.3 : 1) * (1 + this.spike * 4), t, 0.05);
+    this.hum.gain.setTargetAtTime(this.humLevel * flicker * (dark ? 0.3 : 1) * (1 + this.spike * 4) * (1 - 0.92 * this.chase), t, this.chase > 0.3 ? 0.4 : 0.05);
     this.drone.gain.setTargetAtTime(0.35 * smiler, t, 0.1);
     this.whine.gain.setTargetAtTime(0.012 * smiler * smiler, t, 0.1);
     this.growl.gain.setTargetAtTime(0.5 * hound * hound, t, 0.15);
@@ -397,6 +469,11 @@ export class Sound {
     tear.stop(t + dur);
   }
 
+  /** Tiza contra la pared. */
+  scratchChalk() {
+    for (let i = 0; i < 3; i++) setTimeout(() => this.burst(0.12, 2600 + Math.random() * 800, 0.12, 'bandpass'), i * 130);
+  }
+
   /** Gorgoteo húmedo de un Clump. */
   gurgle(gain = 0.3, pan = 0) {
     for (let i = 0; i < 4; i++) setTimeout(() => this.tone(90 + Math.random() * 60, 50, 0.15, 'square', gain * 0.3, pan), i * 110);
@@ -498,3 +575,5 @@ export class Sound {
     void this.ctx.close();
   }
 }
+
+const clampPan = (p: number) => Math.max(-1, Math.min(1, p || 0));

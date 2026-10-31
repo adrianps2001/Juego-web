@@ -5,7 +5,9 @@ import {
   PLAYER_COLORS,
   TICK_MS,
   type ClientMessage,
+  type CueKind,
   type EntityState,
+  type Mark,
   type Flare,
   type HostMessage,
   type PlayerState,
@@ -39,7 +41,7 @@ const FLARE_TIME = 25;
 
 // cómo es cada criatura (según la Backrooms Wiki)
 const SPEC: Record<EntityKind, { eye: number; wake: number; walk: number; run: number; reach: number; damage: number; cooldown: number }> = {
-  figure: { eye: 1.7, wake: 30, walk: 0.8, run: 0.8, reach: 0, damage: 0, cooldown: 40 },
+  figure: { eye: 1.7, wake: 30, walk: 0.8, run: 0.8, reach: 0, damage: 0, cooldown: 25 },
   smiler: { eye: 1.6, wake: 30, walk: 1.6, run: 4.3, reach: 0.9, damage: 55, cooldown: 25 },
   hound: { eye: 0.85, wake: 45, walk: 1.4, run: 4.6, reach: 1.15, damage: 22, cooldown: 1.2 },
   faceling: { eye: 1.95, wake: 60, walk: 1.0, run: 3.6, reach: 1.0, damage: 15, cooldown: 1.5 },
@@ -95,7 +97,24 @@ interface Player extends PlayerState {
   speed: number;
   lastT: number;
   shoutTimer: number;
+  // director de tensión
+  tension: number; // 0 tranquilo … 1 aterrado
+  calm: number; // segundos sin nada cerca
+  relax: number; // segundos de respiro que le quedan tras un susto fuerte
+  cueCd: number;
+  giftCd: number;
 }
+
+/** Sonidos que el director puede hacer sonar en cada nivel. */
+const CUES: CueKind[][] = [
+  ['steps', 'knock', 'whisper', 'scrape', 'steps'],
+  ['steps', 'growl', 'knock', 'scrape'],
+  ['growl', 'scrape', 'knock', 'steps'],
+];
+/** Respiro tras un momento de mucha tensión (segundos). */
+const RELAX_TIME = 50;
+/** Mensajes de estado que no hace falta mandar (solo los usa el anfitrión). */
+const HOST_ONLY = ['speed', 'lastT', 'shoutTimer', 'tension', 'calm', 'relax', 'cueCd', 'giftCd', 'hp', 'san'];
 
 /**
  * Lógica de la partida que solo ejecuta el anfitrión: quién está en la sala,
@@ -119,6 +138,7 @@ export class Authority {
   private shiftClock = LEVELS.map(() => 6);
   private loopEmpty = LEVELS.map(() => 0);
   private masks = new Map<string, Uint8Array>();
+  private marks: Mark[] = [];
 
   /** Semilla de esta partida: dónde están los objetos y las criaturas. */
   private session = Math.floor(Math.random() * 0xffffffff) >>> 0;
@@ -154,9 +174,14 @@ export class Authority {
       speed: 0,
       lastT: performance.now(),
       shoutTimer: 0,
+      tension: 0,
+      calm: 0,
+      relax: 0,
+      cueCd: 40,
+      giftCd: 30,
     };
     this.players.set(id, p);
-    this.out.sendTo(id, { t: 'welcome', id, color: p.color, picked: [...this.picked], x: p.x, z: p.z, session: this.session });
+    this.out.sendTo(id, { t: 'welcome', id, color: p.color, picked: [...this.picked], x: p.x, z: p.z, session: this.session, marks: this.marks });
     this.notice(`${name} ha caído en los Backrooms`);
     return true;
   }
@@ -203,6 +228,22 @@ export class Authority {
       case 'died':
         this.notice(`${p.name} ${msg.reason}`);
         break;
+      case 'revive': {
+        const other = this.players.get(msg.id);
+        if (!other || !other.dead || !other.downed || other.level !== p.level || Math.hypot(other.x - p.x, other.z - p.z) > 3) break;
+        this.out.sendTo(other.id, { t: 'revived', by: p.name });
+        this.notice(`${p.name} ha levantado a ${other.name}`);
+        break;
+      }
+      case 'mark': {
+        const mark: Mark = { id: this.nextId++, level: msg.level, x: msg.x, y: msg.y, z: msg.z, ry: msg.ry, color: p.color, arrow: msg.arrow };
+        this.marks.push(mark);
+        // como mucho 30 de cada jugador: la más vieja se borra
+        const mine = this.marks.filter((m) => m.color === p.color);
+        if (mine.length > 30) this.marks = this.marks.filter((m) => m !== mine[0]);
+        this.out.broadcast({ t: 'mark', mark });
+        break;
+      }
     }
   }
 
@@ -227,11 +268,16 @@ export class Authority {
       this.pathClock = PATH_EVERY;
       this.fields.clear();
     }
+    this.direct(alive, dt);
     this.wakeLairs(alive, dt);
     for (const e of [...this.entities]) this.think(e, alive, dt);
     this.out.broadcast({
       t: 'state',
-      players: [...this.players.values()].map(({ speed: _s, lastT: _t, shoutTimer: _h, ...rest }) => rest),
+      players: [...this.players.values()].map((p) => {
+        const rest: Record<string, unknown> = { ...p };
+        for (const k of HOST_ONLY) delete rest[k];
+        return rest as unknown as PlayerState;
+      }),
       entities: this.entities.map(({ id, kind, level, x, y, z, ry, anim }) => ({ id, kind, level, x: round(x), y: round(y), z: round(z), ry: round(ry), anim })),
       blackout: this.blackout.map((b, i) => (b > 0 ? i : -1)).filter((i) => i >= 0),
       circuits: this.circuit.map((b, i) => (b > 0 ? i : -1)).filter((i) => i >= 0),
@@ -365,12 +411,17 @@ export class Authority {
       const spec = SPEC[lair.kind];
       const minDist = lair.kind === 'faceling' || lair.kind === 'duller' || lair.kind === 'skinstealer' ? 0 : lair.kind === 'figure' ? 12 : 7;
       if (near > spec.wake || near < minDist) continue;
-      // no todas las guaridas tienen a alguien dentro (a veces, nada)
-      if (Math.random() < 0.35) {
+      // no todas las guaridas tienen a alguien dentro (a veces, nada); el
+      // director lo ajusta: tras un susto da un respiro y si todo está muy
+      // tranquilo despierta más. La sombra (figura) es la más frecuente.
+      const mood = this.mood(lair.level);
+      const empty = lair.kind === 'figure' ? 0.15 : mood.relax ? 0.75 : mood.bored ? 0.2 : 0.35;
+      if (Math.random() < empty) {
         lair.cooldown = 45 + Math.random() * 45;
         continue;
       }
-      if (this.entities.filter((x) => x.level === lair.level && x.kind !== 'figure').length >= MAX_ACTIVE && lair.kind !== 'figure') {
+      const cap = mood.relax ? 1 : MAX_ACTIVE;
+      if (this.entities.filter((x) => x.level === lair.level && x.kind !== 'figure').length >= cap && lair.kind !== 'figure') {
         lair.cooldown = 15;
         continue;
       }
@@ -409,9 +460,74 @@ export class Authority {
 
   private hit(e: Entity, p: Player) {
     const spec = SPEC[e.kind];
+    p.tension = Math.min(1, p.tension + 0.35);
     e.attackCd = spec.cooldown;
     e.anim = Anim.Attack;
     this.out.sendTo(p.id, { t: 'hit', damage: spec.damage, kind: e.kind });
+  }
+
+  // ------------------------------------------------------------------ director
+
+  /**
+   * Director de tensión: mide el miedo que pasa cada jugador y dosifica la
+   * partida. Tras un momento muy tenso da un respiro (menos criaturas nuevas);
+   * si alguien lleva mucho rato tranquilo, hace sonar algo cerca y despiertan
+   * más criaturas; y a quien va mal de salud o cordura le repone un objeto
+   * cerca, donde no lo vea aparecer.
+   */
+  private direct(alive: Player[], dt: number) {
+    for (const p of alive) {
+      let threat = 0;
+      for (const e of this.entities) {
+        if (e.level !== p.level || e.kind === 'figure' || e.mode === 'disguised' || e.anim === Anim.Hidden) continue;
+        const d = Math.hypot(e.x - p.x, e.z - p.z);
+        const hunting = e.target === p.id && (e.mode === 'chase' || e.mode === 'stalk' || e.mode === 'stare');
+        threat = Math.max(threat, hunting ? Math.max(0.5, 1 - d / 30) : Math.max(0, 1 - d / 18) * 0.5);
+      }
+      p.tension = threat > 0.05 ? Math.min(1, p.tension + threat * 0.3 * dt) : Math.max(0, p.tension - 0.05 * dt);
+      p.calm = threat > 0.05 ? 0 : p.calm + dt;
+      if (p.relax > 0) p.relax -= dt;
+      else if (p.tension > 0.75) p.relax = RELAX_TIME;
+      // sonidos: algo se mueve cerca… o eso parece
+      p.cueCd -= dt;
+      if (p.cueCd <= 0 && p.relax <= 0 && p.calm > 20 && p.tension < 0.5) {
+        p.cueCd = 25 + Math.random() * 30;
+        const a = Math.random() * Math.PI * 2;
+        const r = 9 + Math.random() * 10;
+        const list = CUES[p.level] ?? CUES[0];
+        this.out.sendTo(p.id, { t: 'cue', kind: list[Math.floor(Math.random() * list.length)], level: p.level, x: round(p.x + Math.sin(a) * r), z: round(p.z + Math.cos(a) * r) });
+        p.tension = Math.min(1, p.tension + 0.08);
+      }
+      // recursos: a quien va mal se le repone algo cerca
+      p.giftCd -= dt;
+      if (p.giftCd <= 0 && p.tension < 0.5 && ((p.hp ?? 100) < 45 || (p.san ?? 100) < 35)) p.giftCd = this.gift(p) ? 60 : 20;
+    }
+  }
+
+  /** Cómo está el nivel: en respiro (alguien acaba de pasarlo mal) o aburrido (todos tranquilos hace rato). */
+  private mood(level: number): { relax: boolean; bored: boolean } {
+    const here = [...this.players.values()].filter((p) => p.level === level && !p.dead);
+    return {
+      relax: here.some((p) => p.relax > 0),
+      bored: here.length > 0 && here.every((p) => p.calm > 60 && p.tension < 0.2),
+    };
+  }
+
+  /** Repone un objeto ya cogido cerca del jugador, fuera de su vista. Prefiere lo que más necesita. */
+  private gift(p: Player): boolean {
+    const lv = getMap(p.level);
+    const g = gridAt(lv, p.x, p.z, p.y);
+    const want: ItemKind[] = (p.hp ?? 100) < 45 ? ['vendas', 'lata'] : ['agua', 'barrita'];
+    const spots = lv.items.filter((i) => {
+      if (!this.picked.has(i.key) || lv.storeys[i.s ?? 0] !== g) return false;
+      const d = Math.hypot(i.x - p.x, i.z - p.z);
+      return d > 8 && d < 30 && !lineOfSight(g, p.x, p.y + 1.6, p.z, i.x, i.y + 0.3, i.z);
+    });
+    const item = spots.find((i) => want.includes(i.kind)) ?? spots[0];
+    if (!item) return false;
+    this.picked.delete(item.key);
+    this.out.broadcast({ t: 'restock', keys: [item.key] });
+    return true;
   }
 
   // ------------------------------------------------------------------ comportamientos

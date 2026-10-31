@@ -13,6 +13,26 @@ import type { Theme } from './world';
 /** Las texturas de pared son el doble de anchas que de "base": cubren más metros. */
 const WX = 2;
 
+// filtro anisótropo (nitidez de los suelos vistos de lado): en calidad baja se quita, cuesta bastante
+let aniso = 4;
+const tracked = new Set<THREE.Texture>();
+
+function track(tex: THREE.Texture) {
+  tex.anisotropy = aniso;
+  tracked.add(tex);
+  tex.addEventListener('dispose', () => tracked.delete(tex));
+}
+
+/** Cambia el filtro anisótropo de todas las texturas (las que ya hay y las que vengan). */
+export function setAnisotropy(n: number) {
+  if (n === aniso) return;
+  aniso = n;
+  for (const t of tracked) {
+    t.anisotropy = n;
+    t.needsUpdate = true;
+  }
+}
+
 export type Painter = (ctx: CanvasRenderingContext2D, w: number, h: number) => void;
 
 export function canvasTexture(w: number, h: number, paint: Painter, repeat = true): THREE.CanvasTexture {
@@ -23,7 +43,7 @@ export function canvasTexture(w: number, h: number, paint: Painter, repeat = tru
   const tex = new THREE.CanvasTexture(canvas);
   if (repeat) tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
+  track(tex);
   return tex;
 }
 
@@ -427,7 +447,7 @@ export function loadThemeTextures(theme: Theme): Promise<ThemeTextures> {
         tex.flipY = false; // el worker ya la manda girada
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
         tex.colorSpace = THREE.SRGBColorSpace;
-        tex.anisotropy = 4;
+        track(tex);
         tex.needsUpdate = true;
         return tex;
       };

@@ -26,6 +26,8 @@ export const lightUniforms = {
   uGrimeMap: { value: null as THREE.Texture | null },
   uGrimeTint: { value: new THREE.Color(0.55, 0.45, 0.25) },
   uGrimeAmount: { value: 0.6 },
+  // 1 = todos los detalles de superficie; 0 = sin suciedad ni mezcla de losetas (equipos lentos)
+  uDetail: { value: 1 },
 };
 
 const GRIME: Record<Theme, [number, number, number, number]> = {
@@ -238,6 +240,7 @@ uniform vec3 uGrimeTint;
 uniform float uGrimeAmount;
 uniform float uTileSnap;
 uniform float uCell;
+uniform float uDetail;
 varying vec3 vLmPos;
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
@@ -250,11 +253,15 @@ varying vec3 vWorldNormal;
   bool isWall = an.y < 0.5;
   vec2 wp = !isWall ? vWorldPos.xz : (an.x > an.z ? vec2(vWorldPos.z, vWorldPos.y) : vec2(vWorldPos.x, vWorldPos.y));
   // dos escalas que no coinciden entre sí ni con la textura base
-  float g1 = texture2D(uGrimeMap, wp * 0.137 + vec2(0.31, 0.73)).r;
-  float g2 = texture2D(uGrimeMap, mat2(0.8, -0.6, 0.6, 0.8) * wp * 0.371).g;
+  // (con poco detalle no se leen: ahorra dos lecturas de textura por píxel)
+  float g1 = 0.5, g2 = 0.5;
+  if (uDetail > 0.5) {
+    g1 = texture2D(uGrimeMap, wp * 0.137 + vec2(0.31, 0.73)).r;
+    g2 = texture2D(uGrimeMap, mat2(0.8, -0.6, 0.6, 0.8) * wp * 0.371).g;
+  }
 #ifdef USE_MAP
   vec4 sampledDiffuseColor;
-  if (uTileSnap >= 0.0) {
+  if (uTileSnap >= 0.0 && uDetail > 0.5) {
     // cada zona desplaza la textura a su manera y se funde con la de al lado
     float idx = g1 * 10.0 + g2 * 3.0;
     float ii = floor(idx);
@@ -307,6 +314,7 @@ varying vec3 vWorldNormal;
     if (h > 0.92) diffuseColor.rgb *= mix(vec3(1.0), uGrimeTint, 0.55);
   }
   // suciedad: manchas grandes por todas partes
+  if (uDetail > 0.5) {
   float grime = smoothstep(0.5, 0.78, g1 * 0.65 + g2 * 0.35) * 0.8;
   if (isWall) {
     float h01 = clamp(above / max(lmCeil - lmFloor, 0.5), 0.0, 1.0);
@@ -319,6 +327,7 @@ varying vec3 vWorldNormal;
     grime += streak * smoothstep(0.3, 1.0, h01 + g1 * 0.3) * 0.45;
   }
   diffuseColor.rgb *= mix(vec3(1.0), uGrimeTint, clamp(grime, 0.0, 1.0) * uGrimeAmount);
+  }
 #endif
   float lmLight = 2.0 * (lm.r + lm.g * uFlicker * uCircuit) * (1.0 - uBlackout);
   // un poco más oscuro abajo, como si la luz viniera del techo

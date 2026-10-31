@@ -21,13 +21,28 @@ suelo (caes a la de abajo). Las salas míticas son piezas hechas a mano.
 **Salidas:** cada nivel tiene 6 puertas de salida posibles repartidas por el
 mapa, lejos del inicio. En cada partida solo 2, al azar (las mismas para todos
 los jugadores), tienen el cartel verde de **SALIDA** encendido y dejan bajar al
-nivel siguiente; las demás están cerradas con llave.
+nivel siguiente; las demás están cerradas con llave. Las salidas abiertas
+**zumban** con un tono grave distinto al de los fluorescentes: se oye al
+acercarse y desde su lado.
+
+**Orientarse:** cada 30-40 m hay un **código de sector** pintado con plantilla
+en la pared (`D-4`, `K-2`…), todos distintos, para reconocer por dónde se ha
+pasado. Con `T` se marca la pared de delante con **tiza** (con `A`/`D`, una
+flecha a ese lado); las marcas las ven todos los jugadores, también los que
+entran más tarde.
+
+**Director de tensión:** el anfitrión mide cuánto miedo pasa cada jugador y
+dosifica la partida. Tras un susto fuerte da un respiro (menos criaturas
+nuevas durante un rato); si alguien lleva mucho tiempo tranquilo, suena algo
+cerca (pasos, golpes, gruñidos, susurros…) y despiertan más criaturas; y a
+quien va mal de salud o cordura le repone algún objeto cerca, donde no lo vea
+aparecer.
 
 ## Criaturas
 
 | Criatura | Cómo se comporta | Qué hacer |
 |---|---|---|
-| **Figura oscura** (N0) | Te acecha desde lejos y se acerca cuando no miras. | Mírala: desaparece. |
+| **Figura oscura** (N0, la única del Nivel 0) | Te acecha desde lejos y se acerca cuando no miras. | Mírala: desaparece. |
 | **Smiler** (N1, N2) | Le atraen la luz y el ruido. Si corres o gritas cerca, ataca. | Apaga la linterna, mírale y aléjate despacio. Lanza una **bengala** para atraerlo lejos. |
 | **Hound** (N1, N2) | Hostil en cuanto te ve o te oye. | Mírale a los ojos y **grita** (`G`): huye un rato. |
 | **Skin-Stealer** (N1) | Parece alguien que llora y pide ayuda. Imita voces. | No te acerques ni le des la espalda; aléjate con calma. |
@@ -48,6 +63,13 @@ nivel siguiente; las demás están cerradas con llave.
 - **Linterna**: gasta **pilas**, y atrae a los Smilers.
 - **Inventario**: hasta 6 huecos (5 objetos iguales en cada uno). La barra solo aparece cuando llevas algo y solo muestra los huecos ocupados.
 - **Notas**: hay notas de otros exploradores con pistas (`E` para leerlas).
+- **Caer y levantarse**: si mueres con un compañero en pie en el mismo nivel,
+  **caes** en vez de morir: tiene 30 s para llegar y levantarte manteniendo
+  `E` 3 segundos (vuelves con 35 de salud). Si nadie llega (o te rindes con
+  `Espacio`), o si juegas solo, **despiertas en otra parte del nivel**, no al
+  principio.
+- **Sonido**: las criaturas suenan desde su lado; cuando algo corre hacia ti
+  se oyen sus pisadas y el zumbido de las luces se corta.
 - **Screamers**: si una criatura te alcanza, si te asomas a la ventana
   equivocada o si deambulas a oscuras con poca cordura, una cara te salta a la
   pantalla con un chillido agudo. Se pueden desactivar en la configuración.
@@ -56,19 +78,31 @@ nivel siguiente; las demás están cerradas con llave.
 
 `WASD` moverse · `Shift` correr · `C`/`Ctrl` agacharse · `G` gritar ·
 `Espacio` saltar · ratón mirar · `F` linterna · `E` coger, abrir, leer y
-hablar · `1`-`6` o rueda: elegir objeto · clic izquierdo (o `Q`): usarlo (la
-bengala se lanza) · `Esc` pausa.
+hablar (mantener junto a un compañero caído: levantarle) · `T` tiza (con
+`A`/`D`: flecha) · `1`-`6` o rueda: elegir objeto · clic izquierdo (o `Q`):
+usarlo (la bengala se lanza) · `Esc` pausa.
 
 ## Configuración
 
 Desde el menú principal o desde la pausa (`Esc`) se puede ajustar el volumen
 (general, ambiente y efectos), la sensibilidad del ratón, invertir el eje
-vertical, el campo de visión, el brillo y el contador de FPS. Los ajustes se
-guardan en el navegador. El juego se dibuja a media resolución para que vaya
-fluido y, si el equipo no llega a unos 40 FPS, la baja solo un poco más
-(`PIXEL_RATIO` y `MIN_PIXEL_RATIO` en `src/game.ts`). Las texturas se generan
-en un hilo aparte (`src/texworker.ts`) para que cambiar de nivel no congele el
-juego.
+vertical, el campo de visión, el brillo, el contador de FPS, la **calidad
+gráfica** y el **chat de voz**. Los ajustes se guardan en el navegador.
+
+**Calidad**: lo que más cuesta es el relleno (cada píxel pasa por el shader de
+luz), por eso con el zoom del navegador acercado iba mucho más fluido (hay
+menos píxeles). En **Automática** (por defecto) el juego empieza a media
+resolución y, si no llega a unos 50 FPS, la baja enseguida; por debajo de
+cierto punto quita también la suciedad de las superficies y el filtro
+anisótropo. **Alta**, **Media** y **Baja** la fijan (la baja dibuja unas 3,5
+veces más rápido que la alta). Ver `QUALITY` en `src/game.ts`. Las texturas se
+generan en un hilo aparte (`src/texworker.ts`) para que cambiar de nivel no
+congele el juego.
+
+**Chat de voz por proximidad**: al activarlo se pide el micrófono. A cada
+compañero se le oye según la distancia (a unos 24 m ya no), desde su lado,
+ahogado si hay paredes en medio y nada si está en otro nivel. Las voces van
+directas entre navegadores (WebRTC), sin pasar por el anfitrión.
 
 ## Cómo jugar con amigos
 
@@ -117,7 +151,8 @@ Los parámetros de cada nivel (luces, niebla, cansancio, apagones…) están en
   el mismo shader que el mapa de luz, que es mucho más ligero.
 - **PeerJS (WebRTC)** para el online. El jugador que crea la sala es el
   anfitrión: mueve a las criaturas, decide los apagones y los cambios del
-  laberinto, y reenvía el estado a los demás.
+  laberinto, lleva el director de tensión y reenvía el estado a los demás. La
+  voz va en llamadas directas entre jugadores.
 - **TypeScript + Vite**. Todas las texturas y sonidos se generan por código; no
   hay archivos de recursos. Las texturas usan ruido periódico, así que se
   repiten sin que se note el corte.
@@ -174,8 +209,9 @@ src/
 ├── post.ts       # postprocesado
 ├── screamer.ts   # sustos a pantalla completa
 ├── game.ts       # bucle del juego en primera persona
-├── authority.ts  # lógica del anfitrión (criaturas, apagones, objetos)
+├── authority.ts  # lógica del anfitrión (criaturas, director de tensión, apagones, objetos)
 ├── net.ts        # conexión P2P
+├── voice.ts      # chat de voz por proximidad
 ├── protocol.ts   # mensajes de red
 ├── sound.ts      # sonido sintetizado
 ├── hud.ts        # interfaz

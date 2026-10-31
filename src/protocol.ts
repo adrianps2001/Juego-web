@@ -22,7 +22,25 @@ export interface Pose {
   noise: number; // ruido que hace ahora mismo (0 = silencio, 1 = correr, 1,5 = gritar)
   shout: boolean; // acaba de gritar
   dead: boolean;
+  downed?: boolean; // caído: un compañero aún puede levantarle
+  hp?: number; // salud y cordura (para que el director dosifique la partida)
+  san?: number;
 }
+
+/** Marca de tiza en una pared (la ven todos). */
+export interface Mark {
+  id: number;
+  level: number;
+  x: number;
+  y: number;
+  z: number;
+  ry: number; // hacia dónde mira la cara de la pared
+  color: number;
+  arrow: number; // -1 flecha a la izquierda, 1 a la derecha, 0 una cruz
+}
+
+/** Sonido que el director hace sonar cerca de alguien (para meter tensión). */
+export type CueKind = 'steps' | 'knock' | 'growl' | 'whisper' | 'scrape';
 
 export interface PlayerState extends Pose {
   id: string;
@@ -55,10 +73,12 @@ export type ClientMessage =
   | { t: 'pose'; pose: Pose }
   | { t: 'pickup'; key: string }
   | { t: 'flare'; level: number; x: number; y: number; z: number }
-  | { t: 'died'; reason: string };
+  | { t: 'died'; reason: string }
+  | { t: 'revive'; id: string } // he levantado a este compañero
+  | { t: 'mark'; level: number; x: number; y: number; z: number; ry: number; arrow: number };
 
 export type HostMessage =
-  | { t: 'welcome'; id: string; color: number; picked: string[]; x: number; z: number; session: number }
+  | { t: 'welcome'; id: string; color: number; picked: string[]; x: number; z: number; session: number; marks: Mark[] }
   | { t: 'full' }
   | {
       t: 'state';
@@ -73,4 +93,7 @@ export type HostMessage =
   | { t: 'restock'; keys: string[] }
   | { t: 'hit'; damage: number; kind: EntityKind }
   | { t: 'say'; id: number; text: string }
-  | { t: 'notice'; text: string };
+  | { t: 'notice'; text: string }
+  | { t: 'revived'; by: string }
+  | { t: 'cue'; kind: CueKind; level: number; x: number; z: number }
+  | { t: 'mark'; mark: Mark };

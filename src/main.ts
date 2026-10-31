@@ -4,6 +4,7 @@ import { setSession } from './levels';
 import { hostRoom, joinRoom, type Link } from './net';
 import type { HostMessage } from './protocol';
 import { Sound } from './sound';
+import { Voice } from './voice';
 import { initSettingsUi, openSettings } from './settings-ui';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -19,6 +20,7 @@ const hud = new Hud();
 let link: Link | null = null;
 let game: Game | null = null;
 let sound: Sound | null = null;
+let voice: Voice | null = null;
 
 try {
   nameInput.value = localStorage.getItem('nombre') ?? '';
@@ -35,6 +37,8 @@ function onMessage(msg: HostMessage) {
       status.textContent = '';
       setSession(msg.session); // objetos y criaturas de esta partida (iguales para todos)
       game = new Game($('game'), hud, sound!, msg.id, msg.picked, msg, (m) => link?.send(m));
+      game.addMarks(msg.marks ?? []);
+      startVoice();
       if (import.meta.env.DEV) Object.assign(window, { juego: game }); // para depurar desde la consola
       break;
     case 'full':
@@ -58,7 +62,23 @@ function onMessage(msg: HostMessage) {
     case 'notice':
       if (game) hud.notice(msg.text);
       break;
+    case 'revived':
+      game?.onRevived(msg.by);
+      break;
+    case 'cue':
+      game?.onCue(msg.kind, msg.level, msg.x, msg.z);
+      break;
+    case 'mark':
+      game?.addMark(msg.mark);
+      break;
   }
+}
+
+/** El chat de voz necesita la partida y la conexión (en el anfitrión, la bienvenida llega antes). */
+function startVoice() {
+  if (voice || !link || !game || !sound) return;
+  voice = new Voice(link.peer, sound, (text) => hud.notice(text));
+  game.setVoice(voice);
 }
 
 async function start(mode: 'host' | 'join') {
@@ -89,11 +109,14 @@ async function start(mode: 'host' | 'join') {
       if (link === mine && !game) leave('El anfitrión no responde. Comprueba el código y que su pestaña siga abierta.');
     }, 20000);
   }
+  startVoice();
   $('room').textContent = link.roomCode;
   history.replaceState(null, '', `?sala=${link.roomCode}`);
 }
 
 function leave(reason = '') {
+  voice?.dispose();
+  voice = null;
   link?.leave();
   game?.dispose();
   sound?.close();

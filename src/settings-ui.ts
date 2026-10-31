@@ -1,4 +1,4 @@
-import { DEFAULTS, onSettings, updateSettings, type Settings } from './settings';
+import { DEFAULTS, onSettings, updateSettings, type Quality, type Settings } from './settings';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -8,6 +8,7 @@ const ranges: { id: string; key: NumberKey; format: (v: number) => string }[] = 
   { id: 'set-master', key: 'master', format: (v) => `${Math.round(v * 100)} %` },
   { id: 'set-ambient', key: 'ambient', format: (v) => `${Math.round(v * 100)} %` },
   { id: 'set-sfx', key: 'sfx', format: (v) => `${Math.round(v * 100)} %` },
+  { id: 'set-voicevol', key: 'voiceVolume', format: (v) => `${Math.round(v * 100)} %` },
   { id: 'set-sensitivity', key: 'sensitivity', format: (v) => `${v.toFixed(2)}×` },
   { id: 'set-fov', key: 'fov', format: (v) => `${v}°` },
   { id: 'set-brightness', key: 'brightness', format: (v) => `${Math.round(v * 100)} %` },
@@ -29,6 +30,10 @@ export function initSettingsUi() {
   screamers.addEventListener('change', () => updateSettings({ screamers: screamers.checked }));
   const fullscreen = $<HTMLInputElement>('set-fullscreen');
   fullscreen.addEventListener('change', () => updateSettings({ fullscreen: fullscreen.checked }));
+  const voice = $<HTMLInputElement>('set-voice');
+  voice.addEventListener('change', () => updateSettings({ voice: voice.checked }));
+  const quality = $<HTMLSelectElement>('set-quality');
+  quality.addEventListener('change', () => updateSettings({ quality: quality.value as Quality }));
 
   onSettings((s) => {
     for (const r of ranges) {
@@ -39,6 +44,8 @@ export function initSettingsUi() {
     fps.checked = s.showFps;
     screamers.checked = s.screamers;
     fullscreen.checked = s.fullscreen;
+    voice.checked = s.voice;
+    quality.value = s.quality;
   });
 
   $('settings-reset').addEventListener('click', () => updateSettings({ ...DEFAULTS }));

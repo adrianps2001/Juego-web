@@ -232,6 +232,37 @@ function wakes(b: Builder, R: Rng, mazes: Maze[], n: number) {
   b.storey(0);
 }
 
+/**
+ * Referencias para orientarse: códigos de sector pintados con plantilla en
+ * las paredes, uno cada 30-40 m, cada uno distinto. Usan su propio generador
+ * para no cambiar nada del laberinto.
+ */
+function landmarks(b: Builder, seed: number, mazes: Maze[]) {
+  const R = makeRng(seed);
+  const placed: { x: number; z: number; s: number }[] = [];
+  const shifts = b.map.shifts;
+  let n = 0;
+  for (const m of mazes) {
+    const s = m.o.storey;
+    b.storey(s);
+    for (const blk of take(R, solidGround(m), 999)) {
+      const c = mid(blk);
+      const far = (p: { x: number; z: number }) => !placed.some((o) => o.s === s && Math.hypot(o.x - p.x, o.z - p.z) < 32);
+      if (blk.ceil - blk.floor < 2.6 || !far(c)) continue;
+      const spots = wallSpots({ b, R, block: blk, room: blk.area, floor: blk.floor, ceil: blk.ceil, doors: blk.arms, storey: s }, 0.5)
+        // nunca en una pared que cambia (se quedaría flotando)
+        .filter((p) => far(p) && !shifts.some((h) => p.x > h.x - 1 && p.x < h.x + h.w + 1 && p.z > h.z - 1 && p.z < h.z + h.d + 1));
+      if (!spots.length) continue;
+      const p = pick(R, spots);
+      const code = `${'ABCDEFGHJKLMNPRSTUVWXYZ'[n % 23]}-${((n * 7) % 9) + 1}`;
+      n++;
+      b.prop('sector', p.x + Math.sin(p.ry) * 0.03, p.z + Math.cos(p.ry) * 0.03, p.ry, { y: Math.min(blk.ceil - 0.5, blk.floor + 2.15), text: code });
+      placed.push({ x: p.x, z: p.z, s });
+    }
+  }
+  b.storey(0);
+}
+
 /** Puerta en el fondo de un callejón: en la pared del final, mirando al pasillo. */
 function doorAt(k: Block) {
   const d = k.arms[0].dir;
@@ -546,8 +577,9 @@ function level0(): LevelMap {
     exitDoors(b, C, m0, start, { x: X + 0.55, z: Z + 6.75, ry: Math.PI / 2 }, 'Bajar al Nivel 1');
   }
   scatterItems(b, C, [m0, m1], ['agua', 'agua', 'pila', 'pila', 'barrita', 'vendas', 'lata'], 80);
-  scatterLairs(b, C, [m0, m1], start, [...Array.from({ length: 22 }, () => ['figure'] as [EntityKind]), ['smiler'], ['smiler'], ['smiler']]);
+  scatterLairs(b, C, [m0, m1], start, Array.from({ length: 25 }, () => ['figure'] as [EntityKind]));
   wakes(b, R, [m0, m1], 8);
+  landmarks(b, 0x5ec70, [m0, m1]);
   return b.build();
 }
 
@@ -809,6 +841,7 @@ function level1(): LevelMap {
     ['skinstealer', ['¿Vecino?', 'Ayúdame… ayú-da-me.', 'No me dejes aquí.']],
   ]);
   wakes(b, R, [m0, m1], 6);
+  landmarks(b, 0x5ec71, [m0, m1]);
   return b.build();
 }
 
@@ -1037,6 +1070,7 @@ function level2(): LevelMap {
   }
   b.storey(0);
   wakes(b, R, [m0, m1], 6);
+  landmarks(b, 0x5ec72, [m0, m1]);
   return b.build();
 }
 

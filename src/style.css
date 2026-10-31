@@ -72,6 +72,7 @@ button.secondary:hover { background: #4d4630; }
 .setting { display: grid; grid-template-columns: 1fr 1.2fr 52px; align-items: center; gap: 10px; font-size: 0.9rem; }
 .setting output { text-align: right; font-variant-numeric: tabular-nums; opacity: 0.8; font-size: 0.85rem; }
 .setting input[type=range] { width: 100%; accent-color: #b39b3c; padding: 0; }
+.setting select { width: 100%; background: #1b1a14; color: inherit; border: 1px solid #5a5236; padding: 4px; font: inherit; }
 .check { flex-direction: row; align-items: center; gap: 8px; font-size: 0.9rem; }
 .check input { accent-color: #b39b3c; width: 16px; height: 16px; }
 .settings-panel .row { margin-top: 10px; }
@@ -79,6 +80,7 @@ button.secondary:hover { background: #4d4630; }
 #fps { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); background: rgba(0, 0, 0, 0.6); padding: 3px 8px; border-radius: 4px; font-size: 0.8rem; font-variant-numeric: tabular-nums; pointer-events: none; }
 @media (max-width: 480px) { .setting { grid-template-columns: 1fr; gap: 4px; } .setting output { text-align: left; } }
 #death { background: rgba(10, 0, 0, 0.92); }
+#death.downed { background: rgba(40, 0, 0, 0.55); pointer-events: none; }
 #death h2 { font-size: 2.6rem; color: #d24b3c; letter-spacing: 0.2em; margin: 0 0 8px; }
 #escaped { background: #000; }
 #escaped h2 { font-size: 2rem; color: #e4cf73; }

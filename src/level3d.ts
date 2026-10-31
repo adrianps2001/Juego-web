@@ -153,15 +153,7 @@ export class Level3D {
     this.mergeStatics(statics);
 
     // objetos que se pueden coger, cajas y salidas
-    for (const item of map.items) {
-      if (picked.has(item.key)) continue;
-      const obj = flatten(itemModel(item.kind));
-      obj.position.set(item.x, item.y, item.z);
-      obj.rotation.y = hash(item.x * 10, item.z * 10) * Math.PI * 2;
-      this.items.set(item.key, obj);
-      this.group.add(obj);
-      this.smalls.push(obj);
-    }
+    for (const item of map.items) if (!picked.has(item.key)) this.addItem(item);
     for (const c of map.crates) {
       const obj = makeCrate(picked.has(c.key));
       obj.position.set(c.x, c.y + (c.shelf ? 1.21 : 0), c.z);
@@ -989,6 +981,21 @@ export class Level3D {
   }
 
   /** La caja vuelve a estar cerrada (y llena). */
+  private addItem(item: LevelMap['items'][number]) {
+    const obj = flatten(itemModel(item.kind));
+    obj.position.set(item.x, item.y, item.z);
+    obj.rotation.y = hash(item.x * 10, item.z * 10) * Math.PI * 2;
+    this.items.set(item.key, obj);
+    this.group.add(obj);
+    this.smalls.push(obj);
+  }
+
+  /** Un objeto vuelve a estar en su sitio (lo repone el director). */
+  restoreItem(key: string) {
+    const item = this.map.items.find((i) => i.key === key);
+    if (item && !this.items.has(key)) this.addItem(item);
+  }
+
   restoreCrate(key: string) {
     const crate = this.crates.get(key);
     const lid = crate?.getObjectByName('lid');
