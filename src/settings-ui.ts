@@ -27,6 +27,8 @@ export function initSettingsUi() {
   fps.addEventListener('change', () => updateSettings({ showFps: fps.checked }));
   const screamers = $<HTMLInputElement>('set-screamers');
   screamers.addEventListener('change', () => updateSettings({ screamers: screamers.checked }));
+  const fullscreen = $<HTMLInputElement>('set-fullscreen');
+  fullscreen.addEventListener('change', () => updateSettings({ fullscreen: fullscreen.checked }));
 
   onSettings((s) => {
     for (const r of ranges) {
@@ -36,6 +38,7 @@ export function initSettingsUi() {
     invert.checked = s.invertY;
     fps.checked = s.showFps;
     screamers.checked = s.screamers;
+    fullscreen.checked = s.fullscreen;
   });
 
   $('settings-reset').addEventListener('click', () => updateSettings({ ...DEFAULTS }));

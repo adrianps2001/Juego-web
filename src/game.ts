@@ -176,6 +176,7 @@ export class Game {
     this.resize();
     this.stopSettings = onSettings((st) => this.applySettings(st));
     window.addEventListener('resize', this.resize);
+    window.addEventListener('beforeunload', this.onBeforeUnload);
     hud.show(true);
     this.enterLevel(0, false);
     // precarga las texturas de los demás niveles en segundo plano
@@ -457,15 +458,29 @@ export class Game {
   lockPointer = () => {
     if (this.pose.level === ESCAPED) return;
     const canvas = this.renderer.domElement;
+    // a pantalla completa el navegador deja al juego quedarse con Ctrl+W (y Ctrl+T, Ctrl+N, Ctrl+Q)
+    if (this.settings.fullscreen && !document.fullscreenElement) {
+      document.documentElement
+        .requestFullscreen({ navigationUI: 'hide' })
+        .then(() => (navigator as Navigator & { keyboard?: { lock?: (keys: string[]) => Promise<void> } }).keyboard?.lock?.(['KeyW', 'KeyT', 'KeyN', 'KeyQ']))
+        .catch(() => {});
+    }
     // movimiento "en bruto", sin la aceleración del sistema (si el navegador lo admite)
     canvas.requestPointerLock({ unadjustedMovement: true })?.catch(() => canvas.requestPointerLock());
   };
   private locked = () => document.pointerLockElement === this.renderer.domElement;
+  /** Si se intenta cerrar la pestaña en mitad de la partida, el navegador pide confirmación. */
+  private onBeforeUnload = (e: BeforeUnloadEvent) => {
+    e.preventDefault();
+    e.returnValue = '';
+  };
   private onLockChange = () => {
     this.lockedAt = performance.now();
     this.hud.showLock(!this.locked() && this.pose.level !== ESCAPED);
   };
   private onKeyDown = (e: KeyboardEvent) => {
+    // jugando, los atajos con Ctrl (agacharse + andar = Ctrl+W) no son para el navegador
+    if (e.ctrlKey && this.locked()) e.preventDefault();
     if (!this.keys.has(e.code)) this.pressed.add(e.code);
     this.keys.add(e.code);
     // Ctrl+W cerraría la pestaña: con Ctrl solo se agacha
@@ -1261,6 +1276,8 @@ export class Game {
     this.level?.dispose();
     this.post.dispose();
     window.removeEventListener('resize', this.resize);
+    window.removeEventListener('beforeunload', this.onBeforeUnload);
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     document.removeEventListener('mousemove', this.onMouseMove);

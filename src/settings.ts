@@ -11,6 +11,7 @@ export interface Settings {
   brightness: number;
   showFps: boolean;
   screamers: boolean; // sustos a pantalla completa
+  fullscreen: boolean; // jugar a pantalla completa (así Ctrl+W no cierra el juego)
 }
 
 export const DEFAULTS: Settings = {
@@ -23,6 +24,7 @@ export const DEFAULTS: Settings = {
   brightness: 1,
   showFps: false,
   screamers: true,
+  fullscreen: true,
 };
 
 const KEY = 'ajustes';
