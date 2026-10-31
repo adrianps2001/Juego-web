@@ -44,7 +44,7 @@ const SPEC: Record<EntityKind, { eye: number; wake: number; walk: number; run: n
   hound: { eye: 0.85, wake: 45, walk: 1.4, run: 4.6, reach: 1.15, damage: 22, cooldown: 1.2 },
   faceling: { eye: 1.95, wake: 60, walk: 1.0, run: 3.6, reach: 1.0, damage: 15, cooldown: 1.5 },
   skinstealer: { eye: 1.6, wake: 40, walk: 0.9, run: 4.2, reach: 1.2, damage: 45, cooldown: 3 },
-  clump: { eye: 0.6, wake: 40, walk: 1.5, run: 6.2, reach: 1.0, damage: 35, cooldown: 2 },
+  clump: { eye: 0.6, wake: 40, walk: 1.5, run: 4.6, reach: 1.0, damage: 35, cooldown: 2 },
   duller: { eye: 1.6, wake: 20, walk: 0, run: 0, reach: 1.3, damage: 30, cooldown: 25 },
 };
 
@@ -88,6 +88,8 @@ const DIRS8 = [
 ] as const;
 /** Criaturas a la vez por nivel, como mucho. */
 const MAX_ACTIVE = 3;
+/** Distancia a la que una bengala encendida espanta a las criaturas (menos al Smiler). */
+const FLARE_SCARE = 9;
 
 interface Player extends PlayerState {
   speed: number;
@@ -428,6 +430,20 @@ export class Authority {
       this.despawn(e, 5);
       return;
     }
+    // una bengala encendida cerca espanta a todos menos al Smiler (que va hacia ella)
+    const flare = e.kind === 'smiler' ? null : this.flares.find((f) => f.level === e.level && Math.hypot(f.x - e.x, f.z - e.z) < FLARE_SCARE);
+    if (flare) {
+      if (e.kind === 'figure') return this.despawn(e, SPEC.figure.cooldown);
+      e.target = null;
+      e.goal = null;
+      if (e.kind === 'duller') {
+        e.anim = Anim.Hidden; // se mete en la pared
+        return;
+      }
+      e.anim = Anim.Flee;
+      this.away(e, flare, map, Math.max(SPEC[e.kind].walk * 1.5, SPEC[e.kind].run * 0.8), dt);
+      return;
+    }
     switch (e.kind) {
       case 'figure':
         return this.figure(e, here, map, dt);
@@ -487,9 +503,10 @@ export class Authority {
     if (!target) {
       for (const p of here) {
         const d = Math.hypot(p.x - e.x, p.z - e.z);
-        const lit = p.light && d < 25 && this.sees(e, p, map);
+        // la luz de cerca la nota aunque haya una esquina por medio; y si estás encima, también
+        const lit = p.light && d < 25 && (d < 10 || this.sees(e, p, map));
         const loud = p.noise > 1 && d < 20;
-        if (lit || loud) {
+        if (lit || loud || d < 5) {
           target = p;
           e.target = p.id;
           e.mode = 'stalk';
@@ -521,7 +538,8 @@ export class Authority {
         return;
       }
       e.anim = Anim.Run;
-      const ok = this.follow(e, this.field(map, target.x, target.z, true), target, map, spec.run, dt, mask);
+      // al lanzarse sale de lo oscuro si hace falta (antes te perdía si estabas en la luz)
+      const ok = this.follow(e, this.field(map, target.x, target.z, true), target, map, spec.run, dt);
       if (!ok || e.timer > 12) this.forget(e);
       return;
     }
@@ -542,7 +560,9 @@ export class Authority {
       return;
     }
     e.anim = Anim.Walk;
-    this.follow(e, this.field(map, target.x, target.z, true), target, map, spec.walk, dt, mask);
+    // acecha por lo oscuro; si por ahí no hay camino, por donde sea
+    const field = this.field(map, target.x, target.z, true);
+    if (!this.follow(e, field, target, map, spec.walk, dt, mask)) this.follow(e, field, target, map, spec.walk, dt);
   }
 
   private forget(e: Entity) {
@@ -867,12 +887,18 @@ export class Authority {
   }
 
   /** Se aleja del jugador subiendo por el campo de distancias. */
-  private away(e: Entity, p: Player, map: LevelMap, speed: number, dt: number) {
+  private away(e: Entity, p: { x: number; z: number }, map: LevelMap, speed: number, dt: number) {
     const field = this.field(map, p.x, p.z, false);
     const w = map.w;
     let cx = cellOf(e.x);
     let cz = cellOf(e.z);
     let cur = field[cz * w + cx];
+    // sin campo (p. ej. la bengala cayó pegada a una pared): se aparta en línea recta
+    if (cur < 0) {
+      const d = Math.max(0.1, Math.hypot(e.x - p.x, e.z - p.z));
+      this.steer(e, e.x + ((e.x - p.x) / d) * 3, e.z + ((e.z - p.z) / d) * 3, speed, dt, map);
+      return;
+    }
     for (let k = 0; k < 6; k++) {
       let moved = false;
       for (const [dx, dz] of DIRS8) {

@@ -232,6 +232,52 @@ function wakes(b: Builder, R: Rng, mazes: Maze[], n: number) {
   b.storey(0);
 }
 
+/** Puerta en el fondo de un callejón: en la pared del final, mirando al pasillo. */
+function doorAt(k: Block) {
+  const d = k.arms[0].dir;
+  const od = OPP[d];
+  const r = k.area;
+  const x = od === 0 ? r.x + r.w - 0.05 : od === 1 ? r.x + 0.05 : r.x + r.w / 2;
+  const z = od === 2 ? r.z + r.d - 0.05 : od === 3 ? r.z + 0.05 : r.z + r.d / 2;
+  const ry = FACE[d];
+  return { x, z, ry, front: { x: x + Math.sin(ry) * 1.2, z: z + Math.cos(ry) * 1.2, ry } };
+}
+
+/**
+ * Salidas: la de siempre (fixed) y 5 puertas más al fondo de callejones,
+ * lejos de la llegada y repartidas (cada una lo más lejos posible de las
+ * demás). En cada partida solo 2 al azar (las mismas para todos) tienen el
+ * cartel verde encendido y dejan bajar; las demás están cerradas con llave.
+ */
+function exitDoors(b: Builder, C: Rng, m0: Maze, start: Block, fixed: { x: number; z: number; ry: number }, label: string) {
+  b.storey(0);
+  const near = m0.dist(start);
+  const busy = [...b.map.doors, ...b.map.windows, ...b.map.notes];
+  const free = (p: { x: number; z: number }) => !busy.some((o) => Math.hypot(o.x - p.x, o.z - p.z) < 1.6);
+  const cands = m0.ends.filter((k) => k.kind === 'hall' && (near.get(k) ?? 0) > 12).map(doorAt).filter(free);
+  const spots = [fixed];
+  const away = [mid(start), fixed];
+  while (spots.length < 6 && cands.length) {
+    let best = 0;
+    let bestD = -1;
+    cands.forEach((c, i) => {
+      const d = Math.min(...away.map((p) => Math.hypot(p.x - c.x, p.z - c.z)));
+      if (d > bestD) {
+        bestD = d;
+        best = i;
+      }
+    });
+    const [c] = cands.splice(best, 1);
+    spots.push(c);
+    away.push(c);
+  }
+  const open = take(C, spots.map((_, i) => i), 2);
+  spots.forEach((p, i) => {
+    if (open.includes(i)) b.door(p.x, p.z, p.ry, { look: 'steel', locked: false, sign: 'SALIDA', exit: true, label });
+    else b.door(p.x, p.z, p.ry, { look: 'steel', locked: true });
+  });
+}
+
 const ports = (list: [number, number, number, number?, number?][]): Port[] => list.map(([bx, bz, dir, p, w]) => ({ bx, bz, dir, p, w }));
 
 // direcciones del laberinto: este, oeste, sur, norte
@@ -411,13 +457,12 @@ function level0(): LevelMap {
   {
     const { X, Z } = sq(EXIT, B);
     b.open(X, Z + 1.25, 1.2, 1.5, { ceil: 2.4, wall: 3, lamps: false });
-    b.door(X + 0.1, Z + 2.25, -Math.PI / 2, { look: 'steel', locked: false, sign: 'MANTENIMIENTO' });
+    b.door(X + 0.1, Z + 2.25, -Math.PI / 2, { look: 'steel', locked: false });
     b.ramp(X + 1.2, Z + 1.25, 9.6, 1.5, 1, -3.4, 0, true, 2.4);
     b.open(X + 10.8, Z + 1.25, 1.2, 6, { floor: -3.4, ceil: -1, wall: 3, lamps: false }).lamp(X + 11.4, Z + 4.5, { flicker: true });
     b.ramp(X + 1.2, Z + 5.75, 9.6, 1.5, 0, -6.8, -3.4, true, -1);
     b.open(X + 0.25, Z + 5.75, 0.95, 1.5, { floor: -6.8, ceil: -4.4, wall: 3, lamps: false }).lamp(X + 4, Z + 6.5, { flicker: true });
-    b.exit(X + 0.6, Z + 6.5, -Math.PI / 2, 'NIVEL 1', true);
-    b.note(X + 2, Z + 1.55, 0, 'Cartel oxidado', 'MANTENIMIENTO\nSolo personal autorizado.\n\nDebajo, a rotulador: «baja hasta que el papel amarillo se acabe».');
+    b.note(X + 2, Z + 1.55, 0, 'Cartel oxidado', 'MANTENIMIENTO\nSolo personal autorizado.\n\nDebajo, a rotulador: «abajo hay una puerta. A veces tiene el cartel encendido».');
     p0.push({ bx: 29, bz: 12, dir: DE, p: Z + 2.25, w: 1.2 });
   }
 
@@ -493,10 +538,14 @@ function level0(): LevelMap {
     b.spawn(r.x + r.w / 2, r.z + r.d / 2, FACE[start.arms[0]?.dir ?? 2]);
     b.lamp(r.x + r.w / 2, r.z + r.d / 2);
     const w = wallSpots({ b, R, block: start, room: r, floor: start.floor, ceil: start.ceil, doors: start.arms, storey: 0 }, 0.4)[0];
-    if (w) b.note(w.x + Math.sin(w.ry) * 0.05, w.z + Math.cos(w.ry) * 0.05, w.ry, 'Nota arrugada', 'Si lees esto, has hecho noclip. Estás en el Nivel 0.\n\nEsto es un laberinto, y encima de este hay otro igual. Hay escaleras, suelos rotos y puertas que dan a salas sin suelo.\n\nPara salir, busca una puerta gris de MANTENIMIENTO. Está lejos. No sé dónde.');
+    if (w) b.note(w.x + Math.sin(w.ry) * 0.05, w.z + Math.cos(w.ry) * 0.05, w.ry, 'Nota arrugada', 'Si lees esto, has hecho noclip. Estás en el Nivel 0.\n\nEsto es un laberinto, y encima de este hay otro igual. Hay escaleras, suelos rotos y puertas que dan a salas sin suelo.\n\nPara salir, busca una puerta con el cartel verde de SALIDA encendido. Hay varias puertas iguales, pero solo dos tienen el cartel encendido. Están lejos.');
   }
 
-  scatterItems(b, C, [m0, m1], ['agua', 'agua', 'pila', 'pila', 'barrita', 'vendas', 'lata'], 60);
+  {
+    const { X, Z } = sq(EXIT, B);
+    exitDoors(b, C, m0, start, { x: X + 0.55, z: Z + 6.75, ry: Math.PI / 2 }, 'Bajar al Nivel 1');
+  }
+  scatterItems(b, C, [m0, m1], ['agua', 'agua', 'pila', 'pila', 'barrita', 'vendas', 'lata'], 80);
   scatterLairs(b, C, [m0, m1], start, [...Array.from({ length: 22 }, () => ['figure'] as [EntityKind]), ['smiler'], ['smiler'], ['smiler']]);
   wakes(b, R, [m0, m1], 8);
   return b.build();
@@ -592,7 +641,7 @@ function level1(): LevelMap {
     b.prop('megflag', X + 0.55, Z + 4, Math.PI / 2, { y: 1.8 }).prop('megflag', X + W - 0.05, Z + 10, -Math.PI / 2, { y: 1.8 });
     b.npc({ kind: 'meg', x: X + 3, z: Z + 10, ry: -Math.PI / 2, lines: ['¡Eh! Tranquilo, estás a salvo. Esto es la Base Alpha de la M.E.G.', 'Si se apagan las luces, no enciendas la linterna en los pasillos.', 'Las cajas aparecen cuando no miras. Coge lo que te haga falta.'] });
     b.npc({ kind: 'meg', x: X + 18, z: Z + 4, ry: 0, lines: ['Si te muerde un Hound, véndate rápido.', 'Arriba hay otro almacén. Hay forjados rotos: mira dónde pisas.', 'Bebe agua de almendras: calma la cabeza.'] });
-    b.npc({ kind: 'meg', x: X + 20, z: Z + 16, ry: Math.PI, lines: ['Para bajar al Nivel 2, busca el depósito inundado. Al sureste, muy lejos de aquí.', 'Al este hay un sector en obras. No te acerques a los trabajadores.', 'Allí abajo hace calor. Lleva pilas.'] });
+    b.npc({ kind: 'meg', x: X + 20, z: Z + 16, ry: Math.PI, lines: ['Para bajar al Nivel 2, busca una puerta con el cartel verde de SALIDA encendido. Hay varias puertas iguales: solo algunas tienen el cartel encendido.', 'Al este hay un sector en obras. No te acerques a los trabajadores.', 'Allí abajo hace calor. Lleva pilas.'] });
     b.prop('cot', X + 4, Z + 1.5, 0, { solid: [2, 0.9] }).prop('cot', X + 7, Z + 1.5, 0, { solid: [2, 0.9] }).prop('cot', X + 4, Z + 18.5, Math.PI, { solid: [2, 0.9] });
     b.prop('meg', X + 18, Z + 8, 0, { solid: [2, 1] }).prop('radio', X + 23, Z + 1.5, 0, { solid: [0.5, 0.5] }).prop('tent', X + 7, Z + 11, 0.3, { solid: [2.4, 2.4] });
     b.crate(X + 22, Z + 18.5, 0, 'medico').crate(X + 15, Z + 18.5, 0.1, 'comida');
@@ -680,8 +729,7 @@ function level1(): LevelMap {
     b.prop('debris', X + 14, Z + 8, 1.2, { y: -1.6, solid: [1.6, 1.2] }).prop('barrel', X + 3, Z + 13, 0, { solid: [0.7, 0.7] });
     b.ramp(X + 16, Z + 2, 2, 4, 2, -4, -1.5, true, 0.5);
     b.open(X + 16, Z + 0.25, 2, 1.75, { floor: -4, ceil: -1.6, wall: 0, lamps: false }).lamp(X + 17, Z + 1, { flicker: true });
-    b.exit(X + 17, Z + 0.6, Math.PI, 'NIVEL 2', true);
-    b.note(X + 16.05, Z + 5, Math.PI / 2, 'Nota en la escalera', 'Esta escalera baja más de lo que debería. Al fondo empieza el Nivel 2: túneles, calor y muy poca comida.');
+    b.note(X + 16.05, Z + 5, Math.PI / 2, 'Nota en la escalera', 'Esta escalera baja más de lo que debería. Al fondo hay una puerta: si tiene el cartel encendido, lleva al Nivel 2. Si no, busca otra.');
     b.lair('clump', X + 3, Z + 3);
     p0.push(...ports([[26, 19, DS, X + 7, 2]]));
   }
@@ -732,6 +780,10 @@ function level1(): LevelMap {
   b.storey(0);
 
   const start = m0.at(3, 1) ?? m0.list[0];
+  {
+    const { X, Z } = sq(DEPOT, B);
+    exitDoors(b, C, m0, start, { x: X + 17, z: Z + 0.55, ry: 0 }, 'Bajar al Nivel 2');
+  }
   scatterItems(b, C, [m0, m1], ['agua', 'pila', 'barrita', 'vendas', 'lata', 'bengala', 'agua', 'pila'], 60);
   scatterLairs(b, C, [m0, m1], start, [
     ['hound'],
@@ -876,8 +928,7 @@ function level2(): LevelMap {
   {
     const { X, Z } = sq(EXIT, B);
     b.open(X, Z + 1.2, 7.6, 1.6, { ceil: 2.4, wall: 2, lamps: false }).lamp(X + 6, Z + 2, { flicker: true });
-    b.exit(X + 7.55, Z + 2, -Math.PI / 2, 'SALIDA → NIVEL 3');
-    b.note(X + 6, Z + 1.25, 0, 'Nota en la puerta', 'Por aquí se llega al Nivel 3, la Estación Eléctrica. Más calor y más máquinas. Buena suerte.');
+    b.note(X + 6, Z + 1.25, 0, 'Nota en la puerta', 'Si el cartel de la puerta está encendido, por aquí se llega al Nivel 3, la Estación Eléctrica. Si está apagado, la salida es otra.');
     p0.push({ bx: 35, bz: 22, dir: DE, p: Z + 2, w: 1.6 });
   }
 
@@ -945,15 +996,6 @@ function level2(): LevelMap {
     const near = m0.dist(start);
     const ends = m0.ends.filter((k) => k.kind === 'hall' && (near.get(k) ?? 0) > 10);
     const [e1, e2, e3] = take(R, ends, 3);
-    const doorAt = (k: Block) => {
-      const d = k.arms[0].dir;
-      const od = OPP[d];
-      const r = k.area;
-      const x = od === 0 ? r.x + r.w - 0.05 : od === 1 ? r.x + 0.05 : r.x + r.w / 2;
-      const z = od === 2 ? r.z + r.d - 0.05 : od === 3 ? r.z + 0.05 : r.z + r.d / 2;
-      const ry = FACE[d];
-      return { x, z, ry, front: { x: x + Math.sin(ry) * 1.2, z: z + Math.cos(ry) * 1.2, ry } };
-    };
     // un almacén con cajas y ordenadores
     if (e1) {
       const d = doorAt(e1);
@@ -978,6 +1020,10 @@ function level2(): LevelMap {
     }
   }
 
+  {
+    const { X, Z } = sq(EXIT, B);
+    exitDoors(b, C, m0, start, { x: X + 7.45, z: Z + 2, ry: -Math.PI / 2 }, 'Abrir la puerta… ¿qué habrá más abajo?');
+  }
   scatterItems(b, C, [m0, m1], ['pila', 'pila', 'vendas', 'agua', 'barrita', 'bengala', 'lata', 'pila'], 60);
   scatterLairs(b, C, [m0, m1], start, [
     ...Array.from({ length: 9 }, () => ['smiler'] as [EntityKind]),

@@ -90,6 +90,7 @@ export interface Door {
   to?: { x: number; z: number; ry: number; s?: number }; // destino al cruzarla
   window?: boolean;
   sign?: string; // cartel encima (p. ej. SALIDA en verde)
+  exit?: boolean; // salida al nivel siguiente (las que tienen el cartel verde encendido)
   label?: string; // texto al interactuar
 }
 

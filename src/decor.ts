@@ -132,7 +132,7 @@ export const L0_NOTES: [string, string][] = [
   ['Nota a lápiz', 'Las paredes se mueven cuando no miras. Mira siempre una.'],
   ['Nota temblorosa', 'Hay un sitio donde el suelo se acaba y se ven pisos y pisos hacia abajo. No te asomes. Te llama.'],
   ['Post-it', 'Algunas puertas dan a una sala sin suelo. Abajo hay otra sala. Duele.'],
-  ['Nota manchada', 'Busca la puerta gris de MANTENIMIENTO. Detrás hay una escalera que baja.'],
+  ['Nota manchada', 'Las puertas con el cartel verde encendido son las únicas que se abren. Las demás, por mucho que empujes, no.'],
   ['Trozo de cuaderno', 'Llevo días siguiendo la pared de la derecha. Creo que he vuelto al principio.'],
   ['Nota sin firmar', 'Las figuras no se mueven si las miras. Pero no puedes mirar a todas.'],
   ['Ticket de compra', 'Total: 0,00\nGracias por su visita.\n\nPor detrás: «no hay salida por el techo».'],
@@ -181,7 +181,7 @@ export const L1_NOTES: [string, string][] = [
   ['Hoja de inventario', 'Pasillo 14: 6 cajas.\nPasillo 15: 6 cajas.\nPasillo 16: no existe.\nPasillo 17: 6 cajas.'],
   ['Nota manchada', 'La sangre roja, vivo.\nLa sangre clara, aléjate.'],
   ['Papel pegado con cinta', 'Las escaleras de este sector suben a un almacén igual que este. Arriba hay huecos en el suelo: mira dónde pisas.'],
-  ['Nota de la M.E.G.', 'Para bajar al Nivel 2, busca el depósito inundado. Está lejos de la Sala Manila. Mucho.'],
+  ['Nota de la M.E.G.', 'Para bajar al Nivel 2, busca una puerta con el cartel verde de SALIDA encendido. Cada vez están en un sitio distinto.'],
   ['Nota rota', '…y la puerta daba a una sala sin suelo. Caí al piso de abajo. Me rompí algo. No sé qué.'],
 ];
 

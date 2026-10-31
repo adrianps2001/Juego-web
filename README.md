@@ -9,14 +9,19 @@ lore de la wiki de los Backrooms:
 
 | Nivel | Nombre | Qué hay |
 |---|---|---|
-| 0 | El Umbral | Un **laberinto** de papel amarillo y moqueta húmeda en **dos plantas**: salas pequeñas, pasillos estrechos y anchos que se tuercen, callejones sin salida y salas raras (puertas falsas, una cama sola, escaleras que acaban en el techo, techos bajísimos…). Paredes que **cambian cuando nadie mira**. Piezas: la sala de columnas, la sala de los agujeros con una pasarela encima, **la caída infinita** (un pozo con pisos y pisos hacia abajo: si caes, despiertas en otra parte), el pasillo larguísimo, la sala altísima, zonas de arcos, oficinas y apagón, y las **Habitaciones Rojas**. Se sale por la puerta de **MANTENIMIENTO**, lejos del inicio. |
-| 1 | La Zona Habitable | Laberinto de **hormigón** en dos plantas: almacenes, cuartos con cajas, charcos y goteras. Piezas: la Sala Manila, la **Base Alpha** de la M.E.G. (zona segura), el **pasillo que no acaba**, el sector en obras con **trabajadores sombra**, el almacén **Gild**, el sector **gótico**, un aparcamiento bajo, los pasillos seguros y el **depósito inundado** con la escalera al Nivel 2. **Parpadeos**: apagones totales. |
-| 2 | Pipe Dreams | Laberinto de **túneles** estrechos y calurosos en dos alturas, con tuberías, rejillas sueltas que caen a los túneles de abajo, luces **en serie**, violetas de emergencia, puertas de acero y ventanas al final de los túneles. Piezas: sala de máquinas, sala de calderas con pasarela, campamento abandonado, un pozo sin fondo y la salida al Nivel 3. Algunas puertas llevan a sitios sueltos: un almacén, un pasillo que vuelve a la misma puerta y **el Vacío**. |
+| 0 | El Umbral | Un **laberinto** de papel amarillo y moqueta húmeda en **dos plantas**: salas pequeñas, pasillos estrechos y anchos que se tuercen, callejones sin salida y salas raras (puertas falsas, una cama sola, escaleras que acaban en el techo, techos bajísimos…). Paredes que **cambian cuando nadie mira**. Piezas: la sala de columnas, la sala de los agujeros con una pasarela encima, **la caída infinita** (un pozo con pisos y pisos hacia abajo: si caes, despiertas en otra parte), el pasillo larguísimo, la sala altísima, zonas de arcos, oficinas y apagón, y las **Habitaciones Rojas**. |
+| 1 | La Zona Habitable | Laberinto de **hormigón** en dos plantas: almacenes, cuartos con cajas, charcos y goteras. Piezas: la Sala Manila, la **Base Alpha** de la M.E.G. (zona segura), el **pasillo que no acaba**, el sector en obras con **trabajadores sombra**, el almacén **Gild**, el sector **gótico**, un aparcamiento bajo, los pasillos seguros y el **depósito inundado**. **Parpadeos**: apagones totales. |
+| 2 | Pipe Dreams | Laberinto de **túneles** estrechos y calurosos en dos alturas, con tuberías, rejillas sueltas que caen a los túneles de abajo, luces **en serie**, violetas de emergencia, puertas de acero y ventanas al final de los túneles. Piezas: sala de máquinas, sala de calderas con pasarela, campamento abandonado y un pozo sin fondo. Algunas puertas llevan a sitios sueltos: un almacén, un pasillo que vuelve a la misma puerta y **el Vacío**. |
 
 Los niveles se generan con un **laberinto con semilla fija** (todos los
 jugadores ven el mismo): salas pequeñas, pasillos, bucles y callejones, en dos
 plantas unidas por escaleras, suelos rotos y puertas que dan a una sala sin
 suelo (caes a la de abajo). Las salas míticas son piezas hechas a mano.
+
+**Salidas:** cada nivel tiene 6 puertas de salida posibles repartidas por el
+mapa, lejos del inicio. En cada partida solo 2, al azar (las mismas para todos
+los jugadores), tienen el cartel verde de **SALIDA** encendido y dejan bajar al
+nivel siguiente; las demás están cerradas con llave.
 
 ## Criaturas
 

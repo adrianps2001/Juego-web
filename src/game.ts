@@ -28,6 +28,12 @@ const MOUSE_SPEED = 0.0022;
 // equipo no llega a ~40 FPS, la resolución baja sola (hasta MIN_PIXEL_RATIO)
 const PIXEL_RATIO = 0.5;
 const MIN_PIXEL_RATIO = 0.3;
+/**
+ * Tope de píxeles de la imagen (equivale a 1080p a la mitad). Con el zoom del
+ * navegador alejado la ventana tiene muchos más píxeles CSS y, sin tope, se
+ * dibujaban muchísimos más (iba fatal); con el zoom acercado, menos.
+ */
+const MAX_PIXELS = 960 * 540;
 // movimientos de ratón más grandes que esto en un solo evento son fallos del navegador
 const MAX_MOUSE_JUMP = 250;
 // por debajo de esta altura se ha caído por un agujero
@@ -145,6 +151,8 @@ export class Game {
   private lockedAt = 0;
   private hurtSound = 0;
   private pixelRatio = PIXEL_RATIO;
+  /** Cuánto hay que reducir la resolución para no pasar de MAX_PIXELS (1 = nada). */
+  private fit = 1;
   private levelToken = 0;
   private lastFloor = 0; // último suelo pisado (para saber si se cae a un agujero)
   private loopWraps = 0;
@@ -512,6 +520,9 @@ export class Game {
   private resize = () => {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
+    this.fit = Math.min(1, Math.sqrt(MAX_PIXELS / Math.max(1, w * h * PIXEL_RATIO * PIXEL_RATIO)));
+    this.renderer.setPixelRatio(PIXEL_RATIO * this.fit);
+    this.post.setPixelRatio(this.pixelRatio * this.fit);
     this.renderer.setSize(w, h);
     this.post.setSize(w, h);
     this.camera.aspect = w / h;
@@ -655,7 +666,7 @@ export class Game {
     if (r === this.pixelRatio) return;
     this.pixelRatio = r;
     // solo cambia la imagen interna de la escena: redimensionar el lienzo daba un tirón cada vez
-    this.post.setPixelRatio(r);
+    this.post.setPixelRatio(r * this.fit);
   }
 
   private torchDir = new THREE.Vector3();
@@ -1173,7 +1184,7 @@ export class Game {
     const item = map.items.find((i) => !this.picked.has(i.key) && near(i, 1.4));
     const crate = map.crates.find((c) => !this.picked.has(c.key) && near({ ...c, y: c.y + (c.shelf ? 1.2 : 0) }, 1.5));
     const exit = map.exits.find((e) => !e.walk && near(e, 1.5));
-    const door = map.doors.find((d) => (d.locked || d.to) && near(d, 1.4) && ahead(d));
+    const door = map.doors.find((d) => (d.locked || d.to || d.exit) && near(d, 1.4) && ahead(d));
     const note = map.notes.find((n) => near(n, 1.4) && ahead(n));
     const npc = this.level!.npcs.find((n) => Math.hypot(n.x - this.pose.x, n.z - this.pose.z) < 1.8 && ahead(n));
     const last = this.pose.level === LEVELS.length - 1;
@@ -1216,6 +1227,11 @@ export class Game {
       if (door.locked) {
         this.sound.rattle();
         this.hud.notice(door.window ? 'Cerrada. Por el ventanuco solo se ve negro.' : 'Está cerrada con llave.');
+      } else if (door.exit) {
+        this.hud.setPrompt(null);
+        this.sound.door();
+        this.hud.fade();
+        this.enterLevel(this.pose.level + 1);
       } else if (door.to) {
         this.sound.door();
         this.pose.x = door.to.x;

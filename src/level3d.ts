@@ -1071,7 +1071,7 @@ function makeDoor(d: Door): THREE.Group {
   add(new THREE.BoxGeometry(0.1, h + 0.1, 0.12), frameMat, -w / 2 - 0.05, (h + 0.1) / 2, 0.02);
   add(new THREE.BoxGeometry(0.1, h + 0.1, 0.12), frameMat, w / 2 + 0.05, (h + 0.1) / 2, 0.02);
   add(new THREE.BoxGeometry(w + 0.2, 0.1, 0.12), frameMat, 0, h + 0.05, 0.02);
-  const passage = !d.locked && !d.to;
+  const passage = !d.locked && !d.to && !d.exit;
   const leaves = d.look === 'double' ? [-1, 1] : [1];
   for (const side of leaves) {
     const lw = w / leaves.length;
