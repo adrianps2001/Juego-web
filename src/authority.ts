@@ -979,7 +979,8 @@ export class Authority {
     if (d0 < 0) return false;
     let tx = p.x;
     let tz = p.z;
-    const direct = Math.hypot(p.x - e.x, p.z - e.z) < 16 && this.clear(map, e.x, e.z, p.x, p.z, mask);
+    const r = this.radius(e);
+    const direct = Math.hypot(p.x - e.x, p.z - e.z) < 16 && this.clear(map, e.x, e.z, p.x, p.z, mask, r);
     if (!direct) {
       let cx = ex;
       let cz = ez;
@@ -1007,7 +1008,7 @@ export class Authority {
         cz = nbz;
         cur = nbv;
         first ??= [cx, cz];
-        if (this.clear(map, e.x, e.z, center(cx), center(cz), mask)) best = [cx, cz];
+        if (this.clear(map, e.x, e.z, center(cx), center(cz), mask, r)) best = [cx, cz];
         else if (best) break;
       }
       const goal = best ?? first;
@@ -1021,6 +1022,8 @@ export class Authority {
         tz = center(goal[1]);
       }
     }
+    // si en ese punto no cabe (pegado a una columna o a una pared), apunta un poco más afuera
+    if (!direct) [tx, tz] = this.roomy(map, tx, tz, r);
     this.steer(e, tx, tz, speed, dt, map, mask);
     return true;
   }
@@ -1089,7 +1092,7 @@ export class Authority {
         for (let k = 0; k < 10; k++) {
           const gx = e.lair.x + (Math.random() - 0.5) * radius * 2;
           const gz = e.lair.z + (Math.random() - 0.5) * radius * 2;
-          if (this.clear(map, e.x, e.z, gx, gz)) {
+          if (this.clear(map, e.x, e.z, gx, gz, undefined, this.radius(e))) {
             e.goal = { x: gx, z: gz };
             break;
           }
@@ -1104,20 +1107,53 @@ export class Authority {
     if (Math.hypot(e.x - bx, e.z - bz) < speed * dt * 0.1) e.goal = null; // atascado
   }
 
-  /** ¿Cabe la criatura en (x, z)? */
-  private free(map: LevelMap, x: number, z: number, mask?: Uint8Array): boolean {
-    for (const [ox, oz] of [[-BODY, -BODY], [BODY, -BODY], [-BODY, BODY], [BODY, BODY]]) {
-      const cx = cellOf(x + ox);
-      const cz = cellOf(z + oz);
-      if (cx < 0 || cz < 0 || cx >= map.w || cz >= map.h || !walkable(map, cz * map.w + cx)) return false;
-    }
+  /** ¿Cabe la criatura en (x, z)? (r: su radio) */
+  private free(map: LevelMap, x: number, z: number, mask?: Uint8Array, r = BODY): boolean {
+    if (this.blocked(map, x, z, r)) return false;
     const i = cellOf(z) * map.w + cellOf(x);
     if (mask && !mask[i]) return false;
     return !inZone(map, 'safe', x, z);
   }
 
+  /** Cuántas esquinas de su cuerpo tocan pared (0 = cabe). */
+  private blocked(map: LevelMap, x: number, z: number, r: number): number {
+    let n = 0;
+    for (const [ox, oz] of [[-r, -r], [r, -r], [-r, r], [r, r], [0, -r], [0, r], [-r, 0], [r, 0]]) {
+      const cx = cellOf(x + ox);
+      const cz = cellOf(z + oz);
+      if (cx < 0 || cz < 0 || cx >= map.w || cz >= map.h || !walkable(map, cz * map.w + cx)) n++;
+    }
+    return n;
+  }
+
+  /** Aparta un punto de lo que toque hasta que quepa un cuerpo de radio r (o lo deja como está). */
+  private roomy(map: LevelMap, x: number, z: number, r: number): [number, number] {
+    for (let k = 0; k < 8 && this.blocked(map, x, z, r); k++) {
+      let px = 0;
+      let pz = 0;
+      for (const [ox, oz] of [[-r, -r], [r, -r], [-r, r], [r, r], [0, -r], [0, r], [-r, 0], [r, 0]]) {
+        const cx = cellOf(x + ox);
+        const cz = cellOf(z + oz);
+        if (cx < 0 || cz < 0 || cx >= map.w || cz >= map.h || !walkable(map, cz * map.w + cx)) {
+          px -= ox;
+          pz -= oz;
+        }
+      }
+      const d = Math.hypot(px, pz);
+      if (d < 1e-6) break;
+      x += (px / d) * 0.06;
+      z += (pz / d) * 0.06;
+    }
+    return [x, z];
+  }
+
+  /** Radio del cuerpo de cada criatura al chocar con las paredes. */
+  private radius(e: Entity): number {
+    return e.kind === 'acechador' ? Acechador.RADIUS : BODY; // ACECHADOR
+  }
+
   /** ¿Se puede ir en línea recta de un punto a otro sin chocar ni saltar desniveles? */
-  private clear(map: LevelMap, x0: number, z0: number, x1: number, z1: number, mask?: Uint8Array): boolean {
+  private clear(map: LevelMap, x0: number, z0: number, x1: number, z1: number, mask?: Uint8Array, r = BODY): boolean {
     const d = Math.hypot(x1 - x0, z1 - z0);
     const n = Math.ceil(d / 0.25);
     let py = floorAt(map, x0, z0);
@@ -1125,7 +1161,7 @@ export class Authority {
       const t = k / n;
       const x = x0 + (x1 - x0) * t;
       const z = z0 + (z1 - z0) * t;
-      if (!this.free(map, x, z, mask)) return false;
+      if (!this.free(map, x, z, mask, r)) return false;
       const y = floorAt(map, x, z);
       if (!Number.isFinite(y) || Math.abs(y - py) > 0.6) return false;
       py = y;
@@ -1168,22 +1204,61 @@ export class Authority {
 
   private move(e: Entity, mx: number, mz: number, map: LevelMap, mask?: Uint8Array) {
     const y0 = floorAt(map, e.x, e.z);
-    // si está encajada (al aparecer junto a una pared), solo se comprueba el centro
-    const stuck = !this.free(map, e.x, e.z, mask);
+    const r = this.radius(e);
+    // si está encajada (al aparecer junto a una pared), puede moverse pero sin
+    // meterse más en la pared (antes se comprobaba solo el centro y se hundía)
+    const stuck = !this.free(map, e.x, e.z, mask, r);
+    let now = stuck ? this.blocked(map, e.x, e.z, r) : 0;
+    if (now) {
+      // se aparta poco a poco de lo que toca, para no quedarse clavada en una esquina
+      let px = 0;
+      let pz = 0;
+      for (const [ox, oz] of [[-r, -r], [r, -r], [-r, r], [r, r], [0, -r], [0, r], [-r, 0], [r, 0]]) {
+        const cx = cellOf(e.x + ox);
+        const cz = cellOf(e.z + oz);
+        if (cx < 0 || cz < 0 || cx >= map.w || cz >= map.h || !walkable(map, cz * map.w + cx)) {
+          px -= ox;
+          pz -= oz;
+        }
+      }
+      const d = Math.hypot(px, pz);
+      if (d > 0) {
+        const nx = e.x + (px / d) * 0.04;
+        const nz = e.z + (pz / d) * 0.04;
+        if (walkable(map, cellOf(nz) * map.w + cellOf(nx)) && this.blocked(map, nx, nz, r) <= now && Math.abs(floorAt(map, nx, nz) - y0) < 0.6) {
+          e.x = nx;
+          e.z = nz;
+          now = this.blocked(map, nx, nz, r);
+        }
+      }
+    }
     const ok = (x: number, z: number) => {
-      const fine = stuck ? walkable(map, cellOf(z) * map.w + cellOf(x)) : this.free(map, x, z, mask);
+      const fine = stuck ? walkable(map, cellOf(z) * map.w + cellOf(x)) && this.blocked(map, x, z, r) <= now : this.free(map, x, z, mask, r);
       return fine && Math.abs(floorAt(map, x, z) - y0) < 0.6;
     };
     if (ok(e.x + mx, e.z + mz)) {
       e.x += mx;
       e.z += mz;
-    } else if (ok(e.x + mx, e.z)) {
+    } else if (Math.abs(mx) > 1e-4 && ok(e.x + mx, e.z)) {
+      // (deslizar por un eje solo cuenta si de verdad se mueve: si no, se quedaba clavada)
       e.x += mx;
       e.vz *= 0.5;
-    } else if (ok(e.x, e.z + mz)) {
+    } else if (Math.abs(mz) > 1e-4 && ok(e.x, e.z + mz)) {
       e.z += mz;
       e.vx *= 0.5;
     } else {
+      // ni recto ni deslizando: prueba a rodear el obstáculo (girando un poco a un lado o al otro)
+      for (const a of [0.6, -0.6, 1.2, -1.2]) {
+        const c = Math.cos(a);
+        const sn = Math.sin(a);
+        const rx = (mx * c - mz * sn) * 0.8;
+        const rz = (mx * sn + mz * c) * 0.8;
+        if (ok(e.x + rx, e.z + rz)) {
+          e.x += rx;
+          e.z += rz;
+          return;
+        }
+      }
       e.vx *= 0.3;
       e.vz *= 0.3;
     }

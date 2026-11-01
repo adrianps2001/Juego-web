@@ -1356,11 +1356,21 @@ export class Game {
       const g = e.model.group;
       // posición anticipada: la última conocida más lo que habrá avanzado desde entonces
       const ahead = Math.min(0.12, (now - e.at) / 1000);
-      const tx = e.target.x + e.vx * ahead;
-      const tz = e.target.z + e.vz * ahead;
+      let tx = e.target.x + e.vx * ahead;
+      let tz = e.target.z + e.vz * ahead;
+      // la anticipación no puede meterla en una pared (al doblar una esquina pasaba)
+      if (this.locoEnv.solid(tx, e.target.y + 1, tz)) {
+        tx = e.target.x;
+        tz = e.target.z;
+      }
       const ke = 1 - Math.exp(-14 * dt);
-      g.position.x += (tx - g.position.x) * ke;
-      g.position.z += (tz - g.position.z) * ke;
+      const nx = g.position.x + (tx - g.position.x) * ke;
+      const nz = g.position.z + (tz - g.position.z) * ke;
+      // el suavizado va en línea recta y recortaba las esquinas: si atraviesa una pared, a su sitio real
+      const wy = e.target.y + 1;
+      const env = this.locoEnv;
+      if ([[0, 0], [0.15, 0], [-0.15, 0], [0, 0.15], [0, -0.15]].some(([ox, oz]) => env.solid(nx + ox, wy, nz + oz))) g.position.set(e.target.x, g.position.y, e.target.z);
+      else g.position.set(nx, g.position.y, nz);
       g.position.y += (e.target.y - g.position.y) * ke;
       let diff = e.target.ry - g.rotation.y;
       diff = Math.atan2(Math.sin(diff), Math.cos(diff));

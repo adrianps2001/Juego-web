@@ -111,7 +111,7 @@ export function makeAcechador(): AcechadorModel {
     group,
     eye: B.height - 0.2,
     setEnv(env, f) {
-      loco = new BipedLocomotion(rig, env, { stride: 1.5, lift: 0.14, hunch: B.hunch, wallSpeed: 2.2, wallRest: 2, stance: 1.35, armStretch: 0.8 });
+      loco = new BipedLocomotion(rig, env, { stride: 1.5, lift: 0.14, hunch: B.hunch, wallSpeed: 2.2, wallRest: 2, stance: 1.8, armStretch: 0.8 });
       focus = f;
     },
     loco: () => loco,

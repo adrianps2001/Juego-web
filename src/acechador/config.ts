@@ -6,6 +6,11 @@
 export const ENABLED = true;
 /** Nivel en el que aparece, siempre (planta de abajo). */
 export const LEVEL = 0;
+/**
+ * Radio de su cuerpo al chocar con paredes y columnas (las demás criaturas:
+ * 0,28). Más grande no cabe por los pasillos de 1 m del Nivel 0.
+ */
+export const RADIUS = 0.3;
 /** Para pruebas: no hace daño ni da sustos (ataca, pero sin efecto). */
 export const HARMLESS = true;
 /**
