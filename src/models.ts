@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { makeAcechador } from './acechador/model'; // ACECHADOR
+import type { Env } from './locomotion';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { litMaterial } from './lighting';
 import { canvasTexture, labelTexture, smilerTexture, textTexture } from './textures';
@@ -540,6 +542,8 @@ export interface EnemyModel {
   /** Altura de los ojos (para saber si se le está mirando). */
   eye: number;
   animate: (dt: number, time: number, anim: number) => void;
+  /** Criaturas con locomoción procedural: el entorno y a quién mirar. */
+  setEnv?: (env: Env, focus: () => THREE.Vector3 | null) => void;
 }
 
 const smilerFace = smilerTexture();
@@ -1289,6 +1293,8 @@ export function makeEnemy(kind: string, seed: number): EnemyModel {
       return makeClump(seed);
     case 'duller':
       return makeDuller();
+    case 'acechador': // ACECHADOR
+      return makeAcechador();
     default:
       return makeSmiler(seed);
   }

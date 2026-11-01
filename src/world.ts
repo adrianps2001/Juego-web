@@ -42,7 +42,7 @@ export interface LevelDef {
 }
 
 export type ItemKind = 'agua' | 'pila' | 'barrita' | 'vendas' | 'lata' | 'bengala';
-export type EntityKind = 'figure' | 'smiler' | 'hound' | 'faceling' | 'skinstealer' | 'clump' | 'duller';
+export type EntityKind = 'figure' | 'smiler' | 'hound' | 'faceling' | 'skinstealer' | 'clump' | 'duller' | 'acechador'; // ACECHADOR
 
 export interface Item {
   s?: number; // planta (0 = la de abajo)

@@ -12,6 +12,7 @@ import type { ClientMessage, EntityState, Flare, HostMessage, Mark, PlayerState,
 import { getSettings, onSettings, type Settings } from './settings';
 import type { Sound } from './sound';
 import type { Voice } from './voice';
+import { levelEnv } from './locomotionEnv';
 import { CELL, F_DEEP, F_SOLID, PLAYER_HEIGHT, STEP, cellOf, ceilOver, collideAll, flagsAt, floorAt, floorUnder, gridAt, inZone, isDarkAll, lineOfSight, setShift, type EntityKind, type ItemKind, type LevelMap } from './world';
 
 const EYE = 1.6;
@@ -78,6 +79,7 @@ const DEATH_TEXT: Record<string, [string, string]> = {
   pozo: ['Has caído por un agujero. Nadie ha vuelto de ahí.', 'ha caído por uno de los agujeros del Nivel 0'],
   trabajador: ['Los trabajadores sombra no paran por nadie.', 'ha muerto en el sector en obras'],
   cristales: ['Te has desangrado con los cristales.', 'se ha desangrado'],
+  acechador: ['Lo último que viste fueron dos puntos blancos.', 'ha sido atrapado por el Acechador'], // ACECHADOR
 };
 
 const HIT_TEXT: Record<EntityKind, string> = {
@@ -88,6 +90,7 @@ const HIT_TEXT: Record<EntityKind, string> = {
   clump: '¡Un Clump se te ha echado encima!',
   duller: '¡Algo te ha agarrado desde la pared!',
   figure: 'Una figura oscura te ha tocado…',
+  acechador: '¡Unos brazos larguísimos te han alcanzado!', // ACECHADOR
 };
 
 export class Game {
@@ -146,6 +149,8 @@ export class Game {
   private reviving = 0; // segundos que llevas levantando a un compañero
   private marks = new Map<number, THREE.Mesh>();
   private voice: Voice | null = null;
+  /** El mapa para las criaturas con locomoción procedural. */
+  private locoEnv = levelEnv(() => this.level?.map ?? null);
   private markMats = new Map<string, THREE.Material>();
   private damage = 0;
   private shake = 0;
@@ -247,6 +252,7 @@ export class Game {
       let en = this.enemies.get(e.id);
       if (!en) {
         en = { model: makeEnemy(e.kind, e.id), target: e, vx: 0, vz: 0, at: performance.now(), stepT: 0 };
+        en.model.setEnv?.(this.locoEnv, () => this.camera.position);
         en.model.group.position.set(e.x, e.y, e.z);
         en.model.group.rotation.y = e.ry;
         this.enemies.set(e.id, en);
@@ -442,7 +448,7 @@ export class Game {
    */
   private warmShaders() {
     const extra = new THREE.Group();
-    for (const kind of ['smiler', 'hound', 'faceling', 'skinstealer', 'figure', 'clump', 'duller']) extra.add(makeEnemy(kind, 1).group);
+    for (const kind of ['smiler', 'hound', 'faceling', 'skinstealer', 'figure', 'clump', 'duller', 'acechador']) extra.add(makeEnemy(kind, 1).group);
     extra.add(makeHumanoid(0xffffff, 'A').group, makeLitFlare().group);
     extra.position.y = -1000;
     this.scene.add(extra);

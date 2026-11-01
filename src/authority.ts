@@ -1,3 +1,5 @@
+import { acechadorThink } from './acechador/brain'; // ACECHADOR
+import * as Acechador from './acechador/config'; // ACECHADOR
 import { ESCAPED, LEVELS, getMap, setSession } from './levels';
 import { Anim } from './models';
 import {
@@ -48,6 +50,7 @@ const SPEC: Record<EntityKind, { eye: number; wake: number; walk: number; run: n
   skinstealer: { eye: 1.6, wake: 40, walk: 0.9, run: 4.2, reach: 1.2, damage: 45, cooldown: 3 },
   clump: { eye: 0.6, wake: 40, walk: 1.5, run: 4.6, reach: 1.0, damage: 35, cooldown: 2 },
   duller: { eye: 1.6, wake: 20, walk: 0, run: 0, reach: 1.3, damage: 30, cooldown: 25 },
+  acechador: Acechador.SPEC, // ACECHADOR
 };
 
 interface Lair {
@@ -148,6 +151,12 @@ export class Authority {
     LEVELS.forEach((_, level) => {
       for (const l of getMap(level).lairs) this.lairs.push({ level, ...l, entity: null, cooldown: 0 });
     });
+    // ACECHADOR: siempre en su nivel, cerca del centro del mapa
+    if (Acechador.ENABLED) {
+      const m = getMap(Acechador.LEVEL).storeys[0];
+      const p = Acechador.spawnPoint(m, CELL, (i) => walkable(m, i) && !inZone(m, 'safe', ((i % m.w) + 0.5) * CELL, (Math.floor(i / m.w) + 0.5) * CELL));
+      this.lairs.push({ level: Acechador.LEVEL, kind: 'acechador', ...p, s: 0, entity: null, cooldown: 0 });
+    }
     this.timer = window.setInterval(() => this.tick(TICK_MS / 1000), TICK_MS);
   }
 
@@ -409,19 +418,20 @@ export class Authority {
       if (!dists.length) continue;
       const near = Math.min(...dists);
       const spec = SPEC[lair.kind];
-      const minDist = lair.kind === 'faceling' || lair.kind === 'duller' || lair.kind === 'skinstealer' ? 0 : lair.kind === 'figure' ? 12 : 7;
+      const forced = lair.kind === 'acechador'; // ACECHADOR: aparece sí o sí
+      const minDist = forced ? 0 : lair.kind === 'faceling' || lair.kind === 'duller' || lair.kind === 'skinstealer' ? 0 : lair.kind === 'figure' ? 12 : 7;
       if (near > spec.wake || near < minDist) continue;
       // no todas las guaridas tienen a alguien dentro (a veces, nada); el
       // director lo ajusta: tras un susto da un respiro y si todo está muy
       // tranquilo despierta más. La sombra (figura) es la más frecuente.
       const mood = this.mood(lair.level);
-      const empty = lair.kind === 'figure' ? 0.15 : mood.relax ? 0.75 : mood.bored ? 0.2 : 0.35;
+      const empty = forced ? 0 : lair.kind === 'figure' ? 0.15 : mood.relax ? 0.75 : mood.bored ? 0.2 : 0.35;
       if (Math.random() < empty) {
         lair.cooldown = 45 + Math.random() * 45;
         continue;
       }
       const cap = mood.relax ? 1 : MAX_ACTIVE;
-      if (this.entities.filter((x) => x.level === lair.level && x.kind !== 'figure').length >= cap && lair.kind !== 'figure') {
+      if (!forced && this.entities.filter((x) => x.level === lair.level && x.kind !== 'figure').length >= cap && lair.kind !== 'figure') {
         lair.cooldown = 15;
         continue;
       }
@@ -575,6 +585,8 @@ export class Authority {
         return this.clump(e, here, map, dt);
       case 'duller':
         return this.duller(e, here, map, dt);
+      case 'acechador': // ACECHADOR
+        return acechadorThink(e, here, map, dt, this.acechadorTools);
     }
   }
 
@@ -680,6 +692,17 @@ export class Authority {
     const field = this.field(map, target.x, target.z, true);
     if (!this.follow(e, field, target, map, spec.walk, dt, mask)) this.follow(e, field, target, map, spec.walk, dt);
   }
+
+  // ACECHADOR: lo que su comportamiento (src/acechador/brain.ts) puede usar
+  private acechadorTools = {
+    chase: (e: Entity, p: Player, map: LevelMap, speed: number, dt: number) => this.follow(e, this.field(map, p.x, p.z, false), p, map, speed, dt),
+    away: (e: Entity, p: Player, map: LevelMap, speed: number, dt: number) => this.away(e, p, map, speed, dt),
+    prowl: (e: Entity, here: Player[], map: LevelMap, speed: number, dt: number) => this.prowl(e, here, map, speed, dt),
+    wander: (e: Entity, map: LevelMap, speed: number, radius: number, dt: number) => this.wander(e, map, speed, radius, dt),
+    sees: (e: Entity, p: Player, map: LevelMap) => this.sees(e, p, map),
+    hit: (e: Entity, p: Player) => this.hit(e, p),
+    setMode: (e: Entity, mode: 'chase' | 'flee' | 'wander' | 'idle') => this.setMode(e, mode),
+  };
 
   private forget(e: Entity) {
     e.target = null;
