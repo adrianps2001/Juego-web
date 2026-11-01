@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Hud } from './hud';
 import { ITEM_INFO, Inventory } from './inventory';
 import { Level3D } from './level3d';
-import { canvasTexture, loadThemeTextures, setAnisotropy, themeReady } from './textures';
+import { canvasTexture, loadThemeTextures, themeReady } from './textures';
 import { ESCAPED, LEVELS, getMap } from './levels';
 import { MAX_TORCHES, lightUniforms, litMaterial } from './lighting';
 import { Anim, makeBattery, makeBottle, makeCan, makeEnemy, makeEnergyBar, makeFlareStick, makeHumanoid, makeLitFlare, makeMedkit, makeViewTorch, type EnemyModel, type Humanoid } from './models';
@@ -30,21 +30,16 @@ const REVIVE_TIME = 3;
 const EXIT_HUM_RANGE = 28;
 const TORCH_POWER = 1.6;
 const MOUSE_SPEED = 0.0022;
-// se dibuja a media resolución: se ve algo más borroso pero va fluido.
-// Tope de píxeles de la imagen: con el zoom del navegador alejado la ventana
-// tiene muchos más píxeles CSS y, sin tope, se dibujaban muchísimos más.
-// Lo que más cuesta es el relleno (cada píxel pasa por el shader de luz), por
-// eso con zoom acercado (menos píxeles) iba mucho más fluido.
-const QUALITY = {
-  alta: { ratio: 0.5, pixels: 960 * 540, detail: 1 },
-  media: { ratio: 0.4, pixels: 768 * 432, detail: 1 },
-  baja: { ratio: 0.3, pixels: 576 * 324, detail: 0 },
-};
-const PIXEL_RATIO = QUALITY.alta.ratio;
-// en automático la resolución baja sola hasta aquí si no se llega a ~50 FPS
-const MIN_PIXEL_RATIO = 0.25;
-// y por debajo de esta se quita además el detalle de suciedad de las superficies
-const DETAIL_RATIO = 0.36;
+// se dibuja a media resolución: se ve algo más borroso pero va fluido. Si el
+// equipo no llega a ~40 FPS, la resolución baja sola (hasta MIN_PIXEL_RATIO)
+const PIXEL_RATIO = 0.5;
+const MIN_PIXEL_RATIO = 0.3;
+/**
+ * Tope de píxeles de la imagen (equivale a 1080p a la mitad). Con el zoom del
+ * navegador alejado la ventana tiene muchos más píxeles CSS y, sin tope, se
+ * dibujaban muchísimos más (iba fatal); con el zoom acercado, menos.
+ */
+const MAX_PIXELS = 960 * 540;
 // movimientos de ratón más grandes que esto en un solo evento son fallos del navegador
 const MAX_MOUSE_JUMP = 250;
 // por debajo de esta altura se ha caído por un agujero
@@ -168,14 +163,13 @@ export class Game {
   private lockedAt = 0;
   private hurtSound = 0;
   private pixelRatio = PIXEL_RATIO;
-  /** Cuánto hay que reducir la resolución para no pasar del tope de píxeles (1 = nada). */
+  /** Cuánto hay que reducir la resolución para no pasar de MAX_PIXELS (1 = nada). */
   private fit = 1;
   private levelToken = 0;
   private lastFloor = 0; // último suelo pisado (para saber si se cae a un agujero)
   private loopWraps = 0;
   private frameAvg = 1 / 60;
   private resClock = 3;
-  private quality: Settings['quality'] = 'auto';
 
   constructor(
     private container: HTMLElement,
@@ -541,9 +535,8 @@ export class Game {
   private resize = () => {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
-    const q = QUALITY[this.quality === 'auto' ? 'alta' : this.quality];
-    this.fit = Math.min(1, Math.sqrt(q.pixels / Math.max(1, w * h * q.ratio * q.ratio)));
-    this.renderer.setPixelRatio(q.ratio * this.fit);
+    this.fit = Math.min(1, Math.sqrt(MAX_PIXELS / Math.max(1, w * h * PIXEL_RATIO * PIXEL_RATIO)));
+    this.renderer.setPixelRatio(PIXEL_RATIO * this.fit);
     this.post.setPixelRatio(this.pixelRatio * this.fit);
     this.renderer.setSize(w, h);
     this.post.setSize(w, h);
@@ -553,14 +546,6 @@ export class Game {
 
   private applySettings(st: Settings) {
     this.settings = st;
-    if (st.quality !== this.quality) {
-      this.quality = st.quality;
-      const q = QUALITY[st.quality === 'auto' ? 'alta' : st.quality];
-      this.pixelRatio = q.ratio;
-      this.setDetail(q.detail);
-      this.resClock = 3;
-      this.resize();
-    }
     this.post.setBrightness(st.brightness);
     this.hud.showFps(st.showFps);
   }
@@ -685,31 +670,18 @@ export class Game {
 
   /** Resolución dinámica: baja si los fotogramas tardan, sube si sobra tiempo. */
   private adaptResolution(raw: number) {
-    if (raw > 0.25 || this.quality !== 'auto') return; // pestaña en segundo plano o calidad fija
-    this.frameAvg += (raw - this.frameAvg) * 0.08;
+    if (raw > 0.25) return; // pestaña en segundo plano
+    this.frameAvg += (raw - this.frameAvg) * 0.05;
     this.resClock -= raw;
     if (this.resClock > 0) return;
+    this.resClock = 2;
     let r = this.pixelRatio;
-    // baja deprisa si va mal (más aún si va muy mal) y sube despacio si sobra
-    if (this.frameAvg > 1 / 50 && r > MIN_PIXEL_RATIO + 0.001) {
-      r = Math.max(MIN_PIXEL_RATIO, r - (this.frameAvg > 1 / 32 ? 0.08 : 0.04));
-      this.resClock = 1;
-    } else if (this.frameAvg < 1 / 58 && r < PIXEL_RATIO - 0.001) {
-      r = Math.min(PIXEL_RATIO, r + 0.03);
-      this.resClock = 4;
-    } else this.resClock = 1;
+    if (this.frameAvg > 1 / 40 && r > MIN_PIXEL_RATIO + 0.001) r -= 0.05;
+    else if (this.frameAvg < 1 / 56 && r < PIXEL_RATIO - 0.001) r += 0.05;
     if (r === this.pixelRatio) return;
     this.pixelRatio = r;
-    this.setDetail(r < DETAIL_RATIO ? 0 : 1);
     // solo cambia la imagen interna de la escena: redimensionar el lienzo daba un tirón cada vez
     this.post.setPixelRatio(r * this.fit);
-  }
-
-  /** Detalle de superficies: suciedad, mezcla de losetas y filtro anisótropo. */
-  private setDetail(d: number) {
-    if (lightUniforms.uDetail.value === d) return;
-    lightUniforms.uDetail.value = d;
-    setAnisotropy(d ? 4 : 1);
   }
 
   private torchDir = new THREE.Vector3();

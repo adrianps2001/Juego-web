@@ -12,12 +12,10 @@ export interface Settings {
   showFps: boolean;
   screamers: boolean; // sustos a pantalla completa
   fullscreen: boolean; // jugar a pantalla completa (así Ctrl+W no cierra el juego)
-  quality: Quality; // resolución interna y detalle de las superficies
   voice: boolean; // chat de voz por proximidad
   voiceVolume: number; // volumen de las voces de los compañeros
 }
 
-export type Quality = 'auto' | 'alta' | 'media' | 'baja';
 
 export const DEFAULTS: Settings = {
   master: 0.8,
@@ -30,7 +28,6 @@ export const DEFAULTS: Settings = {
   showFps: false,
   screamers: true,
   fullscreen: true,
-  quality: 'auto',
   voice: false,
   voiceVolume: 1,
 };

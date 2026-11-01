@@ -86,18 +86,18 @@ usarlo (la bengala se lanza) · `Esc` pausa.
 
 Desde el menú principal o desde la pausa (`Esc`) se puede ajustar el volumen
 (general, ambiente y efectos), la sensibilidad del ratón, invertir el eje
-vertical, el campo de visión, el brillo, el contador de FPS, la **calidad
-gráfica** y el **chat de voz**. Los ajustes se guardan en el navegador.
+vertical, el campo de visión, el brillo, el contador de FPS y el **chat de
+voz**. Los ajustes se guardan en el navegador. El juego se dibuja a media
+resolución para que vaya fluido y, si el equipo no llega a unos 40 FPS, la
+baja solo un poco más (`PIXEL_RATIO` y `MIN_PIXEL_RATIO` en `src/game.ts`).
+Las texturas se generan en un hilo aparte (`src/texworker.ts`) para que
+cambiar de nivel no congele el juego.
 
-**Calidad**: lo que más cuesta es el relleno (cada píxel pasa por el shader de
-luz), por eso con el zoom del navegador acercado iba mucho más fluido (hay
-menos píxeles). En **Automática** (por defecto) el juego empieza a media
-resolución y, si no llega a unos 50 FPS, la baja enseguida; por debajo de
-cierto punto quita también la suciedad de las superficies y el filtro
-anisótropo. **Alta**, **Media** y **Baja** la fijan (la baja dibuja unas 3,5
-veces más rápido que la alta). Ver `QUALITY` en `src/game.ts`. Las texturas se
-generan en un hilo aparte (`src/texworker.ts`) para que cambiar de nivel no
-congele el juego.
+**Si va lento**: casi siempre es que Chrome no está usando la tarjeta gráfica.
+En `chrome://gpu`, la línea *WebGL* debe decir *Hardware accelerated*; si dice
+*Software only*, activa la aceleración gráfica en `chrome://settings/system`,
+actualiza el controlador de la tarjeta o, si Chrome la tiene en su lista
+negra, activa `chrome://flags/#ignore-gpu-blocklist`.
 
 **Chat de voz por proximidad**: al activarlo se pide el micrófono. A cada
 compañero se le oye según la distancia (a unos 24 m ya no), desde su lado,
