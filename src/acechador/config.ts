@@ -4,8 +4,14 @@
 
 /** Interruptor general. */
 export const ENABLED = true;
-/** Nivel en el que aparece, siempre, cerca del centro del mapa (planta de abajo). */
+/** Nivel en el que aparece, siempre (planta de abajo). */
 export const LEVEL = 0;
+/**
+ * Dónde aparece (metros): el centro de la sala de columnas del Nivel 0
+ * (PILLARS en levels.ts: de (24, 4) a (48, 20)). Si ahí hay una columna, se
+ * usa el hueco libre más cercano.
+ */
+export const SPAWN = { x: 36, z: 12 };
 
 /** Cómo es (mismos campos que el resto de criaturas en authority.ts). */
 export const SPEC = {
@@ -32,10 +38,10 @@ export const BODY = {
   height: 2.35,
 };
 
-/** Dónde aparece: la casilla libre más cercana al centro de la planta de abajo. */
+/** Dónde aparece: la casilla libre (con sitio alrededor) más cercana a SPAWN. */
 export function spawnPoint(map: { w: number; h: number; flags: Uint16Array }, cell: number, free: (i: number) => boolean): { x: number; z: number } {
-  const cx = Math.floor(map.w / 2);
-  const cz = Math.floor(map.h / 2);
+  const cx = Math.floor(SPAWN.x / cell);
+  const cz = Math.floor(SPAWN.z / cell);
   for (let r = 0; r < Math.max(map.w, map.h); r++) {
     for (let dz = -r; dz <= r; dz++) {
       for (let dx = -r; dx <= r; dx++) {

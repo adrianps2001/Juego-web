@@ -151,7 +151,7 @@ export class Authority {
     LEVELS.forEach((_, level) => {
       for (const l of getMap(level).lairs) this.lairs.push({ level, ...l, entity: null, cooldown: 0 });
     });
-    // ACECHADOR: siempre en su nivel, cerca del centro del mapa
+    // ACECHADOR: siempre en su nivel, en la sala de columnas
     if (Acechador.ENABLED) {
       const m = getMap(Acechador.LEVEL).storeys[0];
       const p = Acechador.spawnPoint(m, CELL, (i) => walkable(m, i) && !inZone(m, 'safe', ((i % m.w) + 0.5) * CELL, (Math.floor(i / m.w) + 0.5) * CELL));
