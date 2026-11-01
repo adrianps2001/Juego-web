@@ -58,6 +58,10 @@ export interface BipedOptions {
   stance?: number;
   /** 0-1: cuánto tiende a llevar los brazos estirados. */
   armStretch?: number;
+  /** Siempre camina (zancadas largas, un pie siempre en el suelo), también deprisa: nunca corre a saltitos. */
+  alwaysWalk?: boolean;
+  /** Fracción que baja la cadera para llevar las rodillas algo flexionadas. */
+  kneeBend?: number;
 }
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -123,6 +127,8 @@ const _hd = new THREE.Vector3();
  */
 export class BipedLocomotion {
   private feet = [new Stepper(), new Stepper()];
+  private footGoal = [new THREE.Vector3(), new THREE.Vector3()];
+  private footErr = [0, 0];
   private hands: [Hand, Hand];
   private prev = new THREE.Vector3();
   private vel = new THREE.Vector3();
@@ -150,7 +156,7 @@ export class BipedLocomotion {
     private env: Env,
     opts: BipedOptions = {},
   ) {
-    this.o = { stride: 1, lift: 0.1, wallSpeed: 2.2, crawlBelow: 0.62, hunch: 0, wallRest: 2, stance: 1, armStretch: 0, ...opts };
+    this.o = { stride: 1, lift: 0.1, wallSpeed: 2.2, crawlBelow: 0.62, hunch: 0, wallRest: 2, stance: 1, armStretch: 0, alwaysWalk: false, kneeBend: 0, ...opts };
     const hand = (): Hand => ({ mode: 'swing', target: new THREE.Vector3(), rel: new THREE.Vector3(0, -1, 0), wall: new THREE.Vector3(), held: 0, ground: new Stepper() });
     this.hands = [hand(), hand()];
   }
@@ -215,29 +221,48 @@ export class BipedLocomotion {
 
     // ---- pies ----
     const legLen = rig.legs[0].a + rig.legs[0].b;
-    const running = speed > 2.5;
-    const stepDur = THREE.MathUtils.clamp(0.5 - speed * 0.065, 0.2, 0.5) * Math.sqrt(o.stride) * (1 + this.crouch * 0.3);
+    const running = speed > 2.5 && !o.alwaysWalk;
+    let stepDur = THREE.MathUtils.clamp(0.5 - speed * 0.065, 0.2, 0.5) * Math.sqrt(o.stride) * (1 + this.crouch * 0.3);
     // pasos largos también andando, pero nunca deja un pie más atrás de lo que da de sí la pierna
-    const thr = speed < 0.15 ? 0.1 : Math.min(legLen * 0.55, Math.max(speed > 0.4 ? legLen * 0.3 : 0, (0.16 + speed * 0.12) * o.stride));
+    let thr = speed < 0.15 ? 0.1 : Math.min(legLen * 0.55, Math.max(speed > 0.4 ? legLen * 0.3 : 0, (0.16 + speed * 0.12) * o.stride));
+    // marcha: cada pie avanza una zancada entera (de atrás a delante) y siempre hay uno en el suelo.
+    // La zancada máxima es la que permiten las piernas con la cadera a su altura.
+    let lead = stepDur * (running ? 0.85 : 0.6);
+    if (o.alwaysWalk && speed > 0.15) {
+      const hipH = rig.hipHeight * (1 - o.kneeBend);
+      const maxStride = 2 * Math.sqrt(Math.max(0.05, (legLen * 0.97) ** 2 - hipH * hipH)) * 0.95;
+      const stride = Math.min(maxStride, (0.5 + speed * 0.4) * o.stride);
+      thr = stride;
+      const period = stride / speed; // cada cuánto da un paso cada pie
+      stepDur = THREE.MathUtils.clamp(period * 0.42, 0.16, 0.5);
+      lead = (stride * 0.5) / speed; // aterriza media zancada por delante de la cadera
+    }
     const stance = rig.hipWidth * o.stance;
+    // primero dónde debería pisar cada pie y cuánto se ha quedado atrás (cada uno respecto a su sitio)
+    for (let i = 0; i < 2; i++) {
+      const t = this.footGoal[i];
+      this.target(pos, (i === 0 ? -1 : 1) * stance, 0, lead, t);
+      this.outOfWalls(t, pos, ground);
+      t.y = env.floor(t.x, t.z, pos.y + 0.5);
+      if (!Number.isFinite(t.y) || Math.abs(t.y - ground) > 0.8) t.y = ground;
+      this.footErr[i] = Math.hypot(this.feet[i].to.x - t.x, this.feet[i].to.z - t.z);
+    }
     for (let i = 0; i < 2; i++) {
       const foot = this.feet[i];
       const other = this.feet[1 - i];
-      const side = i === 0 ? -1 : 1;
-      this.target(pos, side * stance, 0, stepDur * (running ? 0.85 : 0.6), _q);
-      this.outOfWalls(_q, pos, ground);
-      _q.y = env.floor(_q.x, _q.z, pos.y + 0.5);
-      if (!Number.isFinite(_q.y) || Math.abs(_q.y - ground) > 0.8) _q.y = ground;
-      const err = Math.hypot(foot.to.x - _q.x, foot.to.z - _q.z);
-      // corriendo hay un momento con los dos pies en el aire
-      const free = !other.moving || other.t > (running ? 0.4 : 0.9);
-      const worse = err >= Math.hypot(other.to.x - _q.x, other.to.z - _q.z) - 0.05 || !free;
+      const goal = this.footGoal[i];
+      const err = this.footErr[i];
+      // corriendo hay un momento con los dos pies en el aire; andando, nunca
+      const free = !other.moving || (!o.alwaysWalk && other.t > (running ? 0.4 : 0.9));
+      // da el paso el pie que más se ha quedado atrás
+      const worse = err >= this.footErr[1 - i] - 0.05 || !free;
       // un pie que se ha quedado demasiado lejos da el paso ya, haga lo que haga el otro
       const away = Math.hypot(foot.pos.x - pos.x, foot.pos.z - pos.z);
-      const far = away > legLen * 0.62;
+      // (andando, solo si de verdad se ha quedado muy lejos: si no, rompería la alternancia)
+      const far = away > legLen * (o.alwaysWalk ? 0.8 : 0.62);
       // inalcanzable (un tirón de posición): el pie se recoloca, la pierna no se estira de más
-      if (away > legLen * 1.05) foot.snap(_q);
-      else if (!foot.moving && ((free && err > thr && worse) || far)) foot.start(_q, far ? stepDur * 0.7 : stepDur, o.lift + speed * (running ? 0.05 : 0.025));
+      if (away > legLen * 1.05) foot.snap(goal);
+      else if (!foot.moving && ((free && err > thr && worse) || far)) foot.start(goal, far ? stepDur * 0.7 : stepDur, o.lift + speed * (running ? 0.05 : o.alwaysWalk ? 0.015 : 0.025));
       foot.tick(dt);
     }
     // fase de la zancada: medio ciclo por pie
@@ -247,11 +272,12 @@ export class BipedLocomotion {
     else if (f1.moving) this.phase = Math.PI + f1.t * Math.PI;
 
     // ---- cadera: altura según los pies, agachado y zancada ----
-    const fy = Math.max((f0.pos.y + f1.pos.y) / 2, ground);
-    const base = fy + rig.hipHeight - this.squat - (crawl ? rig.hipHeight * 0.12 : 0);
+    // la altura de donde pisan (no la del pie que va por el aire, que haría botar la cadera)
+    const fy = Math.max((f0.to.y + f1.to.y) / 2, ground);
+    const base = fy + rig.hipHeight * (1 - o.kneeBend) - this.squat - (crawl ? rig.hipHeight * 0.12 : 0);
     let hy = base;
     // en mitad de un paso el cuerpo sube (corriendo, más: rebota)
-    for (const f of this.feet) if (f.moving) hy += Math.sin(Math.PI * f.t) * (running ? 0.06 : 0.025) * (1 + speed * 0.1);
+    for (const f of this.feet) if (f.moving) hy += Math.sin(Math.PI * f.t) * (running ? 0.06 : o.alwaysWalk ? 0.012 : 0.025) * (1 + speed * 0.1);
     // las piernas tienen que llegar al suelo… pero sin desplomarse nunca
     for (const f of this.feet) {
       if (f.moving) continue;
@@ -435,10 +461,11 @@ export class BipedLocomotion {
       else {
         // balanceo con el ritmo de la zancada, a la contra de la pierna del mismo lado.
         // Con armStretch los brazos van casi rectos, como péndulos desde el hombro.
-        const run = gait === 'run' || gait === 'flee' || speed > 2.5;
+        const run = !o.alwaysWalk && (gait === 'run' || gait === 'flee' || speed > 2.5);
         const st = o.armStretch;
         const pace = Math.min(1, speed / 4);
-        const swingAng = (i === 0 ? 1 : -1) * Math.cos(this.phase) * pace * (run ? 0.55 : 0.3) + pace * 0.15 + (this.bend + o.hunch) * 0.5;
+        const amp = run ? 0.55 : o.alwaysWalk ? 0.45 : 0.3;
+        const swingAng = (i === 0 ? 1 : -1) * Math.cos(this.phase) * pace * amp + pace * 0.1 + (this.bend + o.hunch) * 0.5;
         const len = reach * (st > 0 ? 0.9 + 0.08 * st : run ? 0.74 : 0.92);
         const out = side * (0.06 + (run ? 0.12 : 0.03) * (0.5 + st));
         _w.copy(UP).multiplyScalar(-Math.cos(swingAng)).addScaledVector(this.fwd, Math.sin(swingAng)).addScaledVector(this.right, out).normalize();
