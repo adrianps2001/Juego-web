@@ -50,6 +50,10 @@ export interface BipedOptions {
   wallSpeed?: number;
   /** Con el techo así de bajo (fracción de su altura) baja las manos al suelo. */
   crawlBelow?: number;
+  /** Postura encorvada de serie (radianes de la espalda hacia delante). */
+  hunch?: number;
+  /** Segundos de espera mínima entre dos apoyos de mano en la pared. */
+  wallRest?: number;
 }
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -91,7 +95,6 @@ interface Hand {
   target: THREE.Vector3; // adonde va la mano (suavizado)
   wall: THREE.Vector3; // punto de la pared donde se apoya
   held: number; // tiempo apoyada
-  cool: number; // espera antes de volver a apoyarse
   ground: Stepper;
 }
 
@@ -121,7 +124,10 @@ export class BipedLocomotion {
   private fwd = new THREE.Vector3();
   private right = new THREE.Vector3();
   private ready = false;
-  private crouch = 0;
+  private crouch = 0; // 0-1: cuánto se ha tenido que encoger
+  private bend = 0; // radianes que encorva la espalda por el techo
+  private squat = 0; // metros que baja la cadera por el techo
+  private wallCool = 0; // espera hasta el próximo apoyo en la pared
   private lean = new THREE.Vector2(); // x: hacia delante, y: de lado
   private look = new THREE.Vector2(); // x: giro, y: arriba/abajo
   private hipsY = 0;
@@ -134,8 +140,8 @@ export class BipedLocomotion {
     private env: Env,
     opts: BipedOptions = {},
   ) {
-    this.o = { stride: 1, lift: 0.1, wallSpeed: 1.1, crawlBelow: 0.62, ...opts };
-    const hand = (): Hand => ({ mode: 'swing', target: new THREE.Vector3(), wall: new THREE.Vector3(), held: 0, cool: 0, ground: new Stepper() });
+    this.o = { stride: 1, lift: 0.1, wallSpeed: 2.2, crawlBelow: 0.62, hunch: 0, wallRest: 2, ...opts };
+    const hand = (): Hand => ({ mode: 'swing', target: new THREE.Vector3(), wall: new THREE.Vector3(), held: 0, ground: new Stepper() });
     this.hands = [hand(), hand()];
   }
 
@@ -171,21 +177,31 @@ export class BipedLocomotion {
     this.prev.copy(pos);
     const speed = this.vel.length();
 
-    // ---- ¿cabe de pie? techo justo encima y un poco más adelante ----
+    // ---- ¿cabe de pie? techo justo encima y un poco por delante ----
+    // (no cuentan las paredes ni los escalones: solo el techo que tiene encima de verdad)
     const ground = env.floor(pos.x, pos.z, pos.y);
     let room = Infinity;
     const dir = speed > 0.3 ? _w.copy(this.vel).divideScalar(speed) : _w.copy(this.fwd);
-    for (const ahead of [0, 0.5, 1.0]) {
+    for (const ahead of [0, 0.4]) {
       const x = pos.x + dir.x * ahead;
       const z = pos.z + dir.z * ahead;
+      if (ahead && env.solid(x, pos.y + 1, z)) continue;
       const f = env.floor(x, z, pos.y);
-      room = Math.min(room, env.ceil(x, z, pos.y) - (Number.isFinite(f) ? f : ground));
+      if (!Number.isFinite(f) || Math.abs(f - ground) > 0.35) continue;
+      room = Math.min(room, env.ceil(x, z, pos.y) - Math.max(f, ground));
     }
-    const need = rig.height + 0.1;
-    // agachado del todo baja casi un 40 % de su altura (cadera más baja y espalda doblada)
-    const want = Math.pow(THREE.MathUtils.clamp((need - room) / (rig.height * 0.38), 0, 1), 0.7);
-    this.crouch += (want - this.crouch) * (1 - Math.exp(-dt * 8));
-    const crawl = room < rig.height * o.crawlBelow;
+    // primero encorva la espalda lo justo para que quepa la cabeza; si no basta, dobla las rodillas
+    const deficit = Math.max(0, rig.height + 0.05 - room);
+    const upperBody = rig.height - rig.hipHeight;
+    const maxBend = 1.0;
+    const bendDrop = upperBody * (1 - Math.cos(maxBend));
+    const wantBend = deficit <= bendDrop ? Math.acos(1 - deficit / upperBody) : maxBend;
+    const wantSquat = Math.min(rig.hipHeight * 0.5, Math.max(0, deficit - bendDrop));
+    const kc = 1 - Math.exp(-dt * 4);
+    this.bend += (wantBend - this.bend) * kc;
+    this.squat += (wantSquat - this.squat) * kc;
+    this.crouch = Math.min(1, this.bend / maxBend * 0.6 + (this.squat / (rig.hipHeight * 0.5)) * 0.4);
+    const crawl = deficit > bendDrop + rig.hipHeight * 0.5;
 
     // ---- pies ----
     const legLen = rig.legs[0].a + rig.legs[0].b;
@@ -207,7 +223,7 @@ export class BipedLocomotion {
 
     // ---- cadera: altura según los pies, agachado y zancada ----
     const fy = (this.feet[0].pos.y + this.feet[1].pos.y) / 2;
-    let hy = Math.max(fy, ground) + rig.hipHeight * (1 - 0.45 * this.crouch) - (crawl ? rig.hipHeight * 0.12 : 0);
+    let hy = Math.max(fy, ground) + rig.hipHeight - this.squat - (crawl ? rig.hipHeight * 0.12 : 0);
     // en mitad de un paso el cuerpo sube un poco
     for (const f of this.feet) if (f.moving) hy += Math.sin(Math.PI * f.t) * 0.025 * (1 + speed * 0.15);
     // las piernas tienen que llegar al suelo
@@ -227,7 +243,7 @@ export class BipedLocomotion {
     this.lean.x += (wantF - this.lean.x) * kl;
     this.lean.y += (wantR - this.lean.y) * kl;
     rig.hips.rotation.set(-this.lean.x * 0.3, 0, -this.lean.y);
-    rig.spine.rotation.set(-(this.lean.x * 0.7 + this.crouch * 0.85 + (crawl ? 0.35 : 0)), 0, 0);
+    rig.spine.rotation.set(-(o.hunch + this.lean.x * 0.7 + this.bend + (crawl ? 0.35 : 0)), 0, 0);
 
     // ---- cabeza: mira a lo que le interesa (con límites) ----
     let lookYaw = 0;
@@ -248,7 +264,8 @@ export class BipedLocomotion {
     const jerk = this.twitch < 0.12 && this.twitch > 0 ? 0.25 : 0;
     if (this.twitch < 0) this.twitch = 2 + Math.random() * 5;
     rig.spine.rotation.y = this.look.x * 0.3;
-    rig.neck.rotation.set(this.crouch * 0.6 + this.lean.x * 0.5 + this.look.y * 0.4, this.look.x * 0.3, 0);
+    // el cuello compensa casi toda la curva de la espalda: la cabeza sigue mirando al frente
+    rig.neck.rotation.set((this.bend + o.hunch) * 0.75 + this.lean.x * 0.5 + this.look.y * 0.4, this.look.x * 0.3, 0);
     rig.head.rotation.set(this.look.y * 0.6, this.look.x * 0.4, jerk);
 
     root.updateMatrixWorld(true);
@@ -261,6 +278,7 @@ export class BipedLocomotion {
     }
 
     // ---- brazos: balanceo, pared, suelo o ataque ----
+    this.wallCool = Math.max(0, this.wallCool - dt);
     for (let i = 0; i < 2; i++) this.arm(i, dt, gait, speed, crawl, lookAt, pos);
   }
 
@@ -292,7 +310,6 @@ export class BipedLocomotion {
     const side = i === 0 ? -1 : 1;
     const reach = (arm.a + arm.b) * 0.95;
     const sh = bonePosition(arm.upper, _sh);
-    h.cool = Math.max(0, h.cool - dt);
     const want = _q;
 
     if (gait === 'attack' && lookAt && lookAt.distanceTo(sh) < reach * 2) {
@@ -313,32 +330,43 @@ export class BipedLocomotion {
       want.copy(h.ground.pos);
     } else {
       if (h.mode === 'ground') h.mode = 'swing';
-      // ¿apoyada en la pared? se suelta si se queda atrás o lejos
+      // ¿apoyada en la pared? se suelta enseguida: es un impulso, no un agarre
       if (h.mode === 'wall') {
         h.held += dt;
         const behind = _v.subVectors(h.wall, sh).dot(this.fwd);
-        if (h.wall.distanceTo(sh) > reach * 1.02 || behind < -0.45 || h.held > 0.8 || speed < o.wallSpeed * 0.5) {
+        if (h.wall.distanceTo(sh) > reach * 1.02 || behind < -0.25 || h.held > 0.45 || speed < o.wallSpeed * 0.6) {
           h.mode = 'swing';
-          h.cool = 0.15;
+          this.wallCool = o.wallRest + Math.random() * o.wallRest;
         }
       }
-      // ¿hay pared al alcance? (delante en diagonal, de lado, delante)
-      if (h.mode === 'swing' && h.cool <= 0 && speed > o.wallSpeed && gait !== 'idle') {
-        const y = sh.y - 0.1;
-        for (const [s, f] of [[0.7, 0.7], [1, 0.1], [0.35, 0.95]]) {
-          _w.copy(this.right).multiplyScalar(side * s).addScaledVector(this.fwd, f).normalize();
-          let hit = -1;
-          for (let t = 0.2; t <= reach; t += 0.06) {
-            if (env.solid(sh.x + _w.x * t, y, sh.z + _w.z * t)) {
-              hit = t;
+      // solo de vez en cuando: al doblar una esquina corriendo (la mano de dentro del giro)
+      // o, rara vez, al pasar rozando una pared
+      const running = gait === 'run' || gait === 'flee';
+      const other = this.hands[1 - i].mode === 'wall';
+      if (h.mode === 'swing' && !other && this.wallCool <= 0 && running && speed > o.wallSpeed) {
+        const accR = this.acc.dot(this.right);
+        const corner = Math.abs(accR) > 3 && Math.sign(accR) === side;
+        const brush = Math.random() < dt * 0.5;
+        if (corner || brush) {
+          const y = sh.y - 0.15;
+          const dirs = corner ? [[0.75, 0.65], [1, 0.15]] : [[1, 0.1]];
+          const limit = corner ? reach : reach * 0.6;
+          for (const [sd, f] of dirs) {
+            _w.copy(this.right).multiplyScalar(side * sd).addScaledVector(this.fwd, f).normalize();
+            let hit = -1;
+            for (let t = 0.2; t <= limit; t += 0.06) {
+              if (env.solid(sh.x + _w.x * t, y, sh.z + _w.z * t)) {
+                hit = t;
+                break;
+              }
+            }
+            if (hit > 0) {
+              h.mode = 'wall';
+              h.held = 0;
+              h.wall.set(sh.x + _w.x * (hit - 0.03), y + 0.1 * Math.random(), sh.z + _w.z * (hit - 0.03));
+              this.wallCool = 0.3;
               break;
             }
-          }
-          if (hit > 0) {
-            h.mode = 'wall';
-            h.held = 0;
-            h.wall.set(sh.x + _w.x * (hit - 0.03), y + 0.05 * Math.random(), sh.z + _w.z * (hit - 0.03));
-            break;
           }
         }
       }
@@ -350,15 +378,15 @@ export class BipedLocomotion {
         const run = gait === 'run' || gait === 'flee' || speed > 2.5;
         want
           .copy(sh)
-          .addScaledVector(UP, -reach * (run ? 0.74 : 0.97) + this.crouch * 0.2)
-          .addScaledVector(this.fwd, swing * (run ? 1.1 : 0.7) + this.crouch * 0.35)
+          .addScaledVector(UP, -reach * (run ? 0.74 : 0.95) + this.squat * 0.6)
+          .addScaledVector(this.fwd, swing * (run ? 1.1 : 0.7) + (this.bend + o.hunch) * 0.3)
           .addScaledVector(this.right, side * (0.08 + (run ? 0.06 : 0)));
         // la mano no atraviesa el suelo
         const f = env.floor(want.x, want.z, pos.y + 0.5);
         if (Number.isFinite(f)) want.y = Math.max(want.y, f + 0.05);
       }
     }
-    const fast = h.mode === 'wall' || h.mode === 'ground' ? 22 : 12;
+    const fast = h.mode === 'ground' ? 22 : h.mode === 'wall' ? 16 : 10;
     h.target.lerp(want, 1 - Math.exp(-dt * fast));
     // codos hacia atrás (y un poco hacia fuera solo si la mano está apoyada de lado)
     _pole.copy(this.fwd).multiplyScalar(-1).addScaledVector(this.right, side * (h.mode === 'wall' ? 0.35 : 0.12)).addScaledVector(UP, -0.2);

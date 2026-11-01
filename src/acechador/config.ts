@@ -15,27 +15,29 @@ export const SPAWN = { x: 36, z: 12 };
 
 /** Cómo es (mismos campos que el resto de criaturas en authority.ts). */
 export const SPEC = {
-  eye: 2.15,
+  eye: 2.5,
   wake: 999, // aparece en cuanto hay alguien en su nivel y nunca se va por distancia
   walk: 1.5,
   run: 4.9, // corriendo le ganas (5,6 m/s); andando no
-  reach: 1.4, // brazos largos
+  reach: 1.7, // brazos larguísimos
   damage: 30,
   cooldown: 2.5,
 };
 
-/** Medidas del cuerpo (metros). */
+/** Medidas del cuerpo (metros): muy alto, piernas y brazos larguísimos, torso estrecho. */
 export const BODY = {
-  thigh: 0.64,
-  shin: 0.64,
-  hipHeight: 1.18,
-  hipWidth: 0.13,
-  torso: 0.62,
-  neck: 0.22,
-  upperArm: 0.62,
-  forearm: 0.66,
-  shoulder: 0.23,
-  height: 2.35,
+  thigh: 0.78,
+  shin: 0.78,
+  hipHeight: 1.46,
+  hipWidth: 0.11,
+  torso: 0.7,
+  neck: 0.3,
+  upperArm: 0.86,
+  forearm: 0.92,
+  shoulder: 0.19,
+  height: 2.75,
+  /** Encorvado de serie (radianes). */
+  hunch: 0.22,
 };
 
 /** Dónde aparece: la casilla libre (con sitio alrededor) más cercana a SPAWN. */
