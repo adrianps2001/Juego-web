@@ -54,6 +54,10 @@ export interface BipedOptions {
   hunch?: number;
   /** Segundos de espera mínima entre dos apoyos de mano en la pared. */
   wallRest?: number;
+  /** Separación de los pies respecto a la cadera (1 = justo debajo). */
+  stance?: number;
+  /** 0-1: cuánto tiende a llevar los brazos estirados. */
+  armStretch?: number;
 }
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -93,6 +97,7 @@ class Stepper {
 interface Hand {
   mode: 'swing' | 'wall' | 'ground';
   target: THREE.Vector3; // adonde va la mano (suavizado)
+  rel: THREE.Vector3; // la mano respecto al hombro (balanceo: se suaviza aquí, no en el mundo)
   wall: THREE.Vector3; // punto de la pared donde se apoya
   held: number; // tiempo apoyada
   ground: Stepper;
@@ -128,6 +133,8 @@ export class BipedLocomotion {
   private bend = 0; // radianes que encorva la espalda por el techo
   private squat = 0; // metros que baja la cadera por el techo
   private wallCool = 0; // espera hasta el próximo apoyo en la pared
+  private phase = 0; // fase de la zancada (0-2π): para el giro de hombros y cadera
+  private twist = 0;
   private lean = new THREE.Vector2(); // x: hacia delante, y: de lado
   private look = new THREE.Vector2(); // x: giro, y: arriba/abajo
   private hipsY = 0;
@@ -140,8 +147,8 @@ export class BipedLocomotion {
     private env: Env,
     opts: BipedOptions = {},
   ) {
-    this.o = { stride: 1, lift: 0.1, wallSpeed: 2.2, crawlBelow: 0.62, hunch: 0, wallRest: 2, ...opts };
-    const hand = (): Hand => ({ mode: 'swing', target: new THREE.Vector3(), wall: new THREE.Vector3(), held: 0, ground: new Stepper() });
+    this.o = { stride: 1, lift: 0.1, wallSpeed: 2.2, crawlBelow: 0.62, hunch: 0, wallRest: 2, stance: 1, armStretch: 0, ...opts };
+    const hand = (): Hand => ({ mode: 'swing', target: new THREE.Vector3(), rel: new THREE.Vector3(0, -1, 0), wall: new THREE.Vector3(), held: 0, ground: new Stepper() });
     this.hands = [hand(), hand()];
   }
 
@@ -205,44 +212,61 @@ export class BipedLocomotion {
 
     // ---- pies ----
     const legLen = rig.legs[0].a + rig.legs[0].b;
-    const stepDur = THREE.MathUtils.clamp(0.5 - speed * 0.06, 0.16, 0.5) * Math.sqrt(o.stride) * (1 + this.crouch * 0.3);
-    const thr = (speed < 0.15 ? 0.1 : Math.min(legLen * 0.8, 0.16 + speed * 0.13)) * o.stride;
+    const running = speed > 2.5;
+    const stepDur = THREE.MathUtils.clamp(0.5 - speed * 0.065, 0.2, 0.5) * Math.sqrt(o.stride) * (1 + this.crouch * 0.3);
+    // nunca deja un pie más atrás de lo que da de sí la pierna
+    const thr = speed < 0.15 ? 0.1 : Math.min(legLen * 0.55, (0.16 + speed * 0.12) * o.stride);
+    const stance = rig.hipWidth * o.stance;
     for (let i = 0; i < 2; i++) {
       const foot = this.feet[i];
       const other = this.feet[1 - i];
       const side = i === 0 ? -1 : 1;
-      this.target(pos, side * rig.hipWidth, 0, stepDur * 0.55, _q);
+      this.target(pos, side * stance, 0, stepDur * (running ? 0.85 : 0.6), _q);
       _q.y = env.floor(_q.x, _q.z, pos.y + 0.5);
-      if (!Number.isFinite(_q.y)) _q.y = ground;
+      if (!Number.isFinite(_q.y) || Math.abs(_q.y - ground) > 0.8) _q.y = ground;
       const err = Math.hypot(foot.to.x - _q.x, foot.to.z - _q.z);
-      const free = !other.moving || other.t > (speed > 2.5 ? 0.45 : 0.9);
+      // corriendo hay un momento con los dos pies en el aire
+      const free = !other.moving || other.t > (running ? 0.4 : 0.9);
       const worse = err >= Math.hypot(other.to.x - _q.x, other.to.z - _q.z) - 0.05 || !free;
-      if (!foot.moving && free && err > thr && worse) foot.start(_q, stepDur, o.lift + speed * 0.025);
+      // un pie que se ha quedado demasiado lejos da el paso ya, haga lo que haga el otro
+      const far = Math.hypot(foot.pos.x - pos.x, foot.pos.z - pos.z) > legLen * 0.62;
+      if (!foot.moving && ((free && err > thr && worse) || far)) foot.start(_q, far ? stepDur * 0.7 : stepDur, o.lift + speed * (running ? 0.05 : 0.025));
       foot.tick(dt);
     }
+    // fase de la zancada: medio ciclo por pie
+    const f0 = this.feet[0];
+    const f1 = this.feet[1];
+    if (f0.moving) this.phase = f0.t * Math.PI;
+    else if (f1.moving) this.phase = Math.PI + f1.t * Math.PI;
 
     // ---- cadera: altura según los pies, agachado y zancada ----
-    const fy = (this.feet[0].pos.y + this.feet[1].pos.y) / 2;
-    let hy = Math.max(fy, ground) + rig.hipHeight - this.squat - (crawl ? rig.hipHeight * 0.12 : 0);
-    // en mitad de un paso el cuerpo sube un poco
-    for (const f of this.feet) if (f.moving) hy += Math.sin(Math.PI * f.t) * 0.025 * (1 + speed * 0.15);
-    // las piernas tienen que llegar al suelo
+    const fy = Math.max((f0.pos.y + f1.pos.y) / 2, ground);
+    const base = fy + rig.hipHeight - this.squat - (crawl ? rig.hipHeight * 0.12 : 0);
+    let hy = base;
+    // en mitad de un paso el cuerpo sube (corriendo, más: rebota)
+    for (const f of this.feet) if (f.moving) hy += Math.sin(Math.PI * f.t) * (running ? 0.06 : 0.025) * (1 + speed * 0.1);
+    // las piernas tienen que llegar al suelo… pero sin desplomarse nunca
     for (const f of this.feet) {
+      if (f.moving) continue;
       const h = Math.hypot(f.pos.x - pos.x, f.pos.z - pos.z);
-      hy = Math.min(hy, f.pos.y + Math.sqrt(Math.max(0.01, (legLen * 0.97) ** 2 - h * h)));
+      hy = Math.min(hy, f.pos.y + Math.sqrt(Math.max(0.01, (legLen * 0.98) ** 2 - h * h)));
     }
-    this.hipsY += (hy - this.hipsY) * (1 - Math.exp(-dt * 14));
+    hy = Math.max(hy, base - rig.hipHeight * 0.12);
+    this.hipsY += (hy - this.hipsY) * (1 - Math.exp(-dt * 12));
     rig.hips.position.set(0, this.hipsY - pos.y, 0);
 
     // ---- inclinación: hacia delante al correr y acelerar, hacia dentro en las curvas ----
     const accF = this.acc.dot(this.fwd);
     const accR = this.acc.dot(this.right);
-    const wantF = THREE.MathUtils.clamp(speed * 0.07 + accF * 0.025, -0.25, 0.55);
+    const wantF = THREE.MathUtils.clamp(speed * 0.045 + accF * 0.02, -0.2, 0.35);
     const wantR = THREE.MathUtils.clamp(accR * 0.05, -0.35, 0.35);
     const kl = 1 - Math.exp(-dt * 6);
     this.lean.x += (wantF - this.lean.x) * kl;
     this.lean.y += (wantR - this.lean.y) * kl;
-    rig.hips.rotation.set(-this.lean.x * 0.3, 0, -this.lean.y);
+    // corriendo, cadera y hombros giran a la contra con cada zancada
+    const wantTwist = Math.min(1, speed / 4) * Math.sin(this.phase) * 0.22;
+    this.twist += (wantTwist - this.twist) * (1 - Math.exp(-dt * 12));
+    rig.hips.rotation.set(-this.lean.x * 0.3, this.twist * 0.6, -this.lean.y);
     rig.spine.rotation.set(-(o.hunch + this.lean.x * 0.7 + this.bend + (crawl ? 0.35 : 0)), 0, 0);
 
     // ---- cabeza: mira a lo que le interesa (con límites) ----
@@ -263,7 +287,7 @@ export class BipedLocomotion {
     this.twitch -= dt;
     const jerk = this.twitch < 0.12 && this.twitch > 0 ? 0.25 : 0;
     if (this.twitch < 0) this.twitch = 2 + Math.random() * 5;
-    rig.spine.rotation.y = this.look.x * 0.3;
+    rig.spine.rotation.y = this.look.x * 0.3 - this.twist * 1.4;
     // el cuello compensa casi toda la curva de la espalda: la cabeza sigue mirando al frente
     rig.neck.rotation.set((this.bend + o.hunch) * 0.75 + this.lean.x * 0.5 + this.look.y * 0.4, this.look.x * 0.3, 0);
     rig.head.rotation.set(this.look.y * 0.6, this.look.x * 0.4, jerk);
@@ -372,22 +396,30 @@ export class BipedLocomotion {
       }
       if (h.mode === 'wall') want.copy(h.wall);
       else {
-        // balanceo contrario a la pierna del mismo lado; corriendo, codos doblados
-        const foot = this.feet[1 - i].pos;
-        const swing = THREE.MathUtils.clamp(_v.subVectors(foot, pos).dot(this.fwd), -0.6, 0.6);
+        // balanceo con el ritmo de la zancada, a la contra de la pierna del mismo lado.
+        // Con armStretch los brazos van casi rectos, como péndulos desde el hombro.
         const run = gait === 'run' || gait === 'flee' || speed > 2.5;
-        want
-          .copy(sh)
-          .addScaledVector(UP, -reach * (run ? 0.74 : 0.95) + this.squat * 0.6)
-          .addScaledVector(this.fwd, swing * (run ? 1.1 : 0.7) + (this.bend + o.hunch) * 0.3)
-          .addScaledVector(this.right, side * (0.08 + (run ? 0.06 : 0)));
+        const st = o.armStretch;
+        const pace = Math.min(1, speed / 4);
+        const swingAng = (i === 0 ? 1 : -1) * Math.cos(this.phase) * pace * (run ? 0.55 : 0.3) + pace * 0.15 + (this.bend + o.hunch) * 0.5;
+        const len = reach * (st > 0 ? 0.9 + 0.08 * st : run ? 0.74 : 0.92);
+        const out = side * (0.06 + (run ? 0.12 : 0.03) * (0.5 + st));
+        _w.copy(UP).multiplyScalar(-Math.cos(swingAng)).addScaledVector(this.fwd, Math.sin(swingAng)).addScaledVector(this.right, out).normalize();
+        want.copy(sh).addScaledVector(_w, len);
+        want.y += this.squat * 0.6;
         // la mano no atraviesa el suelo
         const f = env.floor(want.x, want.z, pos.y + 0.5);
         if (Number.isFinite(f)) want.y = Math.max(want.y, f + 0.05);
       }
     }
-    const fast = h.mode === 'ground' ? 22 : h.mode === 'wall' ? 16 : 10;
-    h.target.lerp(want, 1 - Math.exp(-dt * fast));
+    if (h.mode === 'swing') {
+      // relativo al hombro: así la mano no se queda atrás cuando el cuerpo corre
+      h.rel.lerp(_v.subVectors(want, sh), 1 - Math.exp(-dt * 14));
+      h.target.copy(sh).add(h.rel);
+    } else {
+      h.target.lerp(want, 1 - Math.exp(-dt * (h.mode === 'ground' ? 22 : 16)));
+      h.rel.subVectors(h.target, sh);
+    }
     // codos hacia atrás (y un poco hacia fuera solo si la mano está apoyada de lado)
     _pole.copy(this.fwd).multiplyScalar(-1).addScaledVector(this.right, side * (h.mode === 'wall' ? 0.35 : 0.12)).addScaledVector(UP, -0.2);
     solveTwoBone(arm.upper, arm.lower, arm.a, arm.b, h.target, _pole);

@@ -1,5 +1,5 @@
 import type { LevelMap } from '../world';
-import { SPEC } from './config';
+import { HARMLESS, SPEC } from './config';
 
 // Comportamiento del Acechador (lo ejecuta el anfitrión). Te busca por el
 // laberinto; si te ve o te oye, corre a por ti. Tras golpear se aparta un
@@ -73,7 +73,8 @@ export function acechadorThink<M extends Mob, P extends Prey>(e: M, here: P[], m
     e.close = t.sees(e, target, map) ? 0 : e.close + dt;
     if (d < SPEC.reach && e.attackCd <= 0) {
       e.anim = A.Attack;
-      t.hit(e, target);
+      if (HARMLESS) e.attackCd = SPEC.cooldown; // de prueba: el zarpazo no hace nada
+      else t.hit(e, target);
       t.setMode(e, 'flee');
       e.target = target.id;
       return;

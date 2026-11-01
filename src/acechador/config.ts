@@ -6,6 +6,8 @@
 export const ENABLED = true;
 /** Nivel en el que aparece, siempre (planta de abajo). */
 export const LEVEL = 0;
+/** Para pruebas: no hace daño ni da sustos (ataca, pero sin efecto). */
+export const HARMLESS = true;
 /**
  * Dónde aparece (metros): el centro de la sala de columnas del Nivel 0
  * (PILLARS en levels.ts: de (24, 4) a (48, 20)). Si ahí hay una columna, se
@@ -15,29 +17,29 @@ export const SPAWN = { x: 36, z: 12 };
 
 /** Cómo es (mismos campos que el resto de criaturas en authority.ts). */
 export const SPEC = {
-  eye: 2.5,
+  eye: 2.6,
   wake: 999, // aparece en cuanto hay alguien en su nivel y nunca se va por distancia
-  walk: 1.5,
-  run: 4.9, // corriendo le ganas (5,6 m/s); andando no
+  walk: 1.3,
+  run: 4.4, // corriendo le ganas de sobra (5,6 m/s); andando no
   reach: 1.7, // brazos larguísimos
   damage: 30,
   cooldown: 2.5,
 };
 
-/** Medidas del cuerpo (metros): muy alto, piernas y brazos larguísimos, torso estrecho. */
+/** Medidas del cuerpo (metros): muy alto, piernas largas y abiertas, brazos larguísimos. */
 export const BODY = {
-  thigh: 0.78,
-  shin: 0.78,
-  hipHeight: 1.46,
-  hipWidth: 0.11,
-  torso: 0.7,
-  neck: 0.3,
-  upperArm: 0.86,
-  forearm: 0.92,
-  shoulder: 0.19,
-  height: 2.75,
+  thigh: 0.88,
+  shin: 0.88,
+  hipHeight: 1.66,
+  hipWidth: 0.15,
+  torso: 0.62,
+  neck: 0.26,
+  upperArm: 0.9,
+  forearm: 0.96,
+  shoulder: 0.21,
+  height: 2.85,
   /** Encorvado de serie (radianes). */
-  hunch: 0.22,
+  hunch: 0.2,
 };
 
 /** Dónde aparece: la casilla libre (con sitio alrededor) más cercana a SPAWN. */

@@ -60,14 +60,14 @@ export function makeAcechador(): AcechadorModel {
   const B = BODY;
   const group = new THREE.Group();
   const hips = bone(group, 0, B.hipHeight, 0);
-  mesh(hips, limbGeo(0.16, 0.085, 0.06)).position.y = 0.05;
+  mesh(hips, limbGeo(0.18, 0.11, 0.08)).position.y = 0.05;
   // tronco: de la cadera hacia arriba (el hueso cuelga a -Y, así que se gira la malla)
   const spine = bone(hips, 0, 0.05, 0);
-  const torso = mesh(spine, limbGeo(B.torso, 0.055, 0.1));
+  const torso = mesh(spine, limbGeo(B.torso, 0.075, 0.125));
   torso.rotation.x = Math.PI;
-  torso.scale.set(1.15, 1, 0.7);
+  torso.scale.set(1.25, 1, 0.75);
   const neck = bone(spine, 0, B.torso, 0);
-  const neckMesh = mesh(neck, limbGeo(B.neck, 0.026, 0.022));
+  const neckMesh = mesh(neck, limbGeo(B.neck, 0.034, 0.028));
   neckMesh.rotation.x = Math.PI;
   const head = bone(neck, 0, B.neck, 0);
   const skull = mesh(head, new THREE.SphereGeometry(0.11, 10, 8));
@@ -79,9 +79,9 @@ export function makeAcechador(): AcechadorModel {
 
   const arms = [-1, 1].map((s) => {
     const upper = bone(spine, s * B.shoulder, B.torso - 0.06, 0);
-    mesh(upper, limbGeo(B.upperArm, 0.04, 0.026));
+    mesh(upper, limbGeo(B.upperArm, 0.05, 0.034));
     const lower = bone(upper, 0, -B.upperArm, 0);
-    mesh(lower, limbGeo(B.forearm, 0.026, 0.017));
+    mesh(lower, limbGeo(B.forearm, 0.034, 0.022));
     // manos con dedos larguísimos
     const hand = bone(lower, 0, -B.forearm, 0);
     for (let f = 0; f < 4; f++) {
@@ -94,9 +94,9 @@ export function makeAcechador(): AcechadorModel {
 
   const legs = [-1, 1].map((s) => {
     const upper = bone(hips, s * B.hipWidth, 0, 0);
-    mesh(upper, limbGeo(B.thigh, 0.055, 0.032));
+    mesh(upper, limbGeo(B.thigh, 0.075, 0.045));
     const lower = bone(upper, 0, -B.thigh, 0);
-    mesh(lower, limbGeo(B.shin, 0.033, 0.019));
+    mesh(lower, limbGeo(B.shin, 0.045, 0.027));
     const foot = mesh(lower, limbGeo(0.24, 0.02, 0.01));
     foot.position.set(0, -B.shin, 0);
     foot.rotation.x = Math.PI / 2; // el pie apunta hacia delante (-Z)
@@ -111,7 +111,7 @@ export function makeAcechador(): AcechadorModel {
     group,
     eye: B.height - 0.2,
     setEnv(env, f) {
-      loco = new BipedLocomotion(rig, env, { stride: 1.5, lift: 0.13, hunch: B.hunch, wallSpeed: 2.2, wallRest: 2 });
+      loco = new BipedLocomotion(rig, env, { stride: 1.5, lift: 0.14, hunch: B.hunch, wallSpeed: 2.2, wallRest: 2, stance: 1.35, armStretch: 0.8 });
       focus = f;
     },
     loco: () => loco,
